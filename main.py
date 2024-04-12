@@ -102,7 +102,7 @@ def read_item():
     api_instance = getUserApiInstance()
     api_response = api_instance.get_user_fund_margin(api_version)
     pprint(api_response)
-    return {"response": api_response}
+    return api_response._data
 
 @app.post("/placeOrder")
 async def placeOrder(req:Request):
@@ -113,7 +113,7 @@ async def placeOrder(req:Request):
         print(payload)
         api_response = api_instance.place_order(payload, api_version)
         pprint(api_response)
-        return {"response": api_response}
+        return api_response._data
     except ApiException as e:
         print("Exception when calling OrderApi->place_order: %s\n" % e)
 
