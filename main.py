@@ -11,7 +11,7 @@ import time
 from pprint import pprint
 
 # create an instance of the API class
-api_instance = upstox_client.LoginApi()
+
 
 
 app = FastAPI()
@@ -80,3 +80,40 @@ async def write_autht(req:Request):
     with open("config/access_token.txt", "w") as outfile:
         outfile.write(v.get('access-token'))
         return {"status": "success"}
+
+def getUserApiInstance():
+     with open("config/access_token.txt", "r") as outfile:
+        token = outfile.read()
+        configuration = upstox_client.Configuration()
+        configuration.access_token = token
+        api_instance = upstox_client.UserApi(upstox_client.ApiClient(configuration))
+        return api_instance
+     
+def getOrderApiInstance():
+     with open("config/access_token.txt", "r") as outfile:
+        token = outfile.read()
+        configuration = upstox_client.Configuration()
+        configuration.access_token = token
+        api_instance = upstox_client.OrderApi(upstox_client.ApiClient(configuration))
+        return api_instance
+
+@app.get("/getBalance")
+def read_item():
+    api_instance = getUserApiInstance()
+    api_response = api_instance.get_user_fund_margin(api_version)
+    pprint(api_response)
+    return {"response": api_response}
+
+@app.post("/placeOrder")
+async def placeOrder(req:Request):
+    try:
+        # Place order
+        api_instance = getOrderApiInstance()
+        payload = await req.json()
+        print(payload)
+        api_response = api_instance.place_order(payload, api_version)
+        pprint(api_response)
+        return {"response": api_response}
+    except ApiException as e:
+        print("Exception when calling OrderApi->place_order: %s\n" % e)
+
