@@ -4,6 +4,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 import json
+import ssl
+
 
 import upstox_client
 from upstox_client.rest import ApiException
@@ -104,6 +106,14 @@ def getOrderApiInstance():
         configuration.access_token = token
         api_instance = upstox_client.OrderApi(upstox_client.ApiClient(configuration))
         return api_instance
+     
+def getWebSocketInstance():
+     with open("config/access_token.txt", "r") as outfile:
+        token = outfile.read()
+        configuration = upstox_client.Configuration()
+        configuration.access_token = token
+        api_instance = upstox_client.WebsocketApi(upstox_client.ApiClient(configuration))
+        return api_instance
 
 @app.get("/getBalance")
 def read_item():
@@ -181,4 +191,31 @@ async def placeOrder(req:Request):
         return {"data":api_response._data}
     except ApiException as e:
         print("Exception when calling OrderApi->place_order: %s\n" % e)
+
+@app.get("/ws-portfolio")
+def get_portfolio_stream_feed_authorize():
+    api_version = '2.0'
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    api_instance = getWebSocketInstance()
+    api_response = api_instance.get_portfolio_stream_feed_authorize(
+        api_version)
+    print(api_response._data)
+    return {"data":api_response._data}
+
+
+@app.get("/ws-orders")
+def get_orders_stream_feed_authorize():
+    api_version = '2.0'
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    api_instance = getWebSocketInstance()
+    api_response = api_instance.get_portfolio_stream_feed_authorize(
+        api_version)
+    print(api_response._data)
+    return {"data":api_response._data}
 
