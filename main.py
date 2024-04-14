@@ -89,6 +89,14 @@ def getUserApiInstance():
         api_instance = upstox_client.UserApi(upstox_client.ApiClient(configuration))
         return api_instance
      
+def getPortfolioApiInstance():
+     with open("config/access_token.txt", "r") as outfile:
+        token = outfile.read()
+        configuration = upstox_client.Configuration()
+        configuration.access_token = token
+        api_instance = upstox_client.PortfolioApi(upstox_client.ApiClient(configuration))
+        return api_instance
+     
 def getOrderApiInstance():
      with open("config/access_token.txt", "r") as outfile:
         token = outfile.read()
@@ -104,7 +112,64 @@ def read_item():
     pprint(api_response)
     return {"data": api_response._data}
 
+@app.get("/getPositions")
+def read_item():
+    api_instance = getPortfolioApiInstance()
+    api_response = api_instance.get_positions(api_version)
+    pprint(api_response)
+    return {"data": api_response._data}
+
+@app.get("/getOrders")
+def read_item():
+    api_instance = getOrderApiInstance()
+    api_response = api_instance.get_order_book(api_version)
+    pprint(api_response)
+    return {"data": api_response._data}
+
 @app.post("/placeOrder")
+async def placeOrder(req:Request):
+    try:
+        # Place order
+        api_instance = getOrderApiInstance()
+        payload = await req.json()
+        print(payload)
+        api_response = api_instance.place_order(payload, api_version)
+        pprint(api_response)
+        return {"data":api_response._data}
+    except ApiException as e:
+        print("Exception when calling OrderApi->place_order: %s\n" % e)
+
+
+@app.post("/modifyOrder")
+async def modifyOrder(req:Request):
+    try:
+        # Place order
+        api_instance = getOrderApiInstance()
+        payload = await req.json()
+        print(payload.get('quantity'))
+        body = upstox_client.ModifyOrderRequest(payload.get('quantity'), payload.get('validity'), payload.get('price'), payload.get('orderId'), payload.get('order_type'), None, payload.get('price'))
+        api_response = api_instance.modify_order(body, api_version)
+        pprint(api_response)
+        return {"data":api_response._data}
+    except ApiException as e:
+        print("Exception when calling OrderApi->place_order: %s\n" % e)
+
+
+@app.post("/cancelOrder")
+async def cancelOrder(req:Request):
+    try:
+        # Place order
+        api_instance = getOrderApiInstance()
+        payload = await req.json()
+        #body = upstox_client.CancelOrderData(payload.get('order_id'))
+        #pprint(body)
+        api_response = api_instance.cancel_order(payload.get('order_id'), api_version)
+        pprint(api_response)
+        return {"data":api_response._data}
+    except ApiException as e:
+        print("Exception when calling OrderApi->place_order: %s\n" % e)
+
+@app.post("/sellOrder")
 async def placeOrder(req:Request):
     try:
         # Place order
