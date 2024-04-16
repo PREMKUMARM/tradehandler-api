@@ -8,3 +8,5 @@ API Service Platform for tradehandler app
 4. Stream available Positions
 5. Stream available orders
 
+### Commands to run
+python3 -m uvicorn main:app --reload

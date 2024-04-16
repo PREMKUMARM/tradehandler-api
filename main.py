@@ -1,6 +1,6 @@
 from typing import Union
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 import json
@@ -11,6 +11,10 @@ import upstox_client
 from upstox_client.rest import ApiException
 import time
 from pprint import pprint
+import array as arr
+import pandas as pd
+import numpy as np
+import datetime as dt
 
 # create an instance of the API class
 
@@ -52,20 +56,19 @@ def read_item():
         t = outfile.read()
         return t
 
-""" @app.post("/auth")
-async def write_autht(req:Request):
-    print("inside")
-    v = await req.json()
-    print(v)
-
+@app.get("/auth")
+async def write_autht():
     try:
         # Get token API
-        api_response = api_instance.token(api_version, code=v.get('code'), client_id=client_id, client_secret=client_secret, redirect_uri=redirect_uri, grant_type=grant_type)
+        api_instance = getLoginApiInstance()
+        api_response = await api_instance.authorize(client_id, redirect_uri, api_version)
         pprint(api_response)
+        return api_response
+        
     except ApiException as e:
         print("Exception when calling LoginApi->token: %s\n" % e)
 
-
+""" 
 
     # Writing to sample.json
     with open("config/access_token.txt", "w") as outfile:
@@ -82,6 +85,14 @@ async def write_autht(req:Request):
     with open("config/access_token.txt", "w") as outfile:
         outfile.write(v.get('access-token'))
         return {"status": "success"}
+    
+def getLoginApiInstance():
+     with open("config/access_token.txt", "r") as outfile:
+        token = outfile.read()
+        configuration = upstox_client.Configuration()
+        configuration.access_token = token
+        api_instance = upstox_client.LoginApi(upstox_client.ApiClient(configuration))
+        return api_instance
 
 def getUserApiInstance():
      with open("config/access_token.txt", "r") as outfile:
@@ -97,6 +108,14 @@ def getPortfolioApiInstance():
         configuration = upstox_client.Configuration()
         configuration.access_token = token
         api_instance = upstox_client.PortfolioApi(upstox_client.ApiClient(configuration))
+        return api_instance
+     
+def getHistoryApiInstance():
+     with open("config/access_token.txt", "r") as outfile:
+        token = outfile.read()
+        configuration = upstox_client.Configuration()
+        configuration.access_token = token
+        api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration))
         return api_instance
      
 def getOrderApiInstance():
@@ -135,6 +154,19 @@ def read_item():
     api_response = api_instance.get_order_book(api_version)
     pprint(api_response)
     return {"data": api_response._data}
+
+@app.get("/getCandle/{instrument_key}/{interval}/{fromDate}/{toDate}")
+def read_item(instrument_key, interval, fromDate, toDate):
+    api_instance = getHistoryApiInstance()
+    api_response = api_instance.get_historical_candle_data1(instrument_key, interval, toDate,fromDate, api_version)
+    
+    df = pd.DataFrame(api_response._data._candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'openinterest'])
+    df=df.set_index('timestamp')
+    df = df[::-1]
+    #last_row = df.iloc[-1:]
+    #pprint(last_row)
+    return Response(df.reset_index().to_json(orient='records'), media_type="application/json")
+    #return last_row
 
 @app.post("/placeOrder")
 async def placeOrder(req:Request):
