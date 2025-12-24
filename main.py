@@ -370,28 +370,183 @@ async def toggle_auto_trade(req: Request):
     live_strategy_config["is_auto_trade_enabled"] = enabled
     return {"status": "success", "is_auto_trade_enabled": enabled}
 
+def aggregate_to_tf(candles_1m, tf_min):
+    """
+    Aggregate 1-minute candles into any timeframe (5, 15, 30, 60 min)
+    
+    OHLC Aggregation Rules (TradingView standard):
+    - Open: First value in period
+    - High: Maximum value in period
+    - Low: Minimum value in period
+    - Close: Last value in period
+    - Volume: Sum of volumes in period
+    
+    Note: For better performance with large datasets, consider using pandas resample:
+        df = pd.DataFrame(candles_1m)
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+        resampled = df.resample(f'{tf_min}T').agg({
+            'open': 'first', 'high': 'max', 'low': 'min', 
+            'close': 'last', 'volume': 'sum'
+        })
+    """
+    if not candles_1m: return []
+    
+    aggregated = []
+    for i in range(0, len(candles_1m), tf_min):
+        chunk = candles_1m[i:i+tf_min]
+        if not chunk: continue
+        
+        aggregated.append({
+            'date': chunk[0]['date'],
+            'open': chunk[0]['open'],
+            'high': max(c['high'] for c in chunk),
+            'low': min(c['low'] for c in chunk),
+            'close': chunk[-1]['close'],
+            'volume': sum(c.get('volume', 0) for c in chunk)
+        })
+    return aggregated
+
+def analyze_trend(candles):
+    """Simple trend analysis for a set of candles"""
+    if len(candles) < 5: return "NEUTRAL"
+    
+    closes = [c['close'] for c in candles]
+    # Simple moving average (5)
+    sma_5 = sum(closes[-5:]) / 5
+    current_price = closes[-1]
+    
+    # Calculate RSI for trend strength
+    rsi = 50
+    if len(closes) >= 14:
+        deltas = np.diff(closes)
+        seed = deltas[:14]
+        up = seed[seed >= 0].sum() / 14
+        down = -seed[seed < 0].sum() / 14
+        if down == 0:
+            rsi = 100
+        else:
+            rs = up / down
+            rsi = 100 - (100 / (1 + rs))
+            
+    if current_price > sma_5 * 1.002 and rsi > 55: return "BULLISH"
+    if current_price < sma_5 * 0.998 and rsi < 45: return "BEARISH"
+    return "SIDEWAYS"
+
 async def live_market_scanner():
     """Background task to scan market and execute strategies"""
-    add_live_log("Live Market Scanner started", "info")
+    add_live_log("Live Market Scanner initializing...", "info")
+    
+    # Heartbeat tracker to avoid log spam
+    last_heartbeat_min = -1
+    last_analysis_min = -1
+    
     while True:
         try:
             # Only scan between 9:15 AM and 3:30 PM IST
             now = datetime.now()
-            # Note: Server time might be UTC, so adjust accordingly if needed
-            # For this workspace, we assume it's set to IST or handled
+            
+            # Indian Market Hours (9:15 AM to 3:30 PM)
             if now.hour >= 9 and (now.hour < 15 or (now.hour == 15 and now.minute <= 30)):
                 if live_strategy_config["active_strategies"]:
-                    add_live_log(f"Scanning market for signals: {', '.join(live_strategy_config['active_strategies'])}", "debug")
-                    # Implementation of live scanning would go here
                     # 1. Fetch live quotes/candles
-                    # 2. Run strategy functions
-                    # 3. If signal and auto-trade is ON, call place_strategy_order
+                    kite = get_kite_instance()
+                    
+                    # Get Nifty index price
+                    quote = kite.quote(["NSE:NIFTY 50"])
+                    nifty_data = quote.get("NSE:NIFTY 50", {})
+                    nifty_price = nifty_data.get("last_price", 0)
+                    
+                    if nifty_price > 0:
+                        # Multi-Timeframe Analysis Feed
+                        # Log detailed analysis every 3 minutes
+                        if now.minute % 3 == 0 and now.minute != last_analysis_min:
+                            from_date = now - timedelta(days=5) # Get 5 days for enough 1h/Day data
+                            nifty_candles_1m = kite.historical_data(256265, from_date, now, "minute")
+                            
+                            if nifty_candles_1m:
+                                analysis_parts = []
+                                for tf_name, tf_min in [("1m", 1), ("5m", 5), ("15m", 15), ("1h", 60)]:
+                                    tf_candles = aggregate_to_tf(nifty_candles_1m, tf_min)
+                                    trend = analyze_trend(tf_candles)
+                                    # Add small indicator like 🟢 🔴 ⚪
+                                    icon = "🟢" if trend == "BULLISH" else "🔴" if trend == "BEARISH" else "⚪"
+                                    analysis_parts.append(f"{tf_name}: {icon} {trend}")
+                                
+                                # Fetch Day candle separately from Kite for accuracy
+                                day_hist = kite.historical_data(256265, now - timedelta(days=30), now, "day")
+                                day_trend = analyze_trend(day_hist)
+                                day_icon = "🟢" if day_trend == "BULLISH" else "🔴" if day_trend == "BEARISH" else "⚪"
+                                analysis_parts.append(f"DAY: {day_icon} {day_trend}")
+                                
+                                add_live_log(f"ANALYSIS: " + " | ".join(analysis_parts), "info")
+                                last_analysis_min = now.minute
+
+                        # Heartbeat tracker for Nifty price and active strategies
+                        if now.minute % 5 == 0 and now.minute != last_heartbeat_min:
+                            active_strats = ", ".join(live_strategy_config["active_strategies"])
+                            add_live_log(f"LIVE SCANNING: Nifty @ {nifty_price} | Active: {active_strats}", "info")
+                            last_heartbeat_min = now.minute
+                            
+                        current_strike = round(nifty_price / 50) * 50
+                        
+                        # Get NFO instruments for expiry matching
+                        all_instruments = kite.instruments("NFO")
+                        nifty_options = [inst for inst in all_instruments if inst.get("name") == "NIFTY"]
+                        
+                        # Find nearest expiry
+                        today = now.date()
+                        valid_options = [inst for inst in nifty_options if inst.get("expiry") and inst.get("expiry") >= today]
+                        valid_options.sort(key=lambda x: x["expiry"])
+                        
+                        if valid_options:
+                            nearest_expiry = valid_options[0]["expiry"]
+                            atm_options = [inst for inst in valid_options if inst["expiry"] == nearest_expiry and inst["strike"] == current_strike]
+                            
+                            atm_ce = next((inst for inst in atm_options if inst["instrument_type"] == "CE"), None)
+                            atm_pe = next((inst for inst in atm_options if inst["instrument_type"] == "PE"), None)
+                            
+                            if atm_ce and atm_pe:
+                                # Fetch recent 1-minute candles for Nifty 50 to run strategies (mostly 5m based)
+                                from_date_strat = now - timedelta(hours=6)
+                                nifty_candles_strat = kite.historical_data(256265, from_date_strat, now, "minute")
+                                
+                                if len(nifty_candles_strat) >= 20:
+                                    trading_candles_5m = aggregate_to_tf(nifty_candles_strat, 5)
+                                    first_candle = trading_candles_5m[0] if trading_candles_5m else None
+                                    
+                                    # Run each active strategy
+                                    for strategy_id in live_strategy_config["active_strategies"]:
+                                        res = await run_strategy_on_candles(
+                                            kite, strategy_id, trading_candles_5m, first_candle, 
+                                            nifty_price, current_strike, atm_ce, atm_pe, 
+                                            now.strftime("%Y-%m-%d"), nifty_options, today
+                                        )
+                                        
+                                        if res:
+                                            # Signal detected in LIVE market
+                                            message = f"LIVE SIGNAL: {strategy_id} triggered. Reason: {res['reason']}"
+                                            
+                                            if live_strategy_config["is_auto_trade_enabled"]:
+                                                add_live_log(f"EXECUTING LIVE ORDER: {message}", "signal")
+                                            else:
+                                                add_live_log(f"ALERT (Auto-Trade OFF): {message}", "info")
+                else:
+                    # Log once that no strategies are active
+                    if now.minute % 30 == 0 and now.minute != last_heartbeat_min:
+                        add_live_log("LIVE MONITORING: Waiting for strategies to be selected...", "info")
+                        last_heartbeat_min = now.minute
+            else:
+                # Outside market hours
+                if now.minute % 60 == 0 and now.minute != last_heartbeat_min:
+                    add_live_log(f"LIVE FEED: Market is currently CLOSED ({now.strftime('%H:%M')}). Scanning resumes at 09:15 AM.", "info")
+                    last_heartbeat_min = now.minute
             
-            # Run every 60 seconds
-            await asyncio.sleep(60)
+            # Run every 10 seconds (more responsive scanner)
+            await asyncio.sleep(10)
         except Exception as e:
             print(f"Scanner error: {e}")
-            await asyncio.sleep(10)
+            await asyncio.sleep(30) # Wait longer on error
 
 @app.on_event("startup")
 async def startup_event():
@@ -477,18 +632,33 @@ async def start_simulation(req: Request):
         nifty_index = next((inst for inst in nse_instruments if inst.get("tradingsymbol") == "NIFTY 50"), None)
         if not nifty_index: return {"status": "error", "message": "Nifty not found"}
         
-        # Fetch 1-minute candles for the chosen day
-        raw_candles = kite.historical_data(nifty_index["instrument_token"], sim_date, sim_date + timedelta(days=1), "minute")
+        # Fetch 1-minute candles for the chosen day + previous 2 days for context
+        # This allows indicators to calculate properly and shows historical context
+        start_date = sim_date - timedelta(days=2)
+        raw_candles = kite.historical_data(nifty_index["instrument_token"], start_date, sim_date + timedelta(days=1), "minute")
         
         # Filter candles for market hours (09:15 to 15:30 IST)
-        candles = []
+        all_candles = []
         for candle in raw_candles:
             candle_time = candle["date"].time()
             if time(9, 15) <= candle_time <= time(15, 30):
+                all_candles.append(candle)
+        
+        # Separate: previous days (for context) and simulation day (for replay)
+        candles = []  # Simulation day candles
+        previous_candles = []  # Previous days for context
+        for candle in all_candles:
+            candle_date = candle["date"].date()
+            if candle_date == sim_date:
                 candles.append(candle)
+            elif candle_date < sim_date:
+                previous_candles.append(candle)
 
         if not candles:
             return {"status": "error", "message": f"No trading hour data for {sim_date_str}"}
+        
+        # previous_candles is already populated from the loop above - don't overwrite it!
+        # Store previous days' candles for chart context
             
         # Get nifty options for this date (needed by strategies)
         nifty_options = kite.instruments("NFO")
@@ -515,6 +685,7 @@ async def start_simulation(req: Request):
             "current_index": 0,
             "speed": 1,
             "candles": candles,
+            "previous_candles": previous_candles,  # Store previous days' candles for chart display
             "instrument_history": {}, # Reset cache
             "nifty_options": nifty_options,
             "atm_ce": atm_ce,
@@ -550,27 +721,13 @@ async def run_strategy_on_candles(kite, strategy_type, trading_candles, first_ca
         return strategy_bear_put_spread(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date)
     elif strategy_type == "iron_condor":
         return strategy_iron_condor(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date)
+    elif strategy_type == "macd_crossover":
+        return strategy_macd_crossover(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
+    elif strategy_type == "rsi_reversal":
+        return strategy_rsi_reversal(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
+    elif strategy_type == "ema_cross":
+        return strategy_ema_cross(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
     return None
-
-def aggregate_to_5min(candles_1m):
-    """Aggregate 1-minute candles into 5-minute candles"""
-    if not candles_1m: return []
-    
-    # Simple list-based aggregation
-    aggregated = []
-    for i in range(0, len(candles_1m), 5):
-        chunk = candles_1m[i:i+5]
-        if not chunk: continue
-        
-        aggregated.append({
-            'date': chunk[0]['date'],
-            'open': chunk[0]['open'],
-            'high': max(c['high'] for c in chunk),
-            'low': min(c['low'] for c in chunk),
-            'close': chunk[-1]['close'],
-            'volume': sum(c['volume'] for c in chunk)
-        })
-    return aggregated
 
 def get_instrument_history(kite, token, sim_date):
     """Helper to fetch and cache full day history for an instrument during simulation"""
@@ -628,6 +785,423 @@ def calculate_sim_qty(entry_price, fund, risk_pct, reward_pct):
     if lots < 1: lots = 1
     
     return lots * 75
+
+@app.get("/simulation/chart-data")
+async def get_simulation_chart_data(timeframe: str = "1m", indicators: str = ""):
+    """Get chart data for simulation replay - returns candles up to current index
+    timeframe: 1m, 5m, 15m, 30m, 1h, 1d
+    indicators: comma-separated list (e.g., "rsi,bollinger,pivot")
+    """
+    if not simulation_state["is_active"]:
+        return {"data": {"candles": [], "current_index": 0, "total_candles": 0, "timeframe": timeframe}}
+    
+    idx = simulation_state["current_index"]
+    candles_1m = simulation_state["candles"]
+    previous_candles = simulation_state.get("previous_candles", [])
+    
+    # Map timeframe to minutes
+    tf_map = {
+        "1m": 1,
+        "5m": 5,
+        "15m": 15,
+        "30m": 30,
+        "1h": 60,
+        "1d": 1440  # Approximate (6.5 hours * 60 minutes)
+    }
+    
+    tf_minutes = tf_map.get(timeframe, 1)
+    
+    # CRITICAL: Use previous days' candles for indicator calculation context
+    # We need enough historical data for indicators:
+    # - RSI (14 period): needs at least 15 candles
+    # - Bollinger Bands (20 period): needs at least 20 candles
+    # - Pivot Points: needs previous day's H/L/C
+    
+    # Determine how many previous candles we need based on requested indicators
+    max_period_needed = 20  # Bollinger Bands needs most (20 period)
+    if indicators:
+        indicator_list = [ind.strip().lower() for ind in indicators.split(",") if ind.strip()]
+        if "bollinger" in indicator_list:
+            max_period_needed = 20
+        elif "rsi" in indicator_list:
+            max_period_needed = 14
+    
+    # Get enough previous candles for indicator calculation
+    # For aggregated timeframes, we need more 1-minute candles
+    # Example: For 30-minute candles with RSI(14), we need 14*30 = 420 minutes = 7 hours
+    # But we also need buffer, so let's calculate: max_period_needed * tf_minutes * 2
+    # For 30-minute: 14 * 30 * 2 = 840 minutes = 14 hours of data
+    # Market hours: 9:15 to 15:30 = 6.25 hours per day
+    # So we need at least 3 days of data for 30-minute RSI
+    required_prev_candles = max_period_needed * tf_minutes * 2  # 2x buffer for safety
+    
+    # If we don't have enough previous candles, try to fetch more
+    if len(previous_candles) < required_prev_candles and simulation_state.get("date"):
+        try:
+            kite = get_kite_instance()
+            nse_instruments = kite.instruments("NSE")
+            nifty_index = next((inst for inst in nse_instruments if inst.get("tradingsymbol") == "NIFTY 50"), None)
+            if nifty_index:
+                sim_date = simulation_state["date"]
+                # Calculate how many days we need
+                market_hours_per_day = 6.25  # 9:15 to 15:30 = 6.25 hours
+                minutes_per_day = market_hours_per_day * 60  # 375 minutes per day
+                days_needed = int((required_prev_candles / minutes_per_day) + 1)  # +1 for safety
+                days_needed = max(days_needed, 3)  # At least 3 days
+                
+                # Fetch more historical data
+                start_date = sim_date - timedelta(days=days_needed)
+                raw_prev = kite.historical_data(nifty_index["instrument_token"], start_date, sim_date, "minute")
+                additional_candles = []
+                for candle in raw_prev:
+                    candle_time = candle["date"].time()
+                    if time(9, 15) <= candle_time <= time(15, 30):
+                        additional_candles.append(candle)
+                
+                # Merge with existing previous candles (avoid duplicates)
+                existing_timestamps = {int(c["date"].timestamp()) for c in previous_candles}
+                for candle in additional_candles:
+                    ts = int(candle["date"].timestamp())
+                    if ts not in existing_timestamps:
+                        previous_candles.append(candle)
+                        existing_timestamps.add(ts)
+                
+                # Sort by timestamp
+                previous_candles.sort(key=lambda x: int(x["date"].timestamp()) if isinstance(x["date"], datetime) else 0)
+                simulation_state["previous_candles"] = previous_candles
+                print(f"Fetched additional historical data: {len(previous_candles)} total previous candles for {days_needed} days")
+        except Exception as e:
+            print(f"Warning: Could not fetch additional historical candles: {e}")
+    
+    previous_for_calc = previous_candles[-required_prev_candles:] if len(previous_candles) > required_prev_candles else previous_candles
+    print(f"Using {len(previous_for_calc)} previous candles for calculation (required: {required_prev_candles} for {timeframe} timeframe)")
+    
+    # Combine: previous (for calculation) + current simulation candles
+    # This ensures we have enough historical data for accurate indicator calculation
+    # For display: show ALL previous candles (not limited) + current simulation candles up to index
+    # This allows users to see historical context before simulation starts
+    all_candles_for_display = previous_candles + candles_1m[:idx + 1]  # All previous + current up to index
+    all_candles_for_calc = previous_for_calc + candles_1m[:idx + 1]  # Enough for calculation
+    
+    if not all_candles_for_display:
+        return {"data": {"candles": [], "current_index": idx, "total_candles": len(candles_1m), "timeframe": timeframe}}
+    
+    # Aggregate to selected timeframe - use TIME-BASED aggregation (not sequential chunking)
+    # This ensures candles are grouped by actual time windows (e.g., 09:00-09:30, 09:30-10:00)
+    def aggregate_candles(candle_list):
+        if tf_minutes == 1:
+            return candle_list
+        
+        if not candle_list:
+            return []
+        
+        aggregated = []
+        current_chunk = []
+        current_window_start = None
+        
+        for candle in candle_list:
+            # Get candle timestamp
+            if isinstance(candle["date"], datetime):
+                candle_dt = candle["date"]
+            else:
+                try:
+                    candle_dt = datetime.fromisoformat(str(candle["date"]).replace('Z', '+00:00'))
+                except:
+                    continue
+            
+            # Calculate which time window this candle belongs to
+            # Round down to nearest tf_minutes boundary
+            minutes = candle_dt.minute
+            rounded_minutes = (minutes // tf_minutes) * tf_minutes
+            window_start = candle_dt.replace(minute=rounded_minutes, second=0, microsecond=0)
+            
+            # If this is a new time window, finalize previous chunk and start new one
+            if current_window_start is None or window_start != current_window_start:
+                # Finalize previous chunk
+                if current_chunk:
+                    aggregated.append({
+                        "date": current_chunk[0]["date"],
+                        "open": float(current_chunk[0]["open"]),
+                        "high": float(max(c["high"] for c in current_chunk)),
+                        "low": float(min(c["low"] for c in current_chunk)),
+                        "close": float(current_chunk[-1]["close"]),
+                        "volume": int(sum(c.get("volume", 0) for c in current_chunk))
+                    })
+                
+                # Start new chunk
+                current_chunk = [candle]
+                current_window_start = window_start
+            else:
+                # Add to current chunk
+                current_chunk.append(candle)
+        
+        # Don't forget the last chunk
+        if current_chunk:
+            aggregated.append({
+                "date": current_chunk[0]["date"],
+                "open": float(current_chunk[0]["open"]),
+                "high": float(max(c["high"] for c in current_chunk)),
+                "low": float(min(c["low"] for c in current_chunk)),
+                "close": float(current_chunk[-1]["close"]),
+                "volume": int(sum(c.get("volume", 0) for c in current_chunk))
+            })
+        
+        return aggregated
+    
+    # Aggregate for display (with limited previous candles for visual context)
+    aggregated_candles = aggregate_candles(all_candles_for_display)
+    
+    # Aggregate for calculation (with more previous candles for accurate indicators)
+    aggregated_for_indicators = aggregate_candles(all_candles_for_calc)
+    
+    # Find the starting index in aggregated_for_indicators that matches the first display candle
+    # This allows us to extract indicator values for display candles
+    first_display_ts = None
+    if aggregated_candles:
+        first_candle = aggregated_candles[0]
+        if isinstance(first_candle["date"], datetime):
+            first_display_ts = int(first_candle["date"].timestamp())
+        else:
+            try:
+                dt = datetime.fromisoformat(str(first_candle["date"]).replace('Z', '+00:00'))
+                first_display_ts = int(dt.timestamp())
+            except:
+                first_display_ts = 0
+    
+    # Find matching start index in aggregated_for_indicators
+    calc_start_idx = 0
+    if first_display_ts:
+        for i, calc_candle in enumerate(aggregated_for_indicators):
+            if isinstance(calc_candle["date"], datetime):
+                calc_ts = int(calc_candle["date"].timestamp())
+            else:
+                try:
+                    dt = datetime.fromisoformat(str(calc_candle["date"]).replace('Z', '+00:00'))
+                    calc_ts = int(dt.timestamp())
+                except:
+                    calc_ts = 0
+            if calc_ts == first_display_ts:
+                calc_start_idx = i
+                break
+            elif calc_ts > first_display_ts:
+                # Found a candle after our display start, use previous one
+                calc_start_idx = max(0, i - 1)
+                break
+    
+    # Convert to chart format - ensure proper sorting by timestamp
+    chart_candles = []
+    for candle in aggregated_candles:
+        # Convert datetime to Unix timestamp (seconds)
+        if isinstance(candle["date"], datetime):
+            timestamp = int(candle["date"].timestamp())
+        else:
+            # Try to parse string date
+            try:
+                dt = datetime.fromisoformat(str(candle["date"]).replace('Z', '+00:00'))
+                timestamp = int(dt.timestamp())
+            except:
+                timestamp = int(datetime.now().timestamp())
+        
+        # Validate OHLC values
+        open_val = float(candle.get("open", 0)) or 0
+        high_val = float(candle.get("high", 0)) or open_val
+        low_val = float(candle.get("low", 0)) or open_val
+        close_val = float(candle.get("close", 0)) or open_val
+        
+        chart_candles.append({
+            "time": timestamp,
+            "open": open_val,
+            "high": high_val,
+            "low": low_val,
+            "close": close_val,
+            "volume": int(candle.get("volume", 0))
+        })
+    
+    # CRITICAL: Sort by timestamp to ensure proper chronological order
+    chart_candles.sort(key=lambda x: x["time"])
+    
+    # Get current positions and orders for markers
+    positions = simulation_state.get("positions", [])
+    orders = simulation_state.get("orders", [])
+    
+    # Markers for entry/exit points (for future chart library integration)
+    markers = []
+    for order in orders[:50]:  # Last 50 orders
+        if order.get("order_timestamp"):
+            # Find candle index for this order (use original 1m candles for marker positioning)
+            order_time_str = order["order_timestamp"]
+            for i, c in enumerate(candles_1m):
+                c_time_str = c["date"].strftime("%H:%M:%S") if isinstance(c["date"], datetime) else str(c["date"])
+                if order_time_str in c_time_str or c_time_str in order_time_str:
+                    if isinstance(c["date"], datetime):
+                        timestamp = int(c["date"].timestamp())
+                    else:
+                        try:
+                            dt = datetime.fromisoformat(str(c["date"]).replace('Z', '+00:00'))
+                            timestamp = int(dt.timestamp())
+                        except:
+                            timestamp = int(datetime.now().timestamp())
+                    
+                    markers.append({
+                        "time": timestamp,
+                        "position": "belowBar" if order["transaction_type"] == "BUY" else "aboveBar",
+                        "color": "#26a69a" if order["transaction_type"] == "BUY" else "#ef5350",
+                        "shape": "arrowUp" if order["transaction_type"] == "BUY" else "arrowDown",
+                        "text": f"{order['strategy']} {order['transaction_type']}"
+                    })
+                    break
+    
+    # Calculate indicators if requested
+    # CRITICAL: Use aggregated_for_indicators (which includes more historical data) for calculation
+    # But map results back to aggregated_candles (display candles) for alignment
+    indicator_data = {}
+    if indicators:
+        indicator_list = [ind.strip().lower() for ind in indicators.split(",") if ind.strip()]
+        
+        # Get closes/highs/lows for indicator calculation (use full historical dataset)
+        closes_for_calc = [float(c["close"]) for c in aggregated_for_indicators]
+        highs_for_calc = [float(c["high"]) for c in aggregated_for_indicators]
+        lows_for_calc = [float(c["low"]) for c in aggregated_for_indicators]
+        
+        print(f"Indicator calculation: {len(aggregated_for_indicators)} calc candles, {len(aggregated_candles)} display candles, calc_start_idx={calc_start_idx}")
+        
+        if "rsi" in indicator_list:
+            # Calculate RSI on full historical dataset (for accurate calculation)
+            rsi_values_full = calculate_rsi(closes_for_calc, period=14)
+            
+            # Extract RSI values for display candles (starting from calc_start_idx)
+            rsi_data = []
+            for i, candle in enumerate(aggregated_candles):
+                if isinstance(candle["date"], datetime):
+                    timestamp = int(candle["date"].timestamp())
+                else:
+                    try:
+                        dt = datetime.fromisoformat(str(candle["date"]).replace('Z', '+00:00'))
+                        timestamp = int(dt.timestamp())
+                    except:
+                        timestamp = int(datetime.now().timestamp())
+                
+                # Map display candle index to calculation candle index
+                calc_idx = calc_start_idx + i
+                
+                # Get RSI value from calculated array
+                if calc_idx >= 0 and calc_idx < len(rsi_values_full):
+                    rsi_val = rsi_values_full[calc_idx]
+                    # Include valid RSI values (skip NaN)
+                    if not (pd.isna(rsi_val) or np.isnan(rsi_val)):
+                        rsi_data.append({
+                            "time": timestamp,
+                            "value": float(rsi_val)
+                        })
+            
+            # CRITICAL: Sort RSI data by timestamp to match candles
+            rsi_data.sort(key=lambda x: x["time"])
+            indicator_data["rsi"] = rsi_data
+            # Debug log
+            print(f"RSI calculation: {len(closes_for_calc)} closes for calc, {len(aggregated_candles)} display candles, {len(rsi_values_full)} RSI values, {len(rsi_data)} valid RSI data points")
+            if len(rsi_data) == 0 and len(closes_for_calc) >= 15:
+                print(f"WARNING: No RSI data points! calc_start_idx={calc_start_idx}, First 20 RSI values: {rsi_values_full[:20] if len(rsi_values_full) > 0 else 'N/A'}")
+        
+        if "bollinger" in indicator_list:
+            # Calculate Bollinger Bands on full historical dataset (for accurate calculation)
+            upper_full, middle_full, lower_full = calculate_bollinger_bands_full(closes_for_calc, period=20, num_std=2)
+            
+            # Extract BB values for display candles (starting from calc_start_idx)
+            bb_data = []
+            for i, candle in enumerate(aggregated_candles):
+                if isinstance(candle["date"], datetime):
+                    timestamp = int(candle["date"].timestamp())
+                else:
+                    try:
+                        dt = datetime.fromisoformat(str(candle["date"]).replace('Z', '+00:00'))
+                        timestamp = int(dt.timestamp())
+                    except:
+                        timestamp = int(datetime.now().timestamp())
+                
+                # Map display candle index to calculation candle index
+                calc_idx = calc_start_idx + i
+                
+                # Get BB values from calculated arrays
+                if calc_idx >= 0 and calc_idx < len(upper_full):
+                    # Only include valid values (not NaN)
+                    if not (pd.isna(upper_full[calc_idx]) or pd.isna(middle_full[calc_idx]) or pd.isna(lower_full[calc_idx])):
+                        bb_data.append({
+                            "time": timestamp,
+                            "upper": float(upper_full[calc_idx]),
+                            "middle": float(middle_full[calc_idx]),
+                            "lower": float(lower_full[calc_idx])
+                        })
+            
+            # CRITICAL: Sort Bollinger Bands data by timestamp to match candles
+            bb_data.sort(key=lambda x: x["time"])
+            indicator_data["bollinger"] = bb_data
+            print(f"Bollinger calculation: {len(closes_for_calc)} closes for calc, {len(aggregated_candles)} display candles, calc_start_idx={calc_start_idx}, {len(bb_data)} valid BB data points")
+        
+        if "pivot" in indicator_list and len(aggregated_candles) > 0:
+            # Calculate pivot points from previous day's high, low, close
+            # Use the calculation dataset to get previous day's data (more accurate)
+            if len(highs_for_calc) > 0 and len(lows_for_calc) > 0 and len(closes_for_calc) > 0:
+                # Get previous day's data from the calculation dataset
+                # Use first 20% of calculation candles to determine previous day's range
+                # This gives us a better representation of the previous trading day
+                prev_day_count = max(1, len(aggregated_for_indicators) // 5)
+                prev_day_candles = aggregated_for_indicators[:prev_day_count]
+                
+                if prev_day_candles:
+                    prev_high = max(float(c["high"]) for c in prev_day_candles)
+                    prev_low = min(float(c["low"]) for c in prev_day_candles)
+                    prev_close = float(prev_day_candles[-1]["close"])
+                else:
+                    # Fallback: use first few display candles
+                    prev_high = max(highs[:20] if len(highs) >= 20 else highs) if len(highs) > 0 else highs[0]
+                    prev_low = min(lows[:20] if len(lows) >= 20 else lows) if len(lows) > 0 else lows[0]
+                    prev_close = closes[0] if len(closes) > 0 else closes[-1]
+                
+                pivot_points = calculate_pivot_points(prev_high, prev_low, prev_close)
+                
+                # Get time range for horizontal lines (first to last display candle)
+                first_candle = aggregated_candles[0]
+                last_candle = aggregated_candles[-1]
+                
+                def get_timestamp(candle):
+                    if isinstance(candle["date"], datetime):
+                        return int(candle["date"].timestamp())
+                    else:
+                        try:
+                            dt = datetime.fromisoformat(str(candle["date"]).replace('Z', '+00:00'))
+                            return int(dt.timestamp())
+                        except:
+                            return int(datetime.now().timestamp())
+                
+                first_time = get_timestamp(first_candle)
+                last_time = get_timestamp(last_candle)
+                
+                # Ensure all values are properly formatted as floats
+                indicator_data["pivot"] = {
+                    "time_start": first_time,
+                    "time_end": last_time,
+                    "pivot": float(pivot_points.get("pivot", 0)),
+                    "r1": float(pivot_points.get("r1", 0)),
+                    "r2": float(pivot_points.get("r2", 0)),
+                    "r3": float(pivot_points.get("r3", 0)),
+                    "s1": float(pivot_points.get("s1", 0)),
+                    "s2": float(pivot_points.get("s2", 0)),
+                    "s3": float(pivot_points.get("s3", 0))
+                }
+                print(f"Pivot points calculated: P={indicator_data['pivot']['pivot']:.2f}, R1={indicator_data['pivot']['r1']:.2f}, R2={indicator_data['pivot']['r2']:.2f}, S1={indicator_data['pivot']['s1']:.2f}, S2={indicator_data['pivot']['s2']:.2f}")
+    
+    return {
+        "data": {
+            "candles": chart_candles,
+            "markers": markers,
+            "current_index": idx,
+            "total_candles": len(candles_1m),
+            "current_time": simulation_state.get("time", ""),
+            "nifty_price": simulation_state.get("nifty_price", 0),
+            "timeframe": timeframe,
+            "indicators": indicator_data
+        }
+    }
 
 @app.get("/simulation/state")
 async def get_simulation_state():
@@ -770,7 +1344,7 @@ async def get_simulation_state():
         hist_1m = ref_history[:idx+1]
         
         if len(hist_1m) >= 5: # Need at least one 5-minute candle
-            hist_5m = aggregate_to_5min(hist_1m)
+            hist_5m = aggregate_to_tf(hist_1m, 5)
             
             if len(hist_5m) >= 2: # Need enough for trend analysis
                 kite = get_kite_instance()
@@ -1664,6 +2238,113 @@ def calculate_bollinger_bands(closes, period=20, num_std=2):
     
     return df['upper_band'].iloc[-1], df['sma'].iloc[-1], df['lower_band'].iloc[-1]
 
+def calculate_bollinger_bands_full(closes, period=20, num_std=2):
+    """Calculate full Bollinger Bands array for chart display - matches TradingView/Zerodha standard"""
+    if len(closes) < period:
+        return [], [], []
+    
+    df = pd.DataFrame({'close': closes})
+    # Use Simple Moving Average (SMA) - standard for Bollinger Bands
+    df['sma'] = df['close'].rolling(window=period, min_periods=1).mean()
+    # Use Population Standard Deviation (ddof=0) - matches TradingView default
+    # Note: pandas std() uses ddof=1 by default (sample std), we need ddof=0 (population std)
+    df['std'] = df['close'].rolling(window=period, min_periods=1).std(ddof=0)
+    df['upper_band'] = df['sma'] + (df['std'] * num_std)
+    df['lower_band'] = df['sma'] - (df['std'] * num_std)
+    
+    # Return arrays - keep NaN for first period-1 values (no forward fill for accuracy)
+    # Only fill backward for the very first value if needed
+    upper = df['upper_band'].fillna(method='bfill', limit=1).tolist()
+    middle = df['sma'].fillna(method='bfill', limit=1).tolist()
+    lower = df['lower_band'].fillna(method='bfill', limit=1).tolist()
+    
+    return upper, middle, lower
+
+def calculate_rsi(closes, period=14):
+    """Calculate RSI (Relative Strength Index) using Wilder's Smoothing Method - matches TradingView/Zerodha"""
+    if len(closes) < period + 1:
+        return [np.nan] * len(closes)  # Return NaN if not enough data
+    
+    # Convert to numpy array for faster computation
+    closes_arr = np.array(closes, dtype=float)
+    deltas = np.diff(closes_arr)
+    
+    # Separate gains and losses
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    
+    # Initialize arrays for average gain and loss (same length as deltas)
+    avg_gains = np.full(len(gains), np.nan, dtype=float)
+    avg_losses = np.full(len(losses), np.nan, dtype=float)
+    
+    # First average: Simple average of first 'period' delta values
+    # This corresponds to the RSI value at index 'period' in the closes array
+    if len(gains) >= period:
+        avg_gains[period - 1] = np.mean(gains[:period])
+        avg_losses[period - 1] = np.mean(losses[:period])
+        
+        # Apply Wilder's smoothing for remaining values
+        # Formula: avg = (prev_avg * (period - 1) + current) / period
+        for i in range(period, len(gains)):
+            avg_gains[i] = (avg_gains[i - 1] * (period - 1) + gains[i]) / period
+            avg_losses[i] = (avg_losses[i - 1] * (period - 1) + losses[i]) / period
+    
+    # Calculate RS and RSI
+    # Handle division by zero
+    rs = np.divide(avg_gains, avg_losses, out=np.full_like(avg_gains, np.nan), where=(avg_losses != 0))
+    rsi_deltas = 100 - (100 / (1 + rs))
+    
+    # RSI array should match closes length
+    # First 'period' values are NaN (not enough data)
+    # RSI at index i corresponds to close at index i
+    rsi_list = [np.nan] * period  # First period values are NaN
+    
+    # Append calculated RSI values (starting from index period)
+    for i in range(period - 1, len(rsi_deltas)):
+        val = rsi_deltas[i]
+        if np.isnan(val):
+            rsi_list.append(np.nan)
+        else:
+            rsi_list.append(float(val))
+    
+    # Ensure length matches closes
+    while len(rsi_list) < len(closes):
+        rsi_list.append(np.nan)
+    
+    return rsi_list[:len(closes)]
+
+def calculate_pivot_points(high, low, close):
+    """Calculate Pivot Points (Traditional/Standard method) - matches TradingView/Zerodha"""
+    # Traditional Pivot Point calculation (Standard method)
+    # Pivot = (High + Low + Close) / 3
+    pivot = (high + low + close) / 3
+    
+    # Resistance levels (Traditional method)
+    # R1 = 2 * Pivot - Low
+    # R2 = Pivot + (High - Low)
+    # R3 = High + 2 * (Pivot - Low)
+    r1 = 2 * pivot - low
+    r2 = pivot + (high - low)
+    r3 = high + 2 * (pivot - low)
+    
+    # Support levels (Traditional method)
+    # S1 = 2 * Pivot - High
+    # S2 = Pivot - (High - Low)
+    # S3 = Low - 2 * (High - Pivot)
+    s1 = 2 * pivot - high
+    s2 = pivot - (high - low)
+    s3 = low - 2 * (high - pivot)
+    
+    return {
+        "pivot": float(pivot),
+        "r1": float(r1), 
+        "r2": float(r2), 
+        "r3": float(r3),
+        "s1": float(s1), 
+        "s2": float(s2), 
+        "s3": float(s3)
+    }
+
 def calculate_support_resistance(candles, lookback=20):
     """Calculate support and resistance levels"""
     if len(candles) < lookback:
@@ -1694,6 +2375,13 @@ def strategy_915_candle_break(kite, trading_candles, first_candle, nifty_price, 
     first_close = first_candle.get("close", 0)
     current_price = closes[-1]
     
+    # Get actual candle time for logs/entry
+    last_candle_date = recent_candles[-1].get("date", "")
+    if isinstance(last_candle_date, datetime):
+        entry_time_val = last_candle_date.strftime("%H:%M:%S")
+    else:
+        entry_time_val = last_candle_date.split(' ')[1][:8] if ' ' in str(last_candle_date) else "09:30:00"
+
     # Calculate first candle range and body
     first_range = first_high - first_low
     first_body = abs(first_close - first_open)
@@ -1732,13 +2420,6 @@ def strategy_915_candle_break(kite, trading_candles, first_candle, nifty_price, 
     above_first_high = current_price > first_high * 1.001  # 0.1% above high for confirmation
     below_first_low = current_price < first_low * 0.999   # 0.1% below low for confirmation
     
-    # Get actual candle time for entry
-    last_candle_date = recent_candles[-1].get("date", "")
-    if isinstance(last_candle_date, datetime):
-        entry_time_val = last_candle_date.strftime("%H:%M:%S")
-    else:
-        entry_time_val = last_candle_date.split(' ')[1][:8] if ' ' in str(last_candle_date) else "09:30:00"
-
     # Bullish: First candle bullish + option trending up + break above high + volume
     if (first_candle_bullish and option_trend_up and above_first_high and volume_confirmation):
         return {
@@ -2273,6 +2954,156 @@ def strategy_iron_condor(kite, trading_candles, nifty_price, current_strike, atm
         ]
     }
 
+def strategy_macd_crossover(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str):
+    """MACD Crossover Strategy - Single Leg Trend Following"""
+    if len(trading_candles) < 30:
+        return None
+    
+    closes = [c.get("close", 0) for c in trading_candles if c.get("close", 0) > 0]
+    if len(closes) < 26:
+        return None
+    
+    df = pd.DataFrame({'close': closes})
+    exp1 = df['close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['close'].ewm(span=26, adjust=False).mean()
+    macd = exp1 - exp2
+    signal = macd.ewm(span=9, adjust=False).mean()
+    
+    current_macd = macd.iloc[-1]
+    prev_macd = macd.iloc[-2]
+    current_signal = signal.iloc[-1]
+    prev_signal = signal.iloc[-2]
+    
+    # Get actual candle time
+    last_candle_date = trading_candles[-1].get("date", "")
+    if isinstance(last_candle_date, datetime):
+        entry_time_val = last_candle_date.strftime("%H:%M:%S")
+    else:
+        entry_time_val = last_candle_date.split(' ')[1][:8] if ' ' in str(last_candle_date) else "11:00:00"
+
+    # Bullish Cross
+    if prev_macd < prev_signal and current_macd > current_signal:
+        return {
+            "trend": "BULLISH",
+            "option_to_trade": atm_ce,
+            "option_type": "CE",
+            "entry_price": closes[-1],
+            "entry_time": entry_time_val,
+            "reason": f"MACD Bullish Cross: MACD({round(current_macd, 2)}) crossed above Signal({round(current_signal, 2)})"
+        }
+    
+    # Bearish Cross
+    if prev_macd > prev_signal and current_macd < current_signal:
+        return {
+            "trend": "BEARISH",
+            "option_to_trade": atm_pe,
+            "option_type": "PE",
+            "entry_price": closes[-1],
+            "entry_time": entry_time_val,
+            "reason": f"MACD Bearish Cross: MACD({round(current_macd, 2)}) crossed below Signal({round(current_signal, 2)})"
+        }
+    
+    return None
+
+def strategy_rsi_reversal(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str):
+    """RSI Reversal Strategy - Single Leg Mean Reversion"""
+    if len(trading_candles) < 15:
+        return None
+    
+    closes = [c.get("close", 0) for c in trading_candles if c.get("close", 0) > 0]
+    if len(closes) < 14:
+        return None
+    
+    df = pd.DataFrame({'close': closes})
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+    
+    current_rsi = df['rsi'].iloc[-1]
+    prev_rsi = df['rsi'].iloc[-2]
+    
+    # Get actual candle time
+    last_candle_date = trading_candles[-1].get("date", "")
+    if isinstance(last_candle_date, datetime):
+        entry_time_val = last_candle_date.strftime("%H:%M:%S")
+    else:
+        entry_time_val = last_candle_date.split(' ')[1][:8] if ' ' in str(last_candle_date) else "12:00:00"
+
+    # Oversold Reversal (Bullish)
+    if prev_rsi < 30 and current_rsi > 30:
+        return {
+            "trend": "BULLISH",
+            "option_to_trade": atm_ce,
+            "option_type": "CE",
+            "entry_price": closes[-1],
+            "entry_time": entry_time_val,
+            "reason": f"RSI Reversal: RSI recovered from oversold ({round(prev_rsi, 2)} -> {round(current_rsi, 2)})"
+        }
+    
+    # Overbought Reversal (Bearish)
+    if prev_rsi > 70 and current_rsi < 70:
+        return {
+            "trend": "BEARISH",
+            "option_to_trade": atm_pe,
+            "option_type": "PE",
+            "entry_price": closes[-1],
+            "entry_time": entry_time_val,
+            "reason": f"RSI Reversal: RSI retreated from overbought ({round(prev_rsi, 2)} -> {round(current_rsi, 2)})"
+        }
+    
+    return None
+
+def strategy_ema_cross(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str):
+    """EMA Crossover Strategy (9/21) - Single Leg Trend Following"""
+    if len(trading_candles) < 25:
+        return None
+    
+    closes = [c.get("close", 0) for c in trading_candles if c.get("close", 0) > 0]
+    if len(closes) < 21:
+        return None
+    
+    df = pd.DataFrame({'close': closes})
+    df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
+    df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
+    
+    curr_9 = df['ema_9'].iloc[-1]
+    prev_9 = df['ema_9'].iloc[-2]
+    curr_21 = df['ema_21'].iloc[-1]
+    prev_21 = df['ema_21'].iloc[-2]
+    
+    # Get actual candle time
+    last_candle_date = trading_candles[-1].get("date", "")
+    if isinstance(last_candle_date, datetime):
+        entry_time_val = last_candle_date.strftime("%H:%M:%S")
+    else:
+        entry_time_val = last_candle_date.split(' ')[1][:8] if ' ' in str(last_candle_date) else "13:00:00"
+
+    # Golden Cross
+    if prev_9 < prev_21 and curr_9 > curr_21:
+        return {
+            "trend": "BULLISH",
+            "option_to_trade": atm_ce,
+            "option_type": "CE",
+            "entry_price": closes[-1],
+            "entry_time": entry_time_val,
+            "reason": f"EMA Golden Cross: 9 EMA ({round(curr_9, 2)}) crossed above 21 EMA ({round(curr_21, 2)})"
+        }
+    
+    # Death Cross
+    if prev_9 > prev_21 and curr_9 < curr_21:
+        return {
+            "trend": "BEARISH",
+            "option_to_trade": atm_pe,
+            "option_type": "PE",
+            "entry_price": closes[-1],
+            "entry_time": entry_time_val,
+            "reason": f"EMA Death Cross: 9 EMA ({round(curr_9, 2)}) crossed below 21 EMA ({round(curr_21, 2)})"
+        }
+    
+    return None
+
 @app.post("/backtest-nifty50-options")
 async def backtest_nifty50_options(req: Request):
     """Backtest Nifty50 options strategy for given date range with multiple strategy options"""
@@ -2660,6 +3491,21 @@ async def backtest_nifty50_options(req: Request):
                             strategy_result = strategy_iron_condor(
                                 kite, trading_candles, nifty_price, 
                                 current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date
+                            )
+                        elif strategy_type == "macd_crossover":
+                            strategy_result = strategy_macd_crossover(
+                                kite, trading_candles, nifty_price, 
+                                current_strike, atm_ce, atm_pe, date_str
+                            )
+                        elif strategy_type == "rsi_reversal":
+                            strategy_result = strategy_rsi_reversal(
+                                kite, trading_candles, nifty_price, 
+                                current_strike, atm_ce, atm_pe, date_str
+                            )
+                        elif strategy_type == "ema_cross":
+                            strategy_result = strategy_ema_cross(
+                                kite, trading_candles, nifty_price, 
+                                current_strike, atm_ce, atm_pe, date_str
                             )
                         else:
                             # Default to 9:15 candle break
