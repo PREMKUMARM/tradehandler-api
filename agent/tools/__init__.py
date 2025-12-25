@@ -47,6 +47,10 @@ from .gap_analysis_tool import (
 from .candlestick_patterns_tool import (
     find_candlestick_patterns,
 )
+from .simulation_tools import (
+    download_historical_data_to_local_tool,
+    run_simulation_on_local_data_tool,
+)
 
 __all__ = [
     # Kite tools
@@ -86,6 +90,9 @@ __all__ = [
     "analyze_gap_probability",
     # Candlestick pattern tools
     "find_candlestick_patterns",
+    # Simulation tools
+    "download_historical_data_to_local_tool",
+    "run_simulation_on_local_data_tool",
     "ALL_TOOLS",
 ]
 
@@ -112,5 +119,7 @@ ALL_TOOLS = [
     rebalance_portfolio_tool,
     find_indicator_based_trading_opportunities,
     analyze_gap_probability,
+    download_historical_data_to_local_tool,
+    run_simulation_on_local_data_tool,
 ]
 

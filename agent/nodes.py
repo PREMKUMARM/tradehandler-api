@@ -34,6 +34,8 @@ from agent.tools import (
     find_indicator_based_trading_opportunities,
     analyze_gap_probability,
     find_candlestick_patterns,
+    download_historical_data_to_local_tool,
+    run_simulation_on_local_data_tool,
 )
 from agent.safety import get_safety_manager
 from agent.approval import get_approval_queue
@@ -135,7 +137,7 @@ def analyze_request_node(state: AgentState) -> AgentState:
         system_prompt = f"""You are an intelligent trading assistant. 
 IMPORTANT: The current real-world date is {current_date} ({current_day}). 
 Analyze the user's query semantically and determine:
-1. Intent: One of TRADE, QUERY, ANALYSIS, INDICATOR_QUERY, TRADING_OPPORTUNITIES, GAP_ANALYSIS, PREDICTION, or CONVERSATION
+1. Intent: One of TRADE, QUERY, ANALYSIS, INDICATOR_QUERY, TRADING_OPPORTUNITIES, GAP_ANALYSIS, PREDICTION, SIMULATION, or CONVERSATION
 2. Extract all relevant entities from the query
 
 Intent categories:
@@ -146,11 +148,12 @@ Intent categories:
 - TRADING_OPPORTUNITIES: User asks about historical trade possibilities (e.g., "what trades today in reliance")
 - GAP_ANALYSIS: User asks about opening gaps (e.g., "gapup or gapdown tomorrow")
 - PREDICTION: User asks for future price movements (e.g., "where will reliance be next week")
+- SIMULATION: User wants to download data or run simulation (e.g., "download data for yesterday", "run simulation")
 - CONVERSATION: General greetings, small talk, or help (e.g., "hi", "hello", "who are you", "help")
 
 Respond ONLY with valid JSON, no other text:
 {{
-    "intent": "TRADE|QUERY|ANALYSIS|TRADING_OPPORTUNITIES|GAP_ANALYSIS|PREDICTION|CONVERSATION",
+    "intent": "TRADE|QUERY|ANALYSIS|TRADING_OPPORTUNITIES|GAP_ANALYSIS|PREDICTION|SIMULATION|CONVERSATION",
     "entities": {{
         "instrument": "instrument name or group if mentioned (e.g., reliance, nifty, tcs, top 10 nifty50 stocks).",
         "date": "date or period mentioned (YYYY-MM-DD, 'today', 'tomorrow', 'yesterday', 'last 1 week', 'last 5 days', 'this month', 'last 1 month'). LEAVE EMPTY if not mentioned.",
@@ -195,6 +198,8 @@ Respond ONLY with valid JSON, no other text:
                     intent = "TRADING_OPPORTUNITIES"
                 elif "GAP_ANALYSIS" in content.upper() or "gap" in user_query.lower():
                     intent = "GAP_ANALYSIS"
+                elif "download" in user_query.lower() or "simulation" in user_query.lower() or "simulate" in user_query.lower():
+                    intent = "SIMULATION"
                 elif "hi" in user_query.lower() or "hello" in user_query.lower():
                     intent = "CONVERSATION"
                 else:
@@ -259,11 +264,14 @@ Available tools include:
 - find_indicator_based_trading_opportunities: Find trading opportunities using the Institutional VWAP Strategy. 
   This is the ONLY strategy used for trade decisions. 
   Default interval is "5minute" (5-minute candles). 
-  Supports date ranges (e.g., "last 1 week", "last 5 days", "this month").
+  Supports date ranges (e.g., "last 1 week", "last 5 days").
+  CRITICAL: This tool can take a 'local_data_file' parameter to run offline simulations. LEAVE 'local_data_file' EMPTY if you don't know the path; the system will fill it automatically.
 - analyze_gap_probability: Analyze gap up/down probability for opening
 - get_positions_tool: Get current positions
 - get_balance_tool: Get account balance
 - get_portfolio_summary_tool: Get portfolio summary
+- download_historical_data_to_local_tool: Download market data for offline simulation
+- run_simulation_on_local_data_tool: Run a simulated trading session on local data
 
 STRICT TOOL SELECTION RULES:
 1. If Intent is TRADING_OPPORTUNITIES, you MUST call 'find_indicator_based_trading_opportunities'.
@@ -271,6 +279,8 @@ STRICT TOOL SELECTION RULES:
 3. If Intent is ANALYSIS, use 'get_quote_tool', 'analyze_trend_tool', or 'calculate_indicators_tool'.
 4. If Intent is QUERY and the user asks for balance/positions, use 'get_positions_tool' or 'get_balance_tool'.
 5. If the user asks for "trades", "what trades", or "opportunities", you MUST use 'find_indicator_based_trading_opportunities'.
+6. If Intent is SIMULATION and user asks to "download", use 'download_historical_data_to_local_tool'.
+7. If the user asks to "run simulation", "simulate", or "what trades on local data", you MUST call 'run_simulation_on_local_data_tool' and LEAVE 'file_path' EMPTY.
 
 Extract instrument names or groups (e.g., "top 10 nifty50 stocks") from the query.
 Call the tools with proper parameters. You can call multiple tools if needed.
@@ -374,6 +384,8 @@ def execute_tools_node(state: AgentState) -> AgentState:
         "find_indicator_based_trading_opportunities": find_indicator_based_trading_opportunities,
         "analyze_gap_probability": analyze_gap_probability,
         "find_candlestick_patterns": find_candlestick_patterns,
+        "download_historical_data_to_local_tool": download_historical_data_to_local_tool,
+        "run_simulation_on_local_data_tool": run_simulation_on_local_data_tool,
     }
     
     for tool_call in tool_calls:
@@ -426,6 +438,49 @@ def execute_tools_node(state: AgentState) -> AgentState:
                 
                 # 3. TOOL-SPECIFIC OVERRIDES
                 if tool_name == "find_indicator_based_trading_opportunities":
+                    # SMART LOCAL FILE PICKING: If path is generic placeholder OR empty, and requested simulation
+                    current_path = tool_args.get("local_data_file", "")
+                    if (not current_path or "path_from" in str(current_path)) and "simulation" in user_query.lower():
+                        import os
+                        sim_dir = "data/simulation"
+                        if os.path.exists(sim_dir):
+                            files = sorted([f for f in os.listdir(sim_dir) if f.endswith(".json")], reverse=True)
+                            if files:
+                                tool_args["local_data_file"] = os.path.join(sim_dir, files[0])
+                                print(f"[DEBUG] execute_tools_node | Auto-selected local data file: {tool_args['local_data_file']}")
+                                
+                                # SMART INTERVAL PICKING: Detect '5minute' or 'minute' correctly
+                                if "5minute" in files[0]:
+                                    tool_args["interval"] = "5minute"
+                                    print(f"[DEBUG] execute_tools_node | Auto-selected interval '5minute'")
+                                elif "minute" in files[0]:
+                                    tool_args["interval"] = "minute"
+                                    print(f"[DEBUG] execute_tools_node | Auto-selected interval 'minute'")
+                                
+                                # SMART INSTRUMENT PICKING: If no instruments provided, extract them from the simulation file
+                                if not tool_args.get("instrument_name"):
+                                    try:
+                                        import json
+                                        with open(tool_args["local_data_file"], "r") as f:
+                                            sim_json = json.load(f)
+                                            sim_instruments = list(sim_json.get("data", {}).keys())
+                                            if sim_instruments:
+                                                tool_args["instrument_name"] = sim_instruments
+                                                print(f"[DEBUG] execute_tools_node | Auto-selected instruments from file: {sim_instruments}")
+                                    except Exception as e:
+                                        print(f"[DEBUG] execute_tools_node | Error reading instruments from sim file: {e}")
+
+                elif tool_name == "run_simulation_on_local_data_tool":
+                    # SMART LOCAL FILE PICKING FOR WRAPPER
+                    if not tool_args.get("file_path"):
+                        import os
+                        sim_dir = "data/simulation"
+                        if os.path.exists(sim_dir):
+                            files = sorted([f for f in os.listdir(sim_dir) if f.endswith(".json")], reverse=True)
+                            if files:
+                                tool_args["file_path"] = os.path.join(sim_dir, files[0])
+                                print(f"[DEBUG] execute_tools_node | Auto-selected wrapper file: {tool_args['file_path']}")
+
                     if not tool_args.get("indicators") and entities.get("indicators"):
                         tool_args["indicators"] = entities.get("indicators")
                     if not tool_args.get("conditions") and entities.get("conditions"):
@@ -607,7 +662,7 @@ def generate_response_node(state: AgentState) -> AgentState:
             tool_result = result.get("result", {})
             if tool_result.get("status") == "success":
                 # Format successful results
-                if tool_name == "find_indicator_based_trading_opportunities":
+                if tool_name in ["find_indicator_based_trading_opportunities", "run_simulation_on_local_data_tool"]:
                     # Handle Sequential Global Analysis (Multi-instrument)
                     if tool_result.get("is_sequential"):
                         total_opps = tool_result.get("total_opportunities", 0)
@@ -740,18 +795,19 @@ Generate a professional response based on the tool results.
 WE ONLY USE THE INSTITUTIONAL VWAP STRATEGY FOR ALL TRADE DECISIONS.
 
 STRICT INSTRUCTIONS:
-1. If the results contain multiple instruments, provide a combined strategy summary followed by detailed sections for each instrument that had trades.
-2. For each instrument with trades, format them clearly in a Markdown table.
-3. If no trades were found across any instruments, explain that the VWAP setup (Price near VWAP + RSI pullback + Candle pattern) was not triggered.
+1. If the results contain multiple instruments OR a sequential simulation, provide a combined strategy summary followed by the full chronological trade table.
+2. For sequential simulations, you MUST include the "Available Funds" column to show the compounding effect.
+3. If no trades were found, explain that the VWAP setup was not triggered during the specific window (9:45 AM - 3:00 PM).
 4. Use **bold** for important values (prices, symbols, P&L).
 5. CRITICAL: Always include the full trade details (Entry, Exit, P&L) in a table if trades are present. 
-6. DO NOT TRIM OR TRUNCATE THE TABLE. YOU MUST LIST EVERY SINGLE TRADE FOUND IN THE TOOL RESULTS. DO NOT USE "..." OR "TRUNCATED FOR BREVITY".
+6. DO NOT TRIM OR TRUNCATE THE TABLE. YOU MUST LIST EVERY SINGLE TRADE FOUND.
 7. Use professional trading terminology."""
         
+        results_summary_str = chr(10).join(results_summary) if results_summary else 'No tool results'
         user_prompt = f"""User asked: {user_query}
 
 Tool Results:
-{chr(10).join(results_summary) if results_summary else 'No tool results'}
+{results_summary_str}
 
 Generate a helpful response. 
 CRITICAL: If the tool results contain a detailed trade table or data list, you MUST include that table/list in your final response. 
@@ -766,6 +822,17 @@ You can add a brief summary before and after the table."""
         response = llm.invoke(messages)
         agent_response = response.content
         
+        # MANDATORY TABLE OVERRIDE: If the LLM somehow forgot the table, append it manually
+        if "### Chronological Trade List" in results_summary_str and "### Chronological Trade List" not in agent_response:
+            print("[DEBUG] generate_response_node | LLM omitted table, appending manually")
+            # Extract the table part from results_summary
+            table_part = results_summary_str.split("### Chronological Trade List")[1]
+            agent_response += "\n\n### Chronological Trade List" + table_part
+        elif "Detailed Trade List:" in results_summary_str and "Detailed Trade List:" not in agent_response:
+            print("[DEBUG] generate_response_node | LLM omitted table, appending manually")
+            table_part = results_summary_str.split("Detailed Trade List:")[1]
+            agent_response += "\n\nDetailed Trade List:" + table_part
+
         # Add approval notice if needed
         if requires_approval:
             agent_response += f"\n\n⚠️ This action requires your approval. Approval ID: {approval_id}"
@@ -779,9 +846,28 @@ You can add a brief summary before and after the table."""
             tool_result = result.get("result", {})
             if tool_result.get("status") == "success":
                 tool_name = result.get("tool", "")
-                if tool_name == "find_indicator_based_trading_opportunities":
-                    # Handle single or multiple instruments
-                    if "results" in tool_result:
+                if tool_name in ["find_indicator_based_trading_opportunities", "run_simulation_on_local_data_tool"]:
+                    # Handle Sequential Global Analysis (Multi-instrument)
+                    if tool_result.get("is_sequential"):
+                        total_opps = tool_result.get("total_opportunities", 0)
+                        total_pnl = tool_result.get("total_pnl", 0)
+                        opportunities = tool_result.get("opportunities", [])
+                        
+                        response_parts.append(f"**Global Sequential Analysis** across {tool_result.get('instruments_analyzed')} stocks:")
+                        response_parts.append(f"  • Total Trades: {total_opps}")
+                        response_parts.append(f"  • Combined P&L: **₹{total_pnl:.2f}**")
+                        
+                        if opportunities:
+                            response_parts.append("\n### Chronological Trade List (Sequential Capital Use)")
+                            response_parts.append("| # | Stock | Type | Qty | Entry Price | Entry Time | Exit Price | Exit Time | P&L | Available Funds |")
+                            response_parts.append("|---|-------|------|-----|-------------|------------|------------|-----------|-----|-----------------|")
+                            for i, opp in enumerate(opportunities, 1):
+                                response_parts.append(f"| {i} | {opp.get('instrument')} | **{opp.get('signal_type')}** | {opp.get('suggested_quantity')} | {opp.get('entry_price'):.2f} | {opp.get('entry_time')} | {opp.get('exit_price'):.2f} | {opp.get('exit_time')} | ₹{opp.get('pnl'):.2f} | **₹{opp.get('available_funds'):.2f}** |")
+                        else:
+                            response_parts.append(f"No sequential trades found.")
+                    
+                    # Handle siloed results (fallback or single instrument)
+                    elif "results" in tool_result:
                         # Multiple instruments
                         results_data = tool_result.get("results", {})
                         total_opps = tool_result.get("total_opportunities", 0)
@@ -893,6 +979,16 @@ You can add a brief summary before and after the table."""
                         response_parts.append(f"  • Likely Direction: {prob.get('likely_direction')}")
                         response_parts.append(f"  • Probability: {prob.get('probability', 0):.1f}%")
                         response_parts.append(f"  • Expected Gap: {prob.get('estimated_gap_percentage', 0):.2f}%")
+                elif tool_name == "download_historical_data_to_local_tool":
+                    response_parts.append(f"✓ **Data Download Successful**")
+                    response_parts.append(f"  • File: `{tool_result.get('file_path')}`")
+                    response_parts.append(f"  • Instruments: {', '.join(tool_result.get('instruments', []))}")
+                    response_parts.append(f"  • Total Candles: {tool_result.get('total_candles')}")
+                elif tool_name == "run_simulation_on_local_data_tool":
+                    response_parts.append(f"✓ **Simulation Loaded**")
+                    response_parts.append(f"  • File: `{tool_result.get('metadata', {}).get('file_path') or 'Local Data'}`")
+                    response_parts.append(f"  • Instruments: {', '.join(tool_result.get('instruments', []))}")
+                    response_parts.append(f"  • Instruction: {tool_result.get('instruction')}")
                 else:
                     response_parts.append(f"✓ {result.get('tool')} completed")
             else:

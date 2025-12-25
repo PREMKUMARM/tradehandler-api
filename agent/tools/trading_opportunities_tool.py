@@ -216,15 +216,13 @@ def is_rejection_candle(open_p: float, high: float, low: float, close: float, ca
     if candle_range == 0: return False
     
     if candle_type == "BULLISH":
-        # Hammer/Pin Bar: Lower shadow should be at least 45% of total range
+        # Hammer/Pin Bar: Lower shadow should be at least 35% of total range (relaxed from 45%)
         lower_shadow = min(open_p, close) - low
-        # Body should be in the upper half of the candle
-        return (lower_shadow >= candle_range * 0.45) and (close > low + candle_range * 0.4)
+        return (lower_shadow >= candle_range * 0.35) and (close > low + candle_range * 0.3)
     else:
-        # Shooting Star: Upper shadow should be at least 45% of total range
+        # Shooting Star: Upper shadow should be at least 35% of total range
         upper_shadow = high - max(open_p, close)
-        # Body should be in the lower half of the candle
-        return (upper_shadow >= candle_range * 0.45) and (close < high - candle_range * 0.4)
+        return (upper_shadow >= candle_range * 0.35) and (close < high - candle_range * 0.3)
 
 
 def is_engulfing(curr_o, curr_c, prev_o, prev_c, candle_type="BULLISH"):
@@ -247,7 +245,8 @@ def find_indicator_based_trading_opportunities(
     exchange: str = "NSE",
     use_risk_reward: bool = True,
     stop_loss_pct: Optional[float] = None,
-    take_profit_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None,
+    local_data_file: Optional[str] = None
 ) -> dict:
     """
     Find trading opportunities based on single or multiple indicator conditions.
@@ -265,6 +264,7 @@ def find_indicator_based_trading_opportunities(
         use_risk_reward: Whether to use configured risk/reward ratios for exit calculation
         stop_loss_pct: Custom stop loss percentage (overrides config if provided)
         take_profit_pct: Custom take profit percentage (overrides config if provided)
+        local_data_file: Optional path to a local JSON data file (offline simulation)
         
     Returns:
         dict with trading opportunities including entry/exit suggestions with risk management
@@ -272,119 +272,77 @@ def find_indicator_based_trading_opportunities(
     try:
         config = get_agent_config()
         
-        # Normalize to list
+        # 1. Resolve instruments (handle groups)
         if isinstance(instrument_name, str):
-            instrument_names = [instrument_name]
+            inst_lower = instrument_name.lower().strip()
+            from agent.tools.instrument_resolver import INSTRUMENT_GROUPS
+            if inst_lower in INSTRUMENT_GROUPS:
+                instrument_names = INSTRUMENT_GROUPS[inst_lower]
+            else:
+                instrument_names = [instrument_name]
         else:
             instrument_names = instrument_name
         
-        # Parse dates
-        if from_date and to_date:
-            start_dt = datetime.strptime(from_date, "%Y-%m-%d").date()
-            end_dt = datetime.strptime(to_date, "%Y-%m-%d").date()
-        elif from_date:
-            start_dt = datetime.strptime(from_date, "%Y-%m-%d").date()
-            end_dt = datetime.now().date()
-        elif date:
-            start_dt = datetime.strptime(date, "%Y-%m-%d").date()
-            end_dt = start_dt
-        else:
-            start_dt = datetime.now().date()
-            end_dt = start_dt
-        
-        # Normalize indicators and conditions to lists
-        if isinstance(indicators, str):
-            indicators = [indicators]
-        if isinstance(conditions, str):
-            conditions = [conditions]
-        
-        # Ensure conditions match indicators
-        if len(conditions) < len(indicators):
-            conditions = conditions + [conditions[-1]] * (len(indicators) - len(conditions))
-        
+        # Load local data if provided
+        local_data = None
+        sim_metadata = {}
+        if local_data_file:
+            import json
+            import os
+            if os.path.exists(local_data_file):
+                with open(local_data_file, "r") as f:
+                    sim_json = json.load(f)
+                    local_data = sim_json.get("data", {})
+                    sim_metadata = sim_json.get("metadata", {})
+                    print(f"[DEBUG] Trading Opportunities | Loaded local data from {local_data_file}")
+                    
+                    # SMART DATE PICKING: If simulating local data, use the dates from the file
+                    if not from_date and not date and sim_metadata.get("from_date"):
+                        start_dt = datetime.strptime(sim_metadata["from_date"], "%Y-%m-%d").date()
+                        end_dt = datetime.strptime(sim_metadata.get("to_date", sim_metadata["from_date"]), "%Y-%m-%d").date()
+                        print(f"[DEBUG] Trading Opportunities | Auto-selected dates from sim file: {start_dt} to {end_dt}")
+            else:
+                print(f"[DEBUG] Trading Opportunities | Local data file {local_data_file} not found")
+
         kite = get_kite_instance()
         
         # Helper function to process single instrument
         def process_instrument(inst_name):
-            # Resolve instrument name - allow multiple matches for broad names like "adani"
-            resolved = resolve_instrument_name(inst_name, exchange, return_multiple=True)
-            
-            if not resolved:
-                return {
-                    "status": "error",
-                    "error": f"Instrument '{inst_name}' not found"
-                }
-            
-            # If broad name provided (e.g., "adani"), and it's just one item, use it.
-            # If multiple items found, and the user only provided one name, 
-            # we should probably analyze the top ones (e.g., top 3)
-            instruments_to_process = resolved[:3] if len(resolved) > 1 else resolved
-            
-            if len(instruments_to_process) > 1:
-                # If we found multiple instruments for this name, recurse or handle here
-                multi_results = {}
-                for info in instruments_to_process:
-                    symbol = info["tradingsymbol"]
-                    token = info["instrument_token"]
-                    
-                    # Fetch slightly more data to ensure we have enough for indicators (lookback)
-                    fetch_start = start_dt - timedelta(days=5) # 5 days back to be safe for weekends/holidays
-                    
-                    try:
-                        data = kite.historical_data(
-                            instrument_token=token,
-                            from_date=fetch_start,
-                            to_date=end_dt,
-                            interval=interval
-                        )
-                        
-                        # Filter to only include the target date for the actual opportunities
-                        # but keep the full data for indicator calculation
-                        df_all = pd.DataFrame(data)
-                        if df_all.empty:
-                            multi_results[symbol] = {"status": "error", "error": "No data available"}
-                            continue
-                            
-                        # Calculate indicators on the full data set
-                        # ... (this part is complex to duplicate, so let's refactor the core logic)
-                        
-                    except Exception as e:
-                        multi_results[symbol] = {"status": "error", "error": str(e)}
-                
-                # To keep it simple for now, let's just pick the first one but with better data fetching
-                instrument_info = instruments_to_process[0]
+            # Check local data first
+            if local_data and inst_name in local_data:
+                historical_data_all = local_data[inst_name]
+                # Convert back to datetime if needed or handle as ISO strings
+                import pandas as pd
+                df_all = pd.DataFrame(historical_data_all)
+                df_all['date'] = pd.to_datetime(df_all['date'])
+                df_all['date_only'] = df_all['date'].dt.date
+                tradingsymbol = inst_name
+                instrument_info = {"tradingsymbol": inst_name}
             else:
-                instrument_info = instruments_to_process[0]
-            
-            instrument_token = instrument_info["instrument_token"]
-            tradingsymbol = instrument_info["tradingsymbol"]
-            print(f"[DEBUG] Trading Opportunities | Processing {tradingsymbol} (Token: {instrument_token}) from {start_dt} to {end_dt}")
-            
-            # Fetch data with lookback to avoid "insufficient data"
-            if interval == "day":
-                fetch_start = start_dt - timedelta(days=200) # More lookback for day interval
-            else:
-                fetch_start = start_dt - timedelta(days=5) # 5 days back for minute intervals to cover weekends/holidays
+                # Resolve instrument name
+                resolved = resolve_instrument_name(inst_name, exchange, return_multiple=False)
+                if not resolved:
+                    return {"status": "error", "error": f"Instrument '{inst_name}' not found"}
                 
-            historical_data_all = kite.historical_data(
-                instrument_token=instrument_token,
-                from_date=fetch_start,
-                to_date=end_dt,
-                interval=interval
-            )
-            
-            if not historical_data_all:
-                return {
-                    "status": "error",
-                    "error": f"No data found for {instrument_info['tradingsymbol']} from {start_dt} to {end_dt}"
-                }
+                instrument_token = resolved["instrument_token"]
+                tradingsymbol = resolved["tradingsymbol"]
+                
+                # Fetch data with lookback
+                if interval == "day":
+                    fetch_start = start_dt - timedelta(days=200)
+                else:
+                    fetch_start = start_dt - timedelta(days=5)
+                
+                historical_data_all = kite.historical_data(instrument_token, fetch_start, end_dt, interval)
+                if not historical_data_all:
+                    return {"status": "error", "error": f"No data found for {tradingsymbol}"}
+                
+                import pandas as pd
+                df_all = pd.DataFrame(historical_data_all)
+                df_all['date_only'] = pd.to_datetime(df_all['date']).dt.date
 
-            # Filter data to only include the target range for the final results, 
-            # but keep history for indicator calculation
-            import pandas as pd
-            df_all = pd.DataFrame(historical_data_all)
-            df_all['date_only'] = pd.to_datetime(df_all['date']).dt.date
-            
+            # ... rest of the single instrument logic continues ...
+
             # Check if we have data within the target range
             df_target = df_all[(df_all['date_only'] >= start_dt) & (df_all['date_only'] <= end_dt)]
             
@@ -466,43 +424,45 @@ def find_indicator_based_trading_opportunities(
                 elif price < e50 and price < e200:
                     regime = "DOWNTREND"
                 
-                # --- SESSION FILTER (Recommended 11:00 - 1:30) ---
-                curr_time = row['date'].time()
-                is_prime_session = datetime.strptime("11:00", "%H:%M").time() <= curr_time <= datetime.strptime("13:30", "%H:%M").time()
+                # --- PRIME SESSION FILTER (10:15 AM - 02:45 PM) ---
+                # We avoid the extreme volatile open (9:15-10:15) and erratic closing (after 14:45)
+                is_trade_window = datetime.strptime("10:15", "%H:%M").time() <= curr_time <= datetime.strptime("14:45", "%H:%M").time()
                 
                 # --- ONLY STRATEGY: INSTITUTIONAL VWAP + RSI ---
                 signal_type = None
                 signal_reason = ""
                 
-                current_rsi = rsi_values[idx]
-                prev_rsi = rsi_values[idx-1]
-                v_price = vwap[idx]
-                
-                # Check near VWAP (within 0.35% to capture more pullbacks)
-                is_near_vwap = abs(price - v_price) / v_price <= 0.0035
-                
-                if is_near_vwap:
-                    if price > v_price: # Potential BUY (Uptrend)
-                        # RSI Filter: RSI should be below 45 during pullback (slightly more inclusive)
-                        if current_rsi < 45: 
-                            bullish_rejection = is_rejection_candle(opens[idx], highs[idx], lows[idx], closes[idx], "BULLISH")
-                            bullish_engulfing = is_engulfing(opens[idx], closes[idx], opens[idx-1], closes[idx-1], "BULLISH")
-                            rsi_turning_up = current_rsi > prev_rsi
-                            
-                            if (bullish_rejection or bullish_engulfing) and rsi_turning_up:
-                                signal_type = "BUY"
-                                signal_reason = f"Institutional VWAP: Bullish @ VWAP + RSI {current_rsi:.1f} Turn Up"
+                # ONLY ENTER DURING THE TRADE WINDOW
+                if is_trade_window:
+                    current_rsi = rsi_values[idx]
+                    prev_rsi = rsi_values[idx-1]
+                    v_price = vwap[idx]
                     
-                    elif price < v_price: # Potential SELL (Downtrend)
-                        # RSI Filter: RSI should be above 55 during pullback
-                        if current_rsi > 55:
-                            bearish_rejection = is_rejection_candle(opens[idx], highs[idx], lows[idx], closes[idx], "BEARISH")
-                            bearish_engulfing = is_engulfing(opens[idx], closes[idx], opens[idx-1], closes[idx-1], "BEARISH")
-                            rsi_turning_down = current_rsi < prev_rsi
-                            
-                            if (bearish_rejection or bearish_engulfing) and rsi_turning_down:
-                                signal_type = "SELL"
-                                signal_reason = f"Institutional VWAP: Bearish @ VWAP + RSI {current_rsi:.1f} Turn Down"
+                    # Check near VWAP (widened to 0.5% from 0.35%)
+                    is_near_vwap = abs(price - v_price) / v_price <= 0.005
+                    
+                    if is_near_vwap:
+                        if price > v_price: # Potential BUY (Uptrend)
+                            # RSI Filter: RSI should be below 45 during pullback (slightly more inclusive)
+                            if current_rsi < 45: 
+                                bullish_rejection = is_rejection_candle(opens[idx], highs[idx], lows[idx], closes[idx], "BULLISH")
+                                bullish_engulfing = is_engulfing(opens[idx], closes[idx], opens[idx-1], closes[idx-1], "BULLISH")
+                                rsi_turning_up = current_rsi > prev_rsi
+                                
+                                if (bullish_rejection or bullish_engulfing) and rsi_turning_up:
+                                    signal_type = "BUY"
+                                    signal_reason = f"Institutional VWAP: Bullish @ VWAP + RSI {current_rsi:.1f} Turn Up"
+                        
+                        elif price < v_price: # Potential SELL (Downtrend)
+                            # RSI Filter: RSI should be above 55 during pullback
+                            if current_rsi > 55:
+                                bearish_rejection = is_rejection_candle(opens[idx], highs[idx], lows[idx], closes[idx], "BEARISH")
+                                bearish_engulfing = is_engulfing(opens[idx], closes[idx], opens[idx-1], closes[idx-1], "BEARISH")
+                                rsi_turning_down = current_rsi < prev_rsi
+                                
+                                if (bearish_rejection or bearish_engulfing) and rsi_turning_down:
+                                    signal_type = "SELL"
+                                    signal_reason = f"Institutional VWAP: Bearish @ VWAP + RSI {current_rsi:.1f} Turn Down"
 
                 if signal_type:
                     entry_price = price
@@ -569,10 +529,11 @@ def find_indicator_based_trading_opportunities(
                                 exit_reason = "RSI Oversold reached"
                                 break
                         
-                        # 2. End of Day Exit
-                        if df_all.iloc[search_idx]['date_only'] != curr_date_only:
+                        # 2. End of Day Exit (Intraday Square-off at 3:15 PM)
+                        row_date = df_all.iloc[search_idx]['date']
+                        if row_date.time() >= datetime.strptime("15:15", "%H:%M").time() or df_all.iloc[search_idx]['date_only'] != curr_date_only:
                             exit_price = curr_p
-                            exit_reason = "End of Day"
+                            exit_reason = "3:15 PM Square-off" if row_date.time() >= datetime.strptime("15:15", "%H:%M").time() else "End of Day"
                             break
                     
                     if exit_price is None:
@@ -591,7 +552,7 @@ def find_indicator_based_trading_opportunities(
                     
                     opportunities.append({
                         "signal_type": signal_type,
-                        "signal_reason": signal_reason + ( " [Prime]" if is_prime_session else "" ),
+                        "signal_reason": signal_reason + ( " [Prime]" if is_trade_window else "" ),
                         "entry_time": str(entry_time),
                         "entry_price": float(entry_price),
                         "stop_loss_price": float(stop_loss_price),
@@ -662,42 +623,62 @@ def find_indicator_based_trading_opportunities(
             print(f"[DEBUG] Starting Global Sequential Analysis for {len(instrument_names)} instruments")
             
             all_instrument_data = {}
+            print(f"[DEBUG] Local data keys: {list(local_data.keys()) if local_data else 'None'}")
+            print(f"[DEBUG] Target instruments: {instrument_names}")
+            print(f"[DEBUG] Target range: {start_dt} to {end_dt}")
+
             for inst_name in instrument_names:
-                # Reuse resolve logic
-                resolved = resolve_instrument_name(inst_name, exchange, return_multiple=False)
-                if not resolved: continue
-                
-                token = resolved["instrument_token"]
-                symbol = resolved["tradingsymbol"]
-                
-                # Fetch data with lookback
-                if interval == "day":
-                    fetch_start = start_dt - timedelta(days=200)
-                else:
-                    fetch_start = start_dt - timedelta(days=5)
-                
-                try:
-                    data = kite.historical_data(token, fetch_start, end_dt, interval)
-                    if not data: continue
-                    
+                # Check local data first
+                if local_data and inst_name in local_data:
+                    data = local_data[inst_name]
                     df = pd.DataFrame(data)
                     df['date'] = pd.to_datetime(df['date'])
                     df['date_only'] = df['date'].dt.date
-                    df['symbol'] = symbol
+                    df['symbol'] = inst_name
+                    symbol = inst_name
+                    print(f"[DEBUG] Loaded {len(df)} candles for {symbol} from local data")
+                else:
+                    # Resolve instrument name
+                    resolved = resolve_instrument_name(inst_name, exchange, return_multiple=False)
+                    if not resolved: 
+                        print(f"[DEBUG] Could not resolve {inst_name}")
+                        continue
                     
-                    # Calculate indicators for this instrument
-                    closes = df['close'].values.tolist()
-                    df['rsi'] = calculate_rsi(closes)
-                    df['vwap'] = calculate_vwap(df)
-                    df['prev_rsi'] = df['rsi'].shift(1)
-                    df['prev_open'] = df['open'].shift(1)
-                    df['prev_close'] = df['close'].shift(1)
+                    token = resolved["instrument_token"]
+                    symbol = resolved["tradingsymbol"]
                     
-                    # Store processed data (only target range)
-                    df_target = df[(df['date_only'] >= start_dt) & (df['date_only'] <= end_dt)]
-                    if not df_target.empty:
-                        all_instrument_data[symbol] = df_target
-                except: continue
+                    # Fetch data with lookback
+                    if interval == "day":
+                        fetch_start = start_dt - timedelta(days=200)
+                    else:
+                        fetch_start = start_dt - timedelta(days=5)
+                    
+                    try:
+                        print(f"[DEBUG] Fetching {symbol} from Kite...")
+                        data = kite.historical_data(token, fetch_start, end_dt, interval)
+                        if not data: continue
+                        df = pd.DataFrame(data)
+                        df['date'] = pd.to_datetime(df['date'])
+                        df['date_only'] = df['date'].dt.date
+                        df['symbol'] = symbol
+                    except Exception as fe:
+                        print(f"[DEBUG] Kite fetch failed for {symbol}: {fe}")
+                        continue
+                
+                # Calculate indicators for this instrument
+                closes = df['close'].values.tolist()
+                df['rsi'] = calculate_rsi(closes)
+                df['vwap'] = calculate_vwap(df)
+                df['prev_rsi'] = df['rsi'].shift(1)
+                df['prev_open'] = df['open'].shift(1)
+                df['prev_close'] = df['close'].shift(1)
+                
+                # Store processed data (only target range)
+                print(f"[DEBUG] {symbol} | Data Date Range in file: {df['date_only'].min()} to {df['date_only'].max()}")
+                df_target = df[(df['date_only'] >= start_dt) & (df['date_only'] <= end_dt)]
+                print(f"[DEBUG] {symbol} | Target data size: {len(df_target)}")
+                if not df_target.empty:
+                    all_instrument_data[symbol] = df_target
 
             if not all_instrument_data:
                 return {"status": "error", "error": "No data found for any instruments in the group"}
@@ -745,9 +726,9 @@ def find_indicator_based_trading_opportunities(
                         elif not pd.isna(curr_rsi) and curr_rsi < 30:
                             exit_triggered, exit_price, exit_reason = True, curr_p, "RSI Oversold reached"
                     
-                    # End of Day Exit (Intraday only)
-                    if not exit_triggered and curr_date_only != active_trade['entry_date_only']:
-                        exit_triggered, exit_price, exit_reason = True, curr_p, "End of Day"
+                    # End of Day Exit (Intraday Square-off at 3:15 PM)
+                    if not exit_triggered and (timestamp.time() >= datetime.strptime("15:15", "%H:%M").time() or curr_date_only != active_trade['entry_date_only']):
+                        exit_triggered, exit_price, exit_reason = True, curr_p, "3:15 PM Square-off" if timestamp.time() >= datetime.strptime("15:15", "%H:%M").time() else "End of Day"
                     
                     if exit_triggered:
                         # Record the trade
@@ -776,64 +757,69 @@ def find_indicator_based_trading_opportunities(
                     continue 
 
                 # 2. If NOT in a trade, check for signals across ALL instruments in this candle
-                for _, row in group.iterrows():
-                    symbol = row['symbol']
-                    price = row['close']
-                    v_price = row['vwap']
-                    current_rsi = row['rsi']
-                    prev_rsi = row['prev_rsi']
-                    
-                    if pd.isna(v_price) or pd.isna(current_rsi): continue
-                    
-                    # More inclusive zone for multi-stock scan (0.5%)
-                    is_near_vwap = abs(price - v_price) / v_price <= 0.005
-                    
-                    if is_near_vwap:
-                        signal_type = None
-                        if price > v_price and current_rsi < 50: # Potential BUY
-                            bullish_rejection = is_rejection_candle(row['open'], row['high'], row['low'], row['close'], "BULLISH")
-                            bullish_engulfing = is_engulfing(row['open'], row['close'], row['prev_open'], row['prev_close'], "BULLISH")
-                            rsi_turning_up = True if pd.isna(prev_rsi) else current_rsi > prev_rsi
-                            
-                            if (bullish_rejection or bullish_engulfing) and rsi_turning_up:
-                                signal_type = "BUY"
-                        elif price < v_price and current_rsi > 50: 
-                            bearish_rejection = is_rejection_candle(row['open'], row['high'], row['low'], row['close'], "BEARISH")
-                            bearish_engulfing = is_engulfing(row['open'], row['close'], row['prev_open'], row['prev_close'], "BEARISH")
-                            rsi_turning_down = True if pd.isna(prev_rsi) else current_rsi < prev_rsi
-                            
-                            if (bearish_rejection or bearish_engulfing) and rsi_turning_down:
-                                signal_type = "SELL"
+                # --- PRIME SESSION FILTER (10:15 AM - 02:45 PM) ---
+                curr_time = timestamp.time()
+                is_trade_window = datetime.strptime("10:15", "%H:%M").time() <= curr_time <= datetime.strptime("14:45", "%H:%M").time()
+                
+                if is_trade_window:
+                    for _, row in group.iterrows():
+                        symbol = row['symbol']
+                        price = row['close']
+                        v_price = row['vwap']
+                        current_rsi = row['rsi']
+                        prev_rsi = row['prev_rsi']
                         
-                        if signal_type:
-                            print(f"[DEBUG] Global Scan | Found {signal_type} Signal for {symbol} at {timestamp}")
-                            # Found a valid signal! Enter and lock capital.
-                            entry_price = price
+                        if pd.isna(v_price) or pd.isna(current_rsi): continue
+                        
+                        # More inclusive zone for multi-stock scan (0.75% widened from 0.5%)
+                        is_near_vwap = abs(price - v_price) / v_price <= 0.0075
+
+                        if is_near_vwap:
+                            signal_type = None
+                            if price > v_price and current_rsi < 50: # Potential BUY
+                                bullish_rejection = is_rejection_candle(row['open'], row['high'], row['low'], row['close'], "BULLISH")
+                                bullish_engulfing = is_engulfing(row['open'], row['close'], row['prev_open'], row['prev_close'], "BULLISH")
+                                rsi_turning_up = True if pd.isna(prev_rsi) else current_rsi > prev_rsi
+                                
+                                if (bullish_rejection or bullish_engulfing) and rsi_turning_up:
+                                    signal_type = "BUY"
+                            elif price < v_price and current_rsi > 50: 
+                                bearish_rejection = is_rejection_candle(row['open'], row['high'], row['low'], row['close'], "BEARISH")
+                                bearish_engulfing = is_engulfing(row['open'], row['close'], row['prev_open'], row['prev_close'], "BEARISH")
+                                rsi_turning_down = True if pd.isna(prev_rsi) else current_rsi < prev_rsi
+                                
+                                if (bearish_rejection or bearish_engulfing) and rsi_turning_down:
+                                    signal_type = "SELL"
                             
-                            # Calculate SL/TP
-                            rr_ratio = config.reward_per_trade_pct / config.risk_per_trade_pct
-                            if signal_type == "BUY":
-                                sl = min(v_price * 0.998, entry_price * 0.995)
-                                tp = entry_price + (abs(entry_price - sl) * rr_ratio)
-                            else:
-                                sl = max(v_price * 1.002, entry_price * 1.005)
-                                tp = entry_price - (abs(sl - entry_price) * rr_ratio)
-                            
-                            # SMART POSITION SIZING: Use 'current_capital' (includes previous gains/losses)
-                            # This implements compounding and loss-based scaling.
-                            ps = suggest_position_size_tool.invoke({
-                                "entry_price": entry_price, "stop_loss_price": sl,
-                                "available_capital": current_capital, # Use current dynamic funds
-                                "risk_percentage": config.risk_per_trade_pct
-                            })
-                            
-                            active_trade = {
-                                "symbol": symbol, "type": signal_type, "entry_price": entry_price,
-                                "entry_time": timestamp, "entry_date_only": row['date_only'],
-                                "sl": sl, "tp": tp, "qty": ps.get("suggested_quantity", 1),
-                                "reason": f"Institutional VWAP: {signal_type} @ {symbol}"
-                            }
-                            break # Only take the first signal found in this candle group
+                            if signal_type:
+                                print(f"[DEBUG] Global Scan | Found {signal_type} Signal for {symbol} at {timestamp}")
+                                # Found a valid signal! Enter and lock capital.
+                                entry_price = price
+                                
+                                # Calculate SL/TP
+                                rr_ratio = config.reward_per_trade_pct / config.risk_per_trade_pct
+                                if signal_type == "BUY":
+                                    sl = min(v_price * 0.998, entry_price * 0.995)
+                                    tp = entry_price + (abs(entry_price - sl) * rr_ratio)
+                                else:
+                                    sl = max(v_price * 1.002, entry_price * 1.005)
+                                    tp = entry_price - (abs(sl - entry_price) * rr_ratio)
+                                
+                                # SMART POSITION SIZING: Use 'current_capital' (includes previous gains/losses)
+                                # This implements compounding and loss-based scaling.
+                                ps = suggest_position_size_tool.invoke({
+                                    "entry_price": entry_price, "stop_loss_price": sl,
+                                    "available_capital": current_capital, # Use current dynamic funds
+                                    "risk_percentage": config.risk_per_trade_pct
+                                })
+                                
+                                active_trade = {
+                                    "symbol": symbol, "type": signal_type, "entry_price": entry_price,
+                                    "entry_time": timestamp, "entry_date_only": row['date_only'],
+                                    "sl": sl, "tp": tp, "qty": ps.get("suggested_quantity", 1),
+                                    "reason": f"Institutional VWAP: {signal_type} @ {symbol}"
+                                }
+                                break # Only take the first signal found in this candle group
 
             # Results aggregation
             if not global_opportunities:
