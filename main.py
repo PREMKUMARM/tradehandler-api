@@ -14,140 +14,27 @@ from datetime import datetime, timedelta, time
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import KiteException
 
-def calculate_trend_and_suggestions(kite: KiteConnect, instrument_token: int, current_price: float):
-    """Calculate trend based on 5min, 15min, 30min candles and provide buy/sell suggestions"""
-    try:
-        today = datetime.now().date()
-        yesterday = today - timedelta(days=1)
-        
-        trend_scores = {
-            "5min": 0,
-            "15min": 0,
-            "30min": 0
-        }
-        
-        intervals = {
-            "5min": "5minute",
-            "15min": "15minute",
-            "30min": "30minute"
-        }
-        
-        all_closes = []
-        
-        # Get candles for each timeframe
-        for timeframe, kite_interval in intervals.items():
-            try:
-                historical_data = kite.historical_data(
-                    instrument_token=instrument_token,
-                    from_date=yesterday,
-                    to_date=today,
-                    interval=kite_interval
-                )
-                
-                if historical_data and len(historical_data) > 0:
-                    # Get last 5 candles
-                    recent_candles = historical_data[-5:] if len(historical_data) >= 5 else historical_data
-                    closes = [candle.get("close", 0) for candle in recent_candles if candle.get("close", 0) > 0]
-                    
-                    if len(closes) >= 2:
-                        all_closes.extend(closes)
-                        
-                        # Calculate trend: compare last close with previous closes
-                        last_close = closes[-1]
-                        prev_close = closes[-2] if len(closes) > 1 else closes[0]
-                        
-                        # Simple trend: if last close > previous, bullish (+1), else bearish (-1)
-                        if last_close > prev_close:
-                            trend_scores[timeframe] = 1
-                        elif last_close < prev_close:
-                            trend_scores[timeframe] = -1
-                        else:
-                            trend_scores[timeframe] = 0
-            except Exception as e:
-                print(f"Error fetching {timeframe} candles: {e}")
-                continue
-        
-        # Calculate overall trend
-        total_score = trend_scores["5min"] + trend_scores["15min"] + trend_scores["30min"]
-        
-        # Build reason explanation
-        reason_parts = []
-        
-        # Add timeframe analysis to reason
-        timeframe_analysis = []
-        for tf, score in trend_scores.items():
-            if score > 0:
-                timeframe_analysis.append(f"{tf} bullish")
-            elif score < 0:
-                timeframe_analysis.append(f"{tf} bearish")
-            else:
-                timeframe_analysis.append(f"{tf} neutral")
-        
-        if timeframe_analysis:
-            reason_parts.append(f"Timeframes: {', '.join(timeframe_analysis)}")
-        
-        # Determine trend
-        if total_score >= 2:
-            trend = "BULLISH"
-            trend_strength = min(abs(total_score) / 3.0, 1.0)  # Normalize to 0-1
-            reason_parts.append(f"Strong bullish momentum (score: {total_score}/3)")
-        elif total_score <= -2:
-            trend = "BEARISH"
-            trend_strength = min(abs(total_score) / 3.0, 1.0)
-            reason_parts.append(f"Strong bearish momentum (score: {total_score}/3)")
-        else:
-            trend = "NEUTRAL"
-            trend_strength = 0.5
-            reason_parts.append(f"Mixed signals (score: {total_score}/3)")
-        
-        # Calculate buy/sell prices based on trend
-        if current_price > 0:
-            if trend == "BULLISH":
-                # For bullish trend: buy at current or slightly below, sell at target (2-3% above)
-                buy_price = round(current_price * 0.998, 2)  # 0.2% below current
-                sell_price = round(current_price * 1.025, 2)  # 2.5% above current
-                reason_parts.append(f"Buy at ₹{buy_price} (0.2% below) for bullish entry, target ₹{sell_price} (2.5% profit)")
-            elif trend == "BEARISH":
-                # For bearish trend: buy at support (slightly below), sell at current or slightly above
-                buy_price = round(current_price * 0.995, 2)  # 0.5% below current
-                sell_price = round(current_price * 1.01, 2)  # 1% above current (quick exit)
-                reason_parts.append(f"Buy at ₹{buy_price} (0.5% below support), quick exit at ₹{sell_price} (1% profit)")
-            else:  # NEUTRAL
-                # For neutral: buy at current, sell at small profit
-                buy_price = round(current_price, 2)
-                sell_price = round(current_price * 1.015, 2)  # 1.5% above current
-                reason_parts.append(f"Buy at ₹{buy_price} (current price), conservative target ₹{sell_price} (1.5% profit)")
-        else:
-            buy_price = 0
-            sell_price = 0
-            reason_parts.append("Price data unavailable")
-        
-        reason = " | ".join(reason_parts)
-        
-        return {
-            "trend": trend,
-            "trend_strength": round(trend_strength, 2),
-            "buy_price": buy_price,
-            "sell_price": sell_price,
-            "reason": reason,
-            "trend_scores": trend_scores
-        }
-    except Exception as e:
-        print(f"Error in calculate_trend_and_suggestions: {e}")
-        return {
-            "trend": "NEUTRAL",
-            "trend_strength": 0,
-            "buy_price": current_price if current_price > 0 else 0,
-            "sell_price": current_price if current_price > 0 else 0,
-            "reason": "Unable to calculate trend - insufficient candle data"
-        }
+# Kite utilities
+from utils.kite_utils import (
+    api_key,
+    get_access_token,
+    get_kite_instance,
+    calculate_trend_and_suggestions
+)
+
+# Agent imports
+from agent.graph import run_agent, get_agent_instance, get_agent_memory
+from agent.approval import get_approval_queue
+from agent.safety import get_safety_manager
+from agent.config import get_agent_config
 
 # Initialize FastAPI app
 app = FastAPI()
 
 # Kite Connect credentials - Update these with your actual API key and secret
 # IMPORTANT: The redirect_uri must EXACTLY match what's configured in your Kite Connect app settings
-api_key = os.getenv('KITE_API_KEY', 'gle4opgggiing1ol')
+# Global API key handled by utils.kite_utils
+# api_key = os.getenv('KITE_API_KEY', 'gle4opgggiing1ol')
 api_secret = os.getenv('KITE_API_SECRET', 'vmrsky50fsozxonx2v5wwjwdmm6jcjtk')
 # For local development, use: http://localhost:4200/auth-token
 # For production, use: https://www.tradehandler.com/auth-token
@@ -167,26 +54,7 @@ app.add_middleware(
 )
 
 # Helper function to get access token from file
-def get_access_token():
-    """Read access token from config file"""
-    config_path = Path("config/access_token.txt")
-    if config_path.exists():
-        with open(config_path, "r") as f:
-            token = f.read().strip()
-            return token if token else None
-    return None
-
 # Helper function to get KiteConnect instance
-def get_kite_instance():
-    """Get authenticated KiteConnect instance"""
-    access_token = get_access_token()
-    if not access_token:
-        raise HTTPException(status_code=401, detail="Access token not found. Please authenticate first.")
-    
-    kite = KiteConnect(api_key=api_key)
-    kite.set_access_token(access_token)
-    return kite
-
 @app.get("/live-positions")
 def get_live_positions():
     """Fetch current open positions from Zerodha Kite"""
@@ -3824,3 +3692,264 @@ async def backtest_nifty50_options(req: Request):
         raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error backtesting strategy: {str(e)}")
+
+# ============================================================================
+# AI Agent Endpoints
+# ============================================================================
+
+@app.post("/agent/chat")
+async def agent_chat(req: Request):
+    """Natural language interaction with the AI agent"""
+    try:
+        payload = await req.json()
+        user_query = payload.get("message", "")
+        
+        if not user_query:
+            raise HTTPException(status_code=400, detail="Message is required")
+        
+        # Get context (positions, balance, etc.)
+        context = {}
+        try:
+            kite = get_kite_instance()
+            positions = kite.positions().get("net", [])
+            margins = kite.margins()
+            context = {
+                "positions": positions,
+                "balance": margins.get("equity", {})
+            }
+        except:
+            pass  # Continue without context if auth fails
+        
+        # Run agent
+        result = await run_agent(user_query, context)
+        
+        return {
+            "status": "success",
+            "data": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error in agent chat: {str(e)}")
+
+@app.post("/agent/execute")
+async def agent_execute(req: Request):
+    """Direct agent execution with approval workflow"""
+    try:
+        payload = await req.json()
+        user_query = payload.get("message", "")
+        auto_approve = payload.get("auto_approve", False)
+        
+        if not user_query:
+            raise HTTPException(status_code=400, detail="Message is required")
+        
+        # Get context
+        context = {}
+        try:
+            kite = get_kite_instance()
+            positions = kite.positions().get("net", [])
+            margins = kite.margins()
+            context = {
+                "positions": positions,
+                "balance": margins.get("equity", {})
+            }
+        except:
+            pass
+        
+        # Run agent
+        result = await run_agent(user_query, context)
+        
+        # If requires approval and not auto-approved, return approval info
+        if result.get("requires_approval") and not auto_approve:
+            return {
+                "status": "pending_approval",
+                "data": result,
+                "approval_id": result.get("approval_id")
+            }
+        
+        return {
+            "status": "success",
+            "data": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error in agent execute: {str(e)}")
+
+@app.get("/agent/status")
+def get_agent_status():
+    """Get agent status and context"""
+    try:
+        memory = get_agent_memory()
+        safety = get_safety_manager()
+        approval_queue = get_approval_queue()
+        
+        # Get recent context
+        context_summary = memory.get_context_summary()
+        safety_status = safety.get_status()
+        approval_stats = approval_queue.get_stats()
+        
+        return {
+            "status": "success",
+            "data": {
+                "context_summary": context_summary,
+                "safety_status": safety_status,
+                "approval_stats": approval_stats,
+                "memory_messages": len(memory.get_messages())
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting agent status: {str(e)}")
+
+@app.get("/agent/approvals")
+def get_approvals():
+    """Get pending approvals"""
+    try:
+        approval_queue = get_approval_queue()
+        pending = approval_queue.list_pending()
+        
+        return {
+            "status": "success",
+            "data": {
+                "approvals": pending,
+                "count": len(pending)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting approvals: {str(e)}")
+
+@app.post("/agent/approve/{approval_id}")
+async def approve_action(approval_id: str, req: Request):
+    """Approve a pending action"""
+    try:
+        payload = await req.json() if hasattr(req, 'method') and req.method == "POST" else {}
+        approved_by = payload.get("approved_by", "user")
+        
+        approval_queue = get_approval_queue()
+        success = approval_queue.approve(approval_id, approved_by)
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="Approval not found or already processed")
+        
+        approval = approval_queue.get_approval(approval_id)
+        
+        return {
+            "status": "success",
+            "data": {
+                "approval_id": approval_id,
+                "approval": approval,
+                "message": "Approval successful"
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error approving action: {str(e)}")
+
+@app.post("/agent/reject/{approval_id}")
+async def reject_action(approval_id: str, req: Request):
+    """Reject a pending action"""
+    try:
+        payload = await req.json() if hasattr(req, 'method') and req.method == "POST" else {}
+        reason = payload.get("reason", "")
+        rejected_by = payload.get("rejected_by", "user")
+        
+        approval_queue = get_approval_queue()
+        success = approval_queue.reject(approval_id, reason, rejected_by)
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="Approval not found or already processed")
+        
+        approval = approval_queue.get_approval(approval_id)
+        
+        return {
+            "status": "success",
+            "data": {
+                "approval_id": approval_id,
+                "approval": approval,
+                "message": "Rejection successful"
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error rejecting action: {str(e)}")
+
+@app.get("/agent/config")
+def get_agent_config_endpoint():
+    """Get agent configuration"""
+    try:
+        config = get_agent_config()
+        
+        return {
+            "status": "success",
+            "data": {
+                "llm_provider": config.llm_provider.value,
+                "openai_api_key": config.openai_api_key or "",
+                "anthropic_api_key": config.anthropic_api_key or "",
+                "ollama_base_url": config.ollama_base_url,
+                "agent_model": config.agent_model,
+                "agent_temperature": config.agent_temperature,
+                "auto_trade_threshold": config.auto_trade_threshold,
+                "max_position_size": config.max_position_size,
+                "daily_loss_limit": config.daily_loss_limit,
+                "max_trades_per_day": config.max_trades_per_day,
+                "risk_per_trade_pct": config.risk_per_trade_pct,
+                "reward_per_trade_pct": config.reward_per_trade_pct,
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting agent config: {str(e)}")
+
+@app.post("/agent/config")
+async def update_agent_config(req: Request):
+    """Update agent configuration"""
+    try:
+        payload = await req.json()
+        config = get_agent_config()
+        
+        # Update config fields
+        if "llm_provider" in payload:
+            from agent.config import LLMProvider
+            config.llm_provider = LLMProvider(payload["llm_provider"])
+        if "openai_api_key" in payload:
+            config.openai_api_key = payload["openai_api_key"]
+        if "anthropic_api_key" in payload:
+            config.anthropic_api_key = payload["anthropic_api_key"]
+        if "ollama_base_url" in payload:
+            config.ollama_base_url = payload["ollama_base_url"]
+        if "agent_model" in payload:
+            config.agent_model = payload["agent_model"]
+        if "agent_temperature" in payload:
+            config.agent_temperature = float(payload["agent_temperature"])
+        if "auto_trade_threshold" in payload:
+            config.auto_trade_threshold = float(payload["auto_trade_threshold"])
+        if "max_position_size" in payload:
+            config.max_position_size = float(payload["max_position_size"])
+        if "daily_loss_limit" in payload:
+            config.daily_loss_limit = float(payload["daily_loss_limit"])
+        if "max_trades_per_day" in payload:
+            config.max_trades_per_day = int(payload["max_trades_per_day"])
+        if "risk_per_trade_pct" in payload:
+            config.risk_per_trade_pct = float(payload["risk_per_trade_pct"])
+        if "reward_per_trade_pct" in payload:
+            config.reward_per_trade_pct = float(payload["reward_per_trade_pct"])
+            
+        # Persist to .env file
+        with open(".env", "w") as f:
+            f.write(f"LLM_PROVIDER={config.llm_provider.value}\n")
+            f.write(f"OPENAI_API_KEY={config.openai_api_key or ''}\n")
+            f.write(f"ANTHROPIC_API_KEY={config.anthropic_api_key or ''}\n")
+            f.write(f"OLLAMA_BASE_URL={config.ollama_base_url}\n")
+            f.write(f"AGENT_MODEL={config.agent_model}\n")
+            f.write(f"AGENT_TEMPERATURE={config.agent_temperature}\n")
+            f.write(f"AUTO_TRADE_THRESHOLD={config.auto_trade_threshold}\n")
+            f.write(f"MAX_POSITION_SIZE={config.max_position_size}\n")
+            f.write(f"DAILY_LOSS_LIMIT={config.daily_loss_limit}\n")
+            f.write(f"MAX_TRADES_PER_DAY={config.max_trades_per_day}\n")
+            f.write(f"RISK_PER_TRADE_PCT={config.risk_per_trade_pct}\n")
+            f.write(f"REWARD_PER_TRADE_PCT={config.reward_per_trade_pct}\n")
+            
+        return {
+            "status": "success",
+            "message": "Configuration updated successfully",
+            "data": payload
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating agent config: {str(e)}")

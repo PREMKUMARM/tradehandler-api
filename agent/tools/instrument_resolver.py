@@ -1,0 +1,171 @@
+"""
+Instrument name resolution utilities
+"""
+from typing import Optional, Dict, Any, Union, List
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.kite_utils import get_kite_instance
+from kiteconnect.exceptions import KiteException
+
+
+# Predefined groups of stocks
+TOP_10_NIFTY50 = [
+    "RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "ITC", 
+    "LT", "TCS", "AXISBANK", "KOTAKBANK", "BHARTIARTL"
+]
+
+INSTRUMENT_GROUPS = {
+    "top 10 nifty50 stocks": TOP_10_NIFTY50,
+    "top 10 nifty50": TOP_10_NIFTY50,
+    "top 10 nifty": TOP_10_NIFTY50,
+    "nifty 10": TOP_10_NIFTY50,
+    "nifty top 10": TOP_10_NIFTY50,
+    "nifty top 10 stocks": TOP_10_NIFTY50,
+}
+
+# Common instrument name mappings
+INSTRUMENT_ALIASES = {
+    "reliance": "RELIANCE",
+    "reliance industries": "RELIANCE",
+    "ril": "RELIANCE",
+    "nifty": "NIFTY 50",
+    "nifty50": "NIFTY 50",
+    "nifty 50": "NIFTY 50",
+    "banknifty": "NIFTY BANK",
+    "nifty bank": "NIFTY BANK",
+    "tcs": "TCS",
+    "infy": "INFY",
+    "infosys": "INFY",
+    "hdfc": "HDFC",
+    "hdfc bank": "HDFC",
+    "icici": "ICICIBANK",
+    "icici bank": "ICICIBANK",
+    "sbi": "SBIN",
+    "state bank": "SBIN",
+    "wipro": "WIPRO",
+    "lt": "LT",
+    "larsen": "LT",
+    "ltim": "LTIM",
+    "lti": "LTIM",
+    "bharti": "BHARTIARTL",
+    "airtel": "BHARTIARTL",
+    "hcl": "HCLTECH",
+    "hcl tech": "HCLTECH",
+    "asian paints": "ASIANPAINT",
+    "asianpaints": "ASIANPAINT",
+    "maruti": "MARUTI",
+    "maruti suzuki": "MARUTI",
+    "titan": "TITAN",
+    "ultracemco": "ULTRACEMCO",
+    "ultra tech": "ULTRACEMCO",
+    "nestle": "NESTLEIND",
+    "nestle india": "NESTLEIND",
+}
+
+
+def resolve_instrument_name(instrument_name: str, exchange: str = "NSE", return_multiple: bool = False) -> Union[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Resolve instrument name to instrument token and details.
+    
+    Args:
+        instrument_name: Instrument name (e.g., "reliance", "RELIANCE", "NIFTY 50")
+        exchange: Exchange (NSE, NFO, BSE, etc.)
+        return_multiple: If True, returns a list of all matching instruments
+        
+    Returns:
+        If return_multiple is False: dict or None
+        If return_multiple is True: list of dicts (can be empty)
+    """
+    try:
+        kite = get_kite_instance()
+        
+        # Normalize instrument name
+        name_upper = instrument_name.upper().strip()
+        
+        # Check aliases first
+        if name_upper.lower() in INSTRUMENT_ALIASES:
+            name_upper = INSTRUMENT_ALIASES[name_upper.lower()]
+        
+        # Get instruments for the exchange
+        instruments = kite.instruments(exchange)
+        
+        matches = []
+        
+        # Try exact match first
+        for inst in instruments:
+            symbol = inst.get("tradingsymbol", "").upper()
+            name = inst.get("name", "").upper()
+            
+            if symbol == name_upper or name == name_upper:
+                match = {
+                    "instrument_token": inst.get("instrument_token"),
+                    "tradingsymbol": inst.get("tradingsymbol"),
+                    "exchange": inst.get("exchange", exchange),
+                    "name": inst.get("name"),
+                    "instrument_type": inst.get("instrument_type"),
+                }
+                if not return_multiple:
+                    return match
+                matches.append(match)
+        
+        # Try partial match if no exact match found or if we want multiple
+        if not matches or return_multiple:
+            for inst in instruments:
+                symbol = inst.get("tradingsymbol", "").upper()
+                name = inst.get("name", "").upper()
+                
+                # If we already added this as an exact match, skip it
+                if any(m["tradingsymbol"] == inst.get("tradingsymbol") for m in matches):
+                    continue
+                    
+                if name_upper in symbol or name_upper in name:
+                    match = {
+                        "instrument_token": inst.get("instrument_token"),
+                        "tradingsymbol": inst.get("tradingsymbol"),
+                        "exchange": inst.get("exchange", exchange),
+                        "name": inst.get("name"),
+                        "instrument_type": inst.get("instrument_type"),
+                    }
+                    if not return_multiple:
+                        return match
+                    matches.append(match)
+        
+        if return_multiple:
+            # Sort matches to prioritize:
+            # 1. Exact symbol match
+            # 2. Symbol starts with name_upper
+            # 3. Shorter symbol length
+            def sort_key(x):
+                sym = x["tradingsymbol"].upper()
+                if sym == name_upper:
+                    return (0, len(sym))
+                if sym.startswith(name_upper):
+                    return (1, len(sym))
+                return (2, len(sym))
+                
+            matches.sort(key=sort_key)
+            return matches
+            
+        return matches[0] if matches else None
+        
+    except Exception as e:
+        print(f"Error resolving instrument {instrument_name}: {e}")
+        return [] if return_multiple else None
+
+
+def get_instrument_token(instrument_name: str, exchange: str = "NSE") -> Optional[int]:
+    """
+    Get instrument token for a given instrument name.
+    
+    Args:
+        instrument_name: Instrument name
+        exchange: Exchange
+        
+    Returns:
+        Instrument token or None
+    """
+    result = resolve_instrument_name(instrument_name, exchange)
+    return result.get("instrument_token") if result else None
+
