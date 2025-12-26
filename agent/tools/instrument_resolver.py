@@ -65,19 +65,14 @@ INSTRUMENT_ALIASES = {
 }
 
 
+# Global cache for instruments to avoid rate limits
+_instruments_cache: Dict[str, List[Dict[str, Any]]] = {}
+
 def resolve_instrument_name(instrument_name: str, exchange: str = "NSE", return_multiple: bool = False) -> Union[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Resolve instrument name to instrument token and details.
-    
-    Args:
-        instrument_name: Instrument name (e.g., "reliance", "RELIANCE", "NIFTY 50")
-        exchange: Exchange (NSE, NFO, BSE, etc.)
-        return_multiple: If True, returns a list of all matching instruments
-        
-    Returns:
-        If return_multiple is False: dict or None
-        If return_multiple is True: list of dicts (can be empty)
     """
+    global _instruments_cache
     try:
         kite = get_kite_instance()
         
@@ -88,8 +83,12 @@ def resolve_instrument_name(instrument_name: str, exchange: str = "NSE", return_
         if name_upper.lower() in INSTRUMENT_ALIASES:
             name_upper = INSTRUMENT_ALIASES[name_upper.lower()]
         
-        # Get instruments for the exchange
-        instruments = kite.instruments(exchange)
+        # USE CACHE: Fetch instruments only if not already cached for this exchange
+        if exchange not in _instruments_cache:
+            print(f"[DEBUG] Fetching full instrument list for {exchange} from Kite (caching for performance)...")
+            _instruments_cache[exchange] = kite.instruments(exchange)
+        
+        instruments = _instruments_cache[exchange]
         
         matches = []
         
@@ -158,14 +157,71 @@ def resolve_instrument_name(instrument_name: str, exchange: str = "NSE", return_
 def get_instrument_token(instrument_name: str, exchange: str = "NSE") -> Optional[int]:
     """
     Get instrument token for a given instrument name.
-    
+
     Args:
         instrument_name: Instrument name
         exchange: Exchange
-        
+
     Returns:
         Instrument token or None
     """
     result = resolve_instrument_name(instrument_name, exchange)
     return result.get("instrument_token") if result else None
+
+
+def bulk_resolve_instruments(instrument_names: List[str], exchange: str = "NSE") -> Dict[str, Optional[Dict[str, Any]]]:
+    """
+    Bulk resolve multiple instrument names at once to avoid rate limits.
+
+    Args:
+        instrument_names: List of instrument names to resolve
+        exchange: Exchange to search in
+
+    Returns:
+        Dictionary mapping instrument names to resolved data (or None if not found)
+    """
+    global _instruments_cache
+    try:
+        kite = get_kite_instance()
+
+        # USE CACHE: Fetch instruments only if not already cached for this exchange
+        if exchange not in _instruments_cache:
+            print(f"[DEBUG] Fetching full instrument list for {exchange} from Kite (caching for performance)...")
+            _instruments_cache[exchange] = kite.instruments(exchange)
+
+        instruments = _instruments_cache[exchange]
+        results = {}
+
+        # Process all instruments at once
+        for inst_name in instrument_names:
+            name_upper = inst_name.upper().strip()
+
+            # Check aliases first
+            if name_upper.lower() in INSTRUMENT_ALIASES:
+                name_upper = INSTRUMENT_ALIASES[name_upper.lower()]
+
+            # Search for this instrument
+            for inst in instruments:
+                symbol = inst.get("tradingsymbol", "").upper()
+                name = inst.get("name", "").upper()
+
+                if symbol == name_upper or name == name_upper:
+                    results[inst_name] = {
+                        "instrument_token": inst.get("instrument_token"),
+                        "tradingsymbol": inst.get("tradingsymbol"),
+                        "exchange": inst.get("exchange", exchange),
+                        "name": inst.get("name"),
+                        "instrument_type": inst.get("instrument_type"),
+                    }
+                    break
+            else:
+                # No exact match found
+                results[inst_name] = None
+
+        return results
+
+    except Exception as e:
+        print(f"Error bulk resolving instruments: {e}")
+        # Return None for all instruments on error
+        return {name: None for name in instrument_names}
 

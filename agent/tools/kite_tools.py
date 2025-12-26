@@ -361,3 +361,348 @@ def exit_position_tool(tradingsymbol: str, exchange: str = "NFO") -> dict:
             "error": f"Error exiting position: {str(e)}"
         }
 
+
+@tool
+def place_gtt_tool(
+    tradingsymbol: str,
+    exchange: str = "NSE",
+    trigger_type: str = "single",  # "single" or "two-leg" (OCO)
+    trigger_price: float = None,  # For single trigger
+    trigger_prices: list = None,  # For OCO: [stop_loss_trigger, target_trigger]
+    last_price: float = None,  # Current market price
+    stop_loss_price: float = None,  # Stop-loss limit price
+    target_price: float = None,  # Target limit price
+    quantity: int = 1,
+    transaction_type: str = "SELL",  # BUY or SELL
+    product: str = "MIS"
+) -> dict:
+    """
+    Place a Good Till Triggered (GTT) order.
+    
+    GTT orders remain active until trigger price is reached (valid up to 1 year).
+    OCO (One Cancels Other) type allows setting both stop-loss and target.
+    
+    Args:
+        tradingsymbol: Trading symbol (e.g., "RELIANCE")
+        exchange: Exchange (NSE, NFO, BSE)
+        trigger_type: "single" for single trigger, "two-leg" for OCO (stop-loss + target)
+        trigger_price: Trigger price for single trigger GTT
+        trigger_prices: [stop_loss_trigger, target_trigger] for OCO GTT
+        last_price: Current market price (required)
+        stop_loss_price: Stop-loss limit price (for OCO or single stop-loss)
+        target_price: Target limit price (for OCO)
+        quantity: Number of shares/lots
+        transaction_type: BUY or SELL
+        product: MIS (intraday), CNC (delivery), NRML (carry forward)
+        
+    Returns:
+        dict with GTT trigger_id and status
+    """
+    try:
+        kite = get_kite_instance()
+        
+        if not last_price:
+            # Try to get current price
+            quote = kite.quote(f"{exchange}:{tradingsymbol}")
+            instrument_key = f"{exchange}:{tradingsymbol}"
+            if instrument_key in quote:
+                last_price = quote[instrument_key].get("last_price", 0)
+            else:
+                return {
+                    "status": "error",
+                    "error": "last_price is required. Could not fetch from market."
+                }
+        
+        # Build trigger_values based on trigger_type
+        if trigger_type == "single" or trigger_type == kite.GTT_TYPE_SINGLE:
+            if not trigger_price:
+                return {
+                    "status": "error",
+                    "error": "trigger_price is required for single trigger GTT"
+                }
+            trigger_values = {"ltp": trigger_price}
+            orders = [{
+                "transaction_type": transaction_type,
+                "quantity": quantity,
+                "price": stop_loss_price or trigger_price * 0.99,  # Default to 1% below trigger
+                "product": product,
+                "order_type": "LIMIT"
+            }]
+        elif trigger_type == "two-leg" or trigger_type == kite.GTT_TYPE_OCO:
+            if not trigger_prices or len(trigger_prices) != 2:
+                return {
+                    "status": "error",
+                    "error": "trigger_prices list with 2 values [stop_loss_trigger, target_trigger] required for OCO GTT"
+                }
+            if not stop_loss_price or not target_price:
+                return {
+                    "status": "error",
+                    "error": "Both stop_loss_price and target_price are required for OCO GTT"
+                }
+            trigger_values = {
+                "ltp": [
+                    {"ltp": trigger_prices[0]},  # Stop-loss trigger
+                    {"ltp": trigger_prices[1]}  # Target trigger
+                ]
+            }
+            orders = [
+                {
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "price": stop_loss_price,
+                    "product": product,
+                    "order_type": "LIMIT"
+                },
+                {
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "price": target_price,
+                    "product": product,
+                    "order_type": "LIMIT"
+                }
+            ]
+        else:
+            return {
+                "status": "error",
+                "error": f"Invalid trigger_type: {trigger_type}. Use 'single' or 'two-leg'"
+            }
+        
+        # Place GTT order
+        trigger_id = kite.place_gtt(
+            trigger_type=kite.GTT_TYPE_SINGLE if trigger_type == "single" else kite.GTT_TYPE_OCO,
+            tradingsymbol=tradingsymbol,
+            exchange=exchange,
+            trigger_values=trigger_values,
+            last_price=last_price,
+            orders=orders
+        )
+        
+        return {
+            "status": "success",
+            "trigger_id": trigger_id,
+            "message": f"GTT order placed successfully. Trigger ID: {trigger_id}",
+            "trigger_type": trigger_type
+        }
+    except KiteException as e:
+        return {
+            "status": "error",
+            "error": f"Kite API error: {str(e)}"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Error placing GTT order: {str(e)}"
+        }
+
+
+@tool
+def modify_gtt_tool(
+    trigger_id: int,
+    tradingsymbol: str,
+    exchange: str = "NSE",
+    trigger_type: str = "single",
+    trigger_price: float = None,
+    trigger_prices: list = None,
+    last_price: float = None,
+    stop_loss_price: float = None,
+    target_price: float = None,
+    quantity: int = 1,
+    transaction_type: str = "SELL",
+    product: str = "MIS"
+) -> dict:
+    """
+    Modify an existing GTT order.
+    
+    Args:
+        trigger_id: GTT trigger ID to modify
+        (other parameters same as place_gtt_tool)
+        
+    Returns:
+        dict with modification status
+    """
+    try:
+        kite = get_kite_instance()
+        
+        if not last_price:
+            quote = kite.quote(f"{exchange}:{tradingsymbol}")
+            instrument_key = f"{exchange}:{tradingsymbol}"
+            if instrument_key in quote:
+                last_price = quote[instrument_key].get("last_price", 0)
+            else:
+                return {
+                    "status": "error",
+                    "error": "last_price is required. Could not fetch from market."
+                }
+        
+        # Build trigger_values and orders (same logic as place_gtt_tool)
+        if trigger_type == "single" or trigger_type == kite.GTT_TYPE_SINGLE:
+            if not trigger_price:
+                return {
+                    "status": "error",
+                    "error": "trigger_price is required for single trigger GTT"
+                }
+            trigger_values = {"ltp": trigger_price}
+            orders = [{
+                "transaction_type": transaction_type,
+                "quantity": quantity,
+                "price": stop_loss_price or trigger_price * 0.99,
+                "product": product,
+                "order_type": "LIMIT"
+            }]
+        elif trigger_type == "two-leg" or trigger_type == kite.GTT_TYPE_OCO:
+            if not trigger_prices or len(trigger_prices) != 2:
+                return {
+                    "status": "error",
+                    "error": "trigger_prices list with 2 values required for OCO GTT"
+                }
+            if not stop_loss_price or not target_price:
+                return {
+                    "status": "error",
+                    "error": "Both stop_loss_price and target_price are required for OCO GTT"
+                }
+            trigger_values = {
+                "ltp": [
+                    {"ltp": trigger_prices[0]},
+                    {"ltp": trigger_prices[1]}
+                ]
+            }
+            orders = [
+                {
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "price": stop_loss_price,
+                    "product": product,
+                    "order_type": "LIMIT"
+                },
+                {
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "price": target_price,
+                    "product": product,
+                    "order_type": "LIMIT"
+                }
+            ]
+        else:
+            return {
+                "status": "error",
+                "error": f"Invalid trigger_type: {trigger_type}"
+            }
+        
+        modified_id = kite.modify_gtt(
+            trigger_id=trigger_id,
+            trigger_type=kite.GTT_TYPE_SINGLE if trigger_type == "single" else kite.GTT_TYPE_OCO,
+            tradingsymbol=tradingsymbol,
+            exchange=exchange,
+            trigger_values=trigger_values,
+            last_price=last_price,
+            orders=orders
+        )
+        
+        return {
+            "status": "success",
+            "trigger_id": modified_id,
+            "message": f"GTT order modified successfully. Trigger ID: {modified_id}"
+        }
+    except KiteException as e:
+        return {
+            "status": "error",
+            "error": f"Kite API error: {str(e)}"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Error modifying GTT order: {str(e)}"
+        }
+
+
+@tool
+def delete_gtt_tool(trigger_id: int) -> dict:
+    """
+    Delete a GTT order.
+    
+    Args:
+        trigger_id: GTT trigger ID to delete
+        
+    Returns:
+        dict with deletion status
+    """
+    try:
+        kite = get_kite_instance()
+        deleted_id = kite.delete_gtt(trigger_id)
+        
+        return {
+            "status": "success",
+            "trigger_id": deleted_id,
+            "message": f"GTT order deleted successfully. Trigger ID: {deleted_id}"
+        }
+    except KiteException as e:
+        return {
+            "status": "error",
+            "error": f"Kite API error: {str(e)}"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Error deleting GTT order: {str(e)}"
+        }
+
+
+@tool
+def get_gtt_tool(trigger_id: int) -> dict:
+    """
+    Get details of a specific GTT order.
+    
+    Args:
+        trigger_id: GTT trigger ID
+        
+    Returns:
+        dict with GTT details
+    """
+    try:
+        kite = get_kite_instance()
+        gtt = kite.get_gtt(trigger_id)
+        
+        return {
+            "status": "success",
+            "data": gtt
+        }
+    except KiteException as e:
+        return {
+            "status": "error",
+            "error": f"Kite API error: {str(e)}"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Error getting GTT: {str(e)}"
+        }
+
+
+@tool
+def get_gtts_tool() -> dict:
+    """
+    Get list of all GTT orders in the account.
+    
+    Returns:
+        dict with list of GTT orders
+    """
+    try:
+        kite = get_kite_instance()
+        gtts = kite.get_gtts()
+        
+        return {
+            "status": "success",
+            "data": gtts,
+            "count": len(gtts) if isinstance(gtts, list) else 0
+        }
+    except KiteException as e:
+        return {
+            "status": "error",
+            "error": f"Kite API error: {str(e)}"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Error getting GTTs: {str(e)}"
+        }
+

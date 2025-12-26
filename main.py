@@ -2,8 +2,9 @@ from typing import Union
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 
 import json
 from pprint import pprint
@@ -27,9 +28,36 @@ from agent.graph import run_agent, get_agent_instance, get_agent_memory
 from agent.approval import get_approval_queue
 from agent.safety import get_safety_manager
 from agent.config import get_agent_config
+from agent.autonomous import start_autonomous_agent
+from agent.ws_manager import manager, broadcast_agent_update, add_agent_log
+from agent.tools.kite_tools import place_order_tool, cancel_order_tool, place_gtt_tool
+from database.connection import init_database
+from database.repositories import (
+    get_log_repository, get_tool_repository, get_simulation_repository,
+    get_config_repository, get_chat_repository
+)
+from database.models import ChatMessage
+import uuid
 
 # Initialize FastAPI app
 app = FastAPI()
+
+@app.websocket("/ws/agent")
+async def agent_websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive and handle client messages if needed
+            data = await websocket.receive_text()
+            # For now, we don't need to handle client -> server messages
+            # but we need to receive them to keep the connection open
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"[WS] Error: {e}")
+        manager.disconnect(websocket)
+
+# Helper to send agent updates - Redundant definition removed
 
 # Kite Connect credentials - Update these with your actual API key and secret
 # IMPORTANT: The redirect_uri must EXACTLY match what's configured in your Kite Connect app settings
@@ -191,52 +219,9 @@ def exit_all_positions():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error exiting positions: {str(e)}")
 
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 # Global state for Live Trading
-live_strategy_config = {
-    "active_strategies": set(), # e.g., {"915_candle_break", "bull_call_spread"}
-    "is_auto_trade_enabled": False,
-    "last_run_time": None,
-    "fund": 200000,
-    "risk_pct": 1.0,
-    "reward_pct": 3.0,
-    "daily_loss_limit": 5000,
-    "current_daily_pnl": 0
-}
-
-@app.get("/live-strategy-config")
-def get_live_config():
-    return {"data": {
-        **live_strategy_config,
-        "active_strategies": list(live_strategy_config["active_strategies"])
-    }}
-
-@app.post("/toggle-live-strategy")
-async def toggle_live_strategy(req: Request):
-    payload = await req.json()
-    strategy = payload.get("strategy")
-    action = payload.get("action") # "enable" or "disable"
-    
-    # Also handle fund/risk/reward updates if present
-    if "fund" in payload: live_strategy_config["fund"] = float(payload["fund"])
-    if "risk_pct" in payload: live_strategy_config["risk_pct"] = float(payload["risk_pct"])
-    if "reward_pct" in payload: live_strategy_config["reward_pct"] = float(payload["reward_pct"])
-    
-    if action == "enable":
-        live_strategy_config["active_strategies"].add(strategy)
-    else:
-        live_strategy_config["active_strategies"].discard(strategy)
-        
-    return {"status": "success", "active_strategies": list(live_strategy_config["active_strategies"])}
-
-@app.post("/toggle-auto-trade")
-async def toggle_auto_trade(req: Request):
-    payload = await req.json()
-    enabled = payload.get("enabled", False)
-    live_strategy_config["is_auto_trade_enabled"] = enabled
-    return {"status": "success", "is_auto_trade_enabled": enabled}
 
 def aggregate_to_tf(candles_1m, tf_min):
     """
@@ -303,7 +288,8 @@ def analyze_trend(candles):
 
 async def live_market_scanner():
     """Background task to scan market and execute strategies"""
-    add_live_log("Live Market Scanner initializing...", "info")
+    add_agent_log("Live Market Scanner initializing...", "info")
+    config = get_agent_config()
     
     # Heartbeat tracker to avoid log spam
     last_heartbeat_min = -1
@@ -311,12 +297,15 @@ async def live_market_scanner():
     
     while True:
         try:
-            # Only scan between 9:15 AM and 3:30 PM IST
+            # Only scan between market hours from config
             now = datetime.now()
+            start_time = datetime.strptime(config.trading_start_time, "%H:%M").time()
+            end_time = datetime.strptime(config.trading_end_time, "%H:%M").time()
             
-            # Indian Market Hours (9:15 AM to 3:30 PM)
-            if now.hour >= 9 and (now.hour < 15 or (now.hour == 15 and now.minute <= 30)):
-                if live_strategy_config["active_strategies"]:
+            # Indian Market Hours (From Config)
+            if start_time <= now.time() <= end_time:
+                active_strats = config.active_strategies.split(",") if config.active_strategies else []
+                if active_strats:
                     # 1. Fetch live quotes/candles
                     kite = get_kite_instance()
                     
@@ -347,13 +336,13 @@ async def live_market_scanner():
                                 day_icon = "🟢" if day_trend == "BULLISH" else "🔴" if day_trend == "BEARISH" else "⚪"
                                 analysis_parts.append(f"DAY: {day_icon} {day_trend}")
                                 
-                                add_live_log(f"ANALYSIS: " + " | ".join(analysis_parts), "info")
+                                add_agent_log(f"ANALYSIS: " + " | ".join(analysis_parts), "info")
                                 last_analysis_min = now.minute
 
                         # Heartbeat tracker for Nifty price and active strategies
                         if now.minute % 5 == 0 and now.minute != last_heartbeat_min:
-                            active_strats = ", ".join(live_strategy_config["active_strategies"])
-                            add_live_log(f"LIVE SCANNING: Nifty @ {nifty_price} | Active: {active_strats}", "info")
+                            active_strats_str = ", ".join(active_strats) if active_strats else "None"
+                            add_agent_log(f"LIVE SCANNING: Nifty @ {nifty_price} | Active: {active_strats_str}", "info")
                             last_heartbeat_min = now.minute
                             
                         current_strike = round(nifty_price / 50) * 50
@@ -384,7 +373,7 @@ async def live_market_scanner():
                                     first_candle = trading_candles_5m[0] if trading_candles_5m else None
                                     
                                     # Run each active strategy
-                                    for strategy_id in live_strategy_config["active_strategies"]:
+                                    for strategy_id in active_strats:
                                         res = await run_strategy_on_candles(
                                             kite, strategy_id, trading_candles_5m, first_candle, 
                                             nifty_price, current_strike, atm_ce, atm_pe, 
@@ -395,19 +384,19 @@ async def live_market_scanner():
                                             # Signal detected in LIVE market
                                             message = f"LIVE SIGNAL: {strategy_id} triggered. Reason: {res['reason']}"
                                             
-                                            if live_strategy_config["is_auto_trade_enabled"]:
-                                                add_live_log(f"EXECUTING LIVE ORDER: {message}", "signal")
+                                            if config.is_auto_trade_enabled:
+                                                add_agent_log(f"EXECUTING LIVE ORDER: {message}", "signal")
                                             else:
-                                                add_live_log(f"ALERT (Auto-Trade OFF): {message}", "info")
+                                                add_agent_log(f"ALERT (Auto-Trade OFF): {message}", "info")
                 else:
                     # Log once that no strategies are active
                     if now.minute % 30 == 0 and now.minute != last_heartbeat_min:
-                        add_live_log("LIVE MONITORING: Waiting for strategies to be selected...", "info")
+                        add_agent_log("LIVE MONITORING: Waiting for strategies to be selected...", "info")
                         last_heartbeat_min = now.minute
             else:
                 # Outside market hours
                 if now.minute % 60 == 0 and now.minute != last_heartbeat_min:
-                    add_live_log(f"LIVE FEED: Market is currently CLOSED ({now.strftime('%H:%M')}). Scanning resumes at 09:15 AM.", "info")
+                    add_agent_log(f"LIVE FEED: Market is currently CLOSED ({now.strftime('%H:%M')}). Scanning resumes at 09:15 AM.", "info")
                     last_heartbeat_min = now.minute
             
             # Run every 10 seconds (more responsive scanner)
@@ -416,10 +405,125 @@ async def live_market_scanner():
             print(f"Scanner error: {e}")
             await asyncio.sleep(30) # Wait longer on error
 
+async def monitor_order_execution():
+    """
+    Background task to monitor order execution and auto-cancel remaining orders.
+    When SL or Target executes, the other order should be cancelled automatically.
+    """
+    
+    while True:
+        try:
+            await asyncio.sleep(10)  # Check every 10 seconds
+            
+            approval_queue = get_approval_queue()
+            approved_trades = approval_queue.list_approved()
+            
+            if not approved_trades:
+                continue
+            
+            kite = get_kite_instance()
+            
+            # Get all orders from Kite
+            try:
+                orders = kite.orders()
+            except Exception as e:
+                add_agent_log(f"Error fetching orders for monitoring: {e}", "error")
+                continue
+            
+            # Process each approved trade
+            for approval in approved_trades:
+                details = approval.get("details", {})
+                if details.get("is_simulated", False):
+                    continue  # Skip simulated trades
+                
+                approval_id = approval.get("approval_id")
+                approval_obj = approval_queue.get_approval(approval_id)
+                
+                if not approval_obj:
+                    continue
+                
+                sl_order_id = approval_obj.get("sl_order_id")
+                tp_order_id = approval_obj.get("tp_order_id")
+                
+                # Skip if no exit orders
+                if not sl_order_id and not tp_order_id:
+                    continue
+                
+                # Check order statuses
+                sl_executed = False
+                tp_executed = False
+                sl_cancelled = False
+                tp_cancelled = False
+                
+                for order in orders:
+                    order_id_str = str(order.get("order_id", ""))
+                    
+                    if sl_order_id and order_id_str == str(sl_order_id):
+                        status = order.get("status", "").upper()
+                        if status in ["COMPLETE", "FILLED"]:
+                            sl_executed = True
+                        elif status in ["CANCELLED", "REJECTED"]:
+                            sl_cancelled = True
+                    
+                    if tp_order_id and order_id_str == str(tp_order_id):
+                        status = order.get("status", "").upper()
+                        if status in ["COMPLETE", "FILLED"]:
+                            tp_executed = True
+                        elif status in ["CANCELLED", "REJECTED"]:
+                            tp_cancelled = True
+                
+                # Auto-cancel logic
+                if sl_executed and tp_order_id and not tp_cancelled:
+                    # SL executed, cancel Target
+                    try:
+                        cancel_result = cancel_order_tool.invoke({
+                            "order_id": str(tp_order_id),
+                            "variety": "regular"
+                        })
+                        if cancel_result.get("status") == "success":
+                            add_agent_log(f"✅ Auto-cancelled Target order {tp_order_id} (SL executed)", "info")
+                        else:
+                            add_agent_log(f"⚠️ Failed to cancel Target order {tp_order_id}: {cancel_result.get('error')}", "warning")
+                    except Exception as e:
+                        add_agent_log(f"Error cancelling Target order: {e}", "error")
+                
+                elif tp_executed and sl_order_id and not sl_cancelled:
+                    # Target executed, cancel SL
+                    try:
+                        cancel_result = cancel_order_tool.invoke({
+                            "order_id": str(sl_order_id),
+                            "variety": "regular"
+                        })
+                        if cancel_result.get("status") == "success":
+                            add_agent_log(f"✅ Auto-cancelled Stop Loss order {sl_order_id} (Target executed)", "info")
+                        else:
+                            add_agent_log(f"⚠️ Failed to cancel SL order {sl_order_id}: {cancel_result.get('error')}", "warning")
+                    except Exception as e:
+                        add_agent_log(f"Error cancelling SL order: {e}", "error")
+                        
+        except Exception as e:
+            add_agent_log(f"Error in order monitoring task: {e}", "error")
+            await asyncio.sleep(30)  # Wait longer on error
+
 @app.on_event("startup")
 async def startup_event():
+    # Initialize database
+    init_database()
+    add_agent_log("Database initialized successfully", "info", "system")
+
+    # Set approval queue callback for WebSocket broadcasting
+    approval_queue = get_approval_queue()
+    def broadcast_new_approval(approval):
+        asyncio.create_task(broadcast_agent_update("NEW_APPROVAL", approval))
+
+    approval_queue.on_create_callback = broadcast_new_approval
+
     # Start the background scanner
     asyncio.create_task(live_market_scanner())
+    # Start the new AI Agent autonomous scanner
+    start_autonomous_agent()
+    # Start order monitoring task for auto-cancellation
+    asyncio.create_task(monitor_order_execution())
 
 # Global state for Simulation
 simulation_state = {
@@ -443,31 +547,6 @@ simulation_state = {
 # Global state for Live Monitoring Logs
 live_logs = []
 
-def add_live_log(message, log_type="info"):
-    """Helper to add a log message with timestamp for UI monitoring"""
-    global live_logs
-    
-    # Get current time (either real or simulated)
-    if simulation_state["is_active"] and simulation_state["candles"]:
-        idx = min(simulation_state["current_index"], len(simulation_state["candles"]) - 1)
-        timestamp = simulation_state["candles"][idx]["date"].strftime("%H:%M:%S")
-        timestamp = f"[SIM {timestamp}]"
-    else:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-    
-    live_logs.insert(0, {
-        "timestamp": timestamp,
-        "message": message,
-        "type": log_type
-    })
-    
-    # Keep only last 100 logs
-    if len(live_logs) > 100:
-        live_logs = live_logs[:100]
-    
-    # Also print to terminal for debugging
-    print(f"{timestamp} {log_type.upper()}: {message}")
-
 @app.get("/live-logs")
 async def get_live_logs():
     """Endpoint for UI to fetch latest monitoring logs"""
@@ -486,14 +565,14 @@ async def start_simulation(req: Request):
     try:
         global live_logs
         live_logs = [] # Clear previous logs
-        add_live_log(f"Initializing simulation...", "info")
+        add_agent_log(f"Initializing simulation...", "info")
         
         kite = get_kite_instance()
         payload = await req.json()
         sim_date_str = payload.get("date", (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
         sim_date = datetime.strptime(sim_date_str, "%Y-%m-%d").date()
         
-        add_live_log(f"Loading historical data for {sim_date_str}...", "info")
+        add_agent_log(f"Loading historical data for {sim_date_str}...", "info")
         
         # Get Nifty index token
         nse_instruments = kite.instruments("NSE")
@@ -3703,9 +3782,24 @@ async def agent_chat(req: Request):
     try:
         payload = await req.json()
         user_query = payload.get("message", "")
-        
+        session_id = payload.get("session_id", "default")
+
         if not user_query:
             raise HTTPException(status_code=400, detail="Message is required")
+
+        # Save user message to database
+        try:
+            chat_repo = get_chat_repository()
+            user_message = ChatMessage(
+                message_id=str(uuid.uuid4()),
+                session_id=session_id,
+                role="user",
+                content=user_query,
+                timestamp=datetime.now()
+            )
+            chat_repo.save(user_message)
+        except Exception as e:
+            print(f"Error saving user message: {e}")
         
         # Get context (positions, balance, etc.)
         context = {}
@@ -3722,7 +3816,22 @@ async def agent_chat(req: Request):
         
         # Run agent
         result = await run_agent(user_query, context)
-        
+
+        # Save assistant response to database
+        try:
+            chat_repo = get_chat_repository()
+            assistant_message = ChatMessage(
+                message_id=str(uuid.uuid4()),
+                session_id=session_id,
+                role="assistant",
+                content=result.get("response", ""),
+                timestamp=datetime.now(),
+                metadata={"agent_result": result}
+            )
+            chat_repo.save(assistant_message)
+        except Exception as e:
+            print(f"Error saving assistant message: {e}")
+
         return {
             "status": "success",
             "data": result
@@ -3803,7 +3912,7 @@ def get_approvals():
     try:
         approval_queue = get_approval_queue()
         pending = approval_queue.list_pending()
-        
+
         return {
             "status": "success",
             "data": {
@@ -3813,6 +3922,94 @@ def get_approvals():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting approvals: {str(e)}")
+
+@app.get("/agent/approved-trades")
+def get_approved_trades():
+    """Get all approved trades"""
+    try:
+        approval_queue = get_approval_queue()
+        approved = approval_queue.list_approved()
+
+        return {
+            "status": "success",
+            "data": {
+                "trades": approved,
+                "count": len(approved)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting approved trades: {str(e)}")
+
+@app.get("/agent/logs")
+def get_agent_logs(limit: int = 100, component: str = None):
+    """Get agent logs from database"""
+    try:
+        log_repo = get_log_repository()
+        logs = log_repo.get_recent(limit=limit, component=component if component else None)
+
+        return {
+            "status": "success",
+            "data": {
+                "logs": [log.model_dump() for log in logs],
+                "count": len(logs)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting logs: {str(e)}")
+
+@app.get("/agent/tool-executions")
+def get_tool_executions(tool_name: str = None, limit: int = 50):
+    """Get tool execution history from database"""
+    try:
+        tool_repo = get_tool_repository()
+        executions = tool_repo.get_recent(tool_name=tool_name if tool_name else None, limit=limit)
+
+        return {
+            "status": "success",
+            "data": {
+                "executions": [exec.model_dump() for exec in executions],
+                "count": len(executions)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting tool executions: {str(e)}")
+
+@app.get("/agent/simulations")
+def get_simulations(limit: int = 10):
+    """Get simulation results from database"""
+    try:
+        sim_repo = get_simulation_repository()
+        simulations = sim_repo.get_recent(limit=limit)
+
+        return {
+            "status": "success",
+            "data": {
+                "simulations": [sim.model_dump() for sim in simulations],
+                "count": len(simulations)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting simulations: {str(e)}")
+
+@app.get("/agent/chat-history")
+def get_chat_history(session_id: str = None, limit: int = 100):
+    """Get chat message history from database"""
+    try:
+        chat_repo = get_chat_repository()
+        if session_id:
+            messages = chat_repo.get_session_messages(session_id, limit=limit)
+        else:
+            messages = chat_repo.get_recent_messages(limit=limit)
+
+        return {
+            "status": "success",
+            "data": {
+                "messages": [msg.model_dump() for msg in messages],
+                "count": len(messages)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting chat history: {str(e)}")
 
 @app.post("/agent/approve/{approval_id}")
 async def approve_action(approval_id: str, req: Request):
@@ -3829,12 +4026,180 @@ async def approve_action(approval_id: str, req: Request):
         
         approval = approval_queue.get_approval(approval_id)
         
+        # --- EXECUTE ACTUAL TRADE ON ZERODHA ---
+        execution_msg = ""
+        action = approval.get("action", "")
+        details = approval.get("details", {})
+        
+        if action.startswith("LIVE_") and not details.get("is_simulated", False):
+            try:
+                symbol = details.get("symbol")
+                transaction_type = details.get("type", "BUY")
+                quantity = int(details.get("qty", 1))
+                price = float(details.get("price", 0))
+                
+                add_agent_log(f"Executing Approved Trade: {transaction_type} {quantity} {symbol}...", "signal")
+                
+                # Place actual order on Kite
+                order_result = place_order_tool.invoke({
+                    "tradingsymbol": symbol,
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "order_type": "MARKET", # Using MARKET for approved signals
+                    "product": "MIS",       # Default to Intraday
+                    "exchange": "NSE"       # Default to NSE for stocks
+                })
+                
+                if order_result.get("status") == "success":
+                    entry_order_id = str(order_result.get('order_id'))
+                    execution_msg = f"Entry Order Placed: {entry_order_id}"
+                    add_agent_log(f"SUCCESS: {execution_msg}", "info")
+                    
+                    # Store entry order ID
+                    approval_queue.repo.update_order_ids(approval_id, entry_order_id=entry_order_id)
+                    
+                    # --- PLACE EXIT ORDERS (Stop Loss & Target) ---
+                    config = get_agent_config()
+                    exit_type = "SELL" if transaction_type == "BUY" else "BUY"
+                    sl_price = float(details.get("sl", 0))
+                    tp_price = float(details.get("tp", 0))
+                    sl_order_id = None
+                    tp_order_id = None
+                    gtt_trigger_id = None
+                    
+                    # Determine product type
+                    product = details.get("product", "MIS")
+                    use_gtt = False
+                    
+                    # Log GTT configuration check
+                    add_agent_log(f"GTT Check: use_gtt_orders={config.use_gtt_orders}, product={product}, gtt_for_intraday={config.gtt_for_intraday}, gtt_for_positional={config.gtt_for_positional}", "debug")
+                    
+                    if config.use_gtt_orders:
+                        if product == "CNC" and config.gtt_for_positional:
+                            use_gtt = True
+                            add_agent_log(f"GTT Enabled: Using GTT for positional trade (CNC)", "info")
+                        elif product == "MIS" and config.gtt_for_intraday:
+                            use_gtt = True
+                            add_agent_log(f"GTT Enabled: Using GTT for intraday trade (MIS)", "info")
+                        else:
+                            add_agent_log(f"GTT Disabled: Product={product} but gtt_for_intraday={config.gtt_for_intraday}, gtt_for_positional={config.gtt_for_positional}", "debug")
+                    else:
+                        add_agent_log(f"GTT Disabled: use_gtt_orders is False", "debug")
+                    
+                    # Use GTT OCO order if enabled
+                    if use_gtt and sl_price > 0 and tp_price > 0:
+                        try:
+                            # Get current price for GTT
+                            from utils.kite_utils import get_kite_instance
+                            kite = get_kite_instance()
+                            quote = kite.quote(f"NSE:{symbol}")
+                            instrument_key = f"NSE:{symbol}"
+                            current_price = quote[instrument_key].get("last_price", price) if instrument_key in quote else price
+                            
+                            # Calculate trigger prices
+                            # For BUY: SL triggers when price falls to SL, TP triggers when price rises to TP
+                            # For SELL: SL triggers when price rises to SL, TP triggers when price falls to TP
+                            if transaction_type == "BUY":
+                                sl_trigger = sl_price * 1.001  # Trigger when price falls to SL (slightly above to ensure trigger)
+                                tp_trigger = tp_price * 0.999  # Trigger when price rises to TP (slightly below to ensure trigger)
+                            else:  # SELL
+                                sl_trigger = sl_price * 0.999  # Trigger when price rises to SL (slightly below to ensure trigger)
+                                tp_trigger = tp_price * 1.001  # Trigger when price falls to TP (slightly above to ensure trigger)
+                            
+                            gtt_result = place_gtt_tool.invoke({
+                                "tradingsymbol": symbol,
+                                "exchange": "NSE",
+                                "trigger_type": "two-leg",  # OCO order
+                                "trigger_prices": [sl_trigger, tp_trigger],
+                                "last_price": current_price,
+                                "stop_loss_price": round(sl_price, 1),
+                                "target_price": round(tp_price, 1),
+                                "quantity": quantity,
+                                "transaction_type": exit_type,
+                                "product": product
+                            })
+                            
+                            if gtt_result.get("status") == "success":
+                                gtt_trigger_id = str(gtt_result.get("trigger_id"))
+                                add_agent_log(f"✅ GTT OCO Order Placed Successfully!", "info")
+                                add_agent_log(f"   Trigger ID: {gtt_trigger_id}", "info")
+                                add_agent_log(f"   Stop Loss: ₹{sl_price} (Trigger: ₹{round(sl_trigger, 2)})", "info")
+                                add_agent_log(f"   Target: ₹{tp_price} (Trigger: ₹{round(tp_trigger, 2)})", "info")
+                                # Store GTT trigger ID in approval details
+                                approval_queue.repo.update_order_ids(approval_id, sl_order_id=gtt_trigger_id)
+                                execution_msg += f" | GTT OCO: {gtt_trigger_id}"
+                            else:
+                                error_msg = gtt_result.get('error', 'Unknown error')
+                                add_agent_log(f"❌ GTT Order Failed: {error_msg}", "error")
+                                add_agent_log(f"   Falling back to regular SL-M + LIMIT orders", "warning")
+                                use_gtt = False  # Fall back to regular orders
+                        except Exception as e:
+                            add_agent_log(f"Error placing GTT order: {e}. Falling back to regular orders.", "warning")
+                            use_gtt = False
+                    
+                    # Fall back to regular SL-M + LIMIT orders if GTT not used
+                    if not use_gtt:
+                        # 1. Place Stop Loss Order (SL-M)
+                        if sl_price > 0:
+                            sl_result = place_order_tool.invoke({
+                                "tradingsymbol": symbol,
+                                "transaction_type": exit_type,
+                                "quantity": quantity,
+                                "order_type": "SL-M",
+                                "trigger_price": round(sl_price, 1), # Kite requires 0.05 or 0.1 precision
+                                "product": product,
+                                "exchange": "NSE"
+                            })
+                            if sl_result.get("status") == "success":
+                                sl_order_id = str(sl_result.get('order_id'))
+                                add_agent_log(f"Stop Loss Order Placed @ ₹{sl_price}: {sl_order_id}", "info")
+                                approval_queue.repo.update_order_ids(approval_id, sl_order_id=sl_order_id)
+                            else:
+                                add_agent_log(f"Stop Loss Order Failed: {sl_result.get('error')}", "error")
+
+                        # 2. Place Target Order (LIMIT)
+                        if tp_price > 0:
+                            tp_result = place_order_tool.invoke({
+                                "tradingsymbol": symbol,
+                                "transaction_type": exit_type,
+                                "quantity": quantity,
+                                "order_type": "LIMIT",
+                                "price": round(tp_price, 1),
+                                "product": product,
+                                "exchange": "NSE"
+                            })
+                            if tp_result.get("status") == "success":
+                                tp_order_id = str(tp_result.get('order_id'))
+                                add_agent_log(f"Target Order Placed @ ₹{tp_price}: {tp_order_id}", "info")
+                                approval_queue.repo.update_order_ids(approval_id, tp_order_id=tp_order_id)
+                            else:
+                                add_agent_log(f"Target Order Failed: {tp_result.get('error')}", "error")
+                            
+                else:
+                    execution_msg = f"Order Failed: {order_result.get('error')}"
+                    add_agent_log(f"ERROR: {execution_msg}", "error")
+                    
+            except Exception as e:
+                execution_msg = f"Execution Error: {str(e)}"
+                add_agent_log(f"CRITICAL: {execution_msg}", "error")
+        else:
+            execution_msg = "Simulation Approval recorded (No live order placed)"
+            add_agent_log(execution_msg, "info")
+
+        # BROADCAST: Notify all clients that an approval was processed
+        asyncio.create_task(broadcast_agent_update("APPROVAL_PROCESSED", {
+            "approval_id": approval_id,
+            "status": "APPROVED",
+            "approval": approval,
+            "execution_message": execution_msg
+        }))
+
         return {
             "status": "success",
             "data": {
                 "approval_id": approval_id,
                 "approval": approval,
-                "message": "Approval successful"
+                "message": execution_msg
             }
         }
     except HTTPException:
@@ -3858,6 +4223,13 @@ async def reject_action(approval_id: str, req: Request):
         
         approval = approval_queue.get_approval(approval_id)
         
+        # BROADCAST: Notify all clients that an approval was processed
+        asyncio.create_task(broadcast_agent_update("APPROVAL_PROCESSED", {
+            "approval_id": approval_id,
+            "status": "REJECTED",
+            "approval": approval
+        }))
+
         return {
             "status": "success",
             "data": {
@@ -3877,6 +4249,24 @@ def get_agent_config_endpoint():
     try:
         config = get_agent_config()
         
+        # Try to get live funds from Zerodha if possible
+        zerodha_funds = 0.0
+        try:
+            kite = get_kite_instance()
+            margins = kite.margins()
+            equity_data = margins.get('equity', {})
+            available_value = equity_data.get('available', 0)
+            
+            if isinstance(available_value, dict):
+                zerodha_funds = float(available_value.get('cash', 0))
+                if zerodha_funds == 0:
+                    zerodha_funds = float(equity_data.get('opening_balance', 0) or equity_data.get('live_balance', 0))
+            else:
+                zerodha_funds = float(available_value if available_value else equity_data.get('cash', 0) or equity_data.get('opening_balance', 0))
+        except Exception:
+            # Silently fail if Kite not initialized
+            pass
+
         return {
             "status": "success",
             "data": {
@@ -3888,10 +4278,30 @@ def get_agent_config_endpoint():
                 "agent_temperature": config.agent_temperature,
                 "auto_trade_threshold": config.auto_trade_threshold,
                 "max_position_size": config.max_position_size,
+                "trading_capital": config.trading_capital,
                 "daily_loss_limit": config.daily_loss_limit,
                 "max_trades_per_day": config.max_trades_per_day,
                 "risk_per_trade_pct": config.risk_per_trade_pct,
                 "reward_per_trade_pct": config.reward_per_trade_pct,
+                "autonomous_mode": config.autonomous_mode,
+                "autonomous_scan_interval_mins": config.autonomous_scan_interval_mins,
+                "autonomous_target_group": config.autonomous_target_group,
+                "active_strategies": config.active_strategies,
+                "is_auto_trade_enabled": config.is_auto_trade_enabled,
+                "vwap_proximity_pct": config.vwap_proximity_pct,
+                "vwap_group_proximity_pct": config.vwap_group_proximity_pct,
+                "rejection_shadow_pct": config.rejection_shadow_pct,
+                "prime_session_start": config.prime_session_start,
+                "prime_session_end": config.prime_session_end,
+                "intraday_square_off_time": config.intraday_square_off_time,
+                "trading_start_time": config.trading_start_time,
+                "trading_end_time": config.trading_end_time,
+                "circuit_breaker_enabled": config.circuit_breaker_enabled,
+                "circuit_breaker_loss_threshold": config.circuit_breaker_loss_threshold,
+                "use_gtt_orders": config.use_gtt_orders,
+                "gtt_for_intraday": config.gtt_for_intraday,
+                "gtt_for_positional": config.gtt_for_positional,
+                "zerodha_funds": zerodha_funds
             }
         }
     except Exception as e:
@@ -3930,6 +4340,42 @@ async def update_agent_config(req: Request):
             config.risk_per_trade_pct = float(payload["risk_per_trade_pct"])
         if "reward_per_trade_pct" in payload:
             config.reward_per_trade_pct = float(payload["reward_per_trade_pct"])
+        if "autonomous_mode" in payload:
+            config.autonomous_mode = bool(payload["autonomous_mode"])
+        if "autonomous_scan_interval_mins" in payload:
+            config.autonomous_scan_interval_mins = int(payload["autonomous_scan_interval_mins"])
+        if "autonomous_target_group" in payload:
+            config.autonomous_target_group = str(payload["autonomous_target_group"])
+        if "active_strategies" in payload:
+            config.active_strategies = str(payload["active_strategies"])
+        if "is_auto_trade_enabled" in payload:
+            config.is_auto_trade_enabled = bool(payload["is_auto_trade_enabled"])
+        if "vwap_proximity_pct" in payload:
+            config.vwap_proximity_pct = float(payload["vwap_proximity_pct"])
+        if "vwap_group_proximity_pct" in payload:
+            config.vwap_group_proximity_pct = float(payload["vwap_group_proximity_pct"])
+        if "rejection_shadow_pct" in payload:
+            config.rejection_shadow_pct = float(payload["rejection_shadow_pct"])
+        if "prime_session_start" in payload:
+            config.prime_session_start = str(payload["prime_session_start"])
+        if "prime_session_end" in payload:
+            config.prime_session_end = str(payload["prime_session_end"])
+        if "intraday_square_off_time" in payload:
+            config.intraday_square_off_time = str(payload["intraday_square_off_time"])
+        if "trading_start_time" in payload:
+            config.trading_start_time = str(payload["trading_start_time"])
+        if "trading_end_time" in payload:
+            config.trading_end_time = str(payload["trading_end_time"])
+        if "circuit_breaker_enabled" in payload:
+            config.circuit_breaker_enabled = bool(payload["circuit_breaker_enabled"])
+        if "circuit_breaker_loss_threshold" in payload:
+            config.circuit_breaker_loss_threshold = float(payload["circuit_breaker_loss_threshold"])
+        if "use_gtt_orders" in payload:
+            config.use_gtt_orders = bool(payload["use_gtt_orders"])
+        if "gtt_for_intraday" in payload:
+            config.gtt_for_intraday = bool(payload["gtt_for_intraday"])
+        if "gtt_for_positional" in payload:
+            config.gtt_for_positional = bool(payload["gtt_for_positional"])
             
         # Persist to .env file
         with open(".env", "w") as f:
@@ -3941,11 +4387,33 @@ async def update_agent_config(req: Request):
             f.write(f"AGENT_TEMPERATURE={config.agent_temperature}\n")
             f.write(f"AUTO_TRADE_THRESHOLD={config.auto_trade_threshold}\n")
             f.write(f"MAX_POSITION_SIZE={config.max_position_size}\n")
+            f.write(f"TRADING_CAPITAL={config.trading_capital}\n")
             f.write(f"DAILY_LOSS_LIMIT={config.daily_loss_limit}\n")
-            f.write(f"MAX_TRADES_PER_DAY={config.max_trades_per_day}\n")
+            f.write(            f"MAX_TRADES_PER_DAY={config.max_trades_per_day}\n")
             f.write(f"RISK_PER_TRADE_PCT={config.risk_per_trade_pct}\n")
             f.write(f"REWARD_PER_TRADE_PCT={config.reward_per_trade_pct}\n")
+            f.write(f"AUTONOMOUS_MODE={config.autonomous_mode}\n")
+            f.write(f"AUTONOMOUS_SCAN_INTERVAL_MINS={config.autonomous_scan_interval_mins}\n")
+            f.write(f"AUTONOMOUS_TARGET_GROUP={config.autonomous_target_group}\n")
+            f.write(f"ACTIVE_STRATEGIES={config.active_strategies}\n")
+            f.write(f"IS_AUTO_TRADE_ENABLED={config.is_auto_trade_enabled}\n")
+            f.write(f"VWAP_PROXIMITY_PCT={config.vwap_proximity_pct}\n")
+            f.write(f"VWAP_GROUP_PROXIMITY_PCT={config.vwap_group_proximity_pct}\n")
+            f.write(f"REJECTION_SHADOW_PCT={config.rejection_shadow_pct}\n")
+            f.write(f"PRIME_SESSION_START={config.prime_session_start}\n")
+            f.write(f"PRIME_SESSION_END={config.prime_session_end}\n")
+            f.write(f"INTRADAY_SQUARE_OFF_TIME={config.intraday_square_off_time}\n")
+            f.write(f"TRADING_START_TIME={config.trading_start_time}\n")
+            f.write(f"TRADING_END_TIME={config.trading_end_time}\n")
+            f.write(f"CIRCUIT_BREAKER_ENABLED={config.circuit_breaker_enabled}\n")
+            f.write(f"CIRCUIT_BREAKER_LOSS_THRESHOLD={config.circuit_breaker_loss_threshold}\n")
+            f.write(f"USE_GTT_ORDERS={config.use_gtt_orders}\n")
+            f.write(f"GTT_FOR_INTRADAY={config.gtt_for_intraday}\n")
+            f.write(f"GTT_FOR_POSITIONAL={config.gtt_for_positional}\n")
             
+        # BROADCAST: Notify all clients that config has changed
+        asyncio.create_task(broadcast_agent_update("CONFIG_UPDATED", payload))
+
         return {
             "status": "success",
             "message": "Configuration updated successfully",

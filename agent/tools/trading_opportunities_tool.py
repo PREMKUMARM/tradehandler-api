@@ -9,9 +9,11 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from utils.kite_utils import get_kite_instance
-from agent.tools.instrument_resolver import resolve_instrument_name, get_instrument_token
+from agent.tools.instrument_resolver import resolve_instrument_name, get_instrument_token, bulk_resolve_instruments
 from agent.config import get_agent_config
 from agent.tools.risk_tools import suggest_position_size_tool
+from agent.approval import get_approval_queue
+from agent.ws_manager import add_agent_log
 from kiteconnect.exceptions import KiteException
 
 
@@ -211,18 +213,21 @@ def get_swing_level(prices: List[float], idx: int, lookback: int = 5, find_high:
 
 def is_rejection_candle(open_p: float, high: float, low: float, close: float, candle_type: str = "BULLISH") -> bool:
     """Detect institutional rejection candle (pin bar / hammer)"""
+    config = get_agent_config()
     body = abs(close - open_p)
     candle_range = high - low
     if candle_range == 0: return False
     
+    threshold = config.rejection_shadow_pct / 100.0
+    
     if candle_type == "BULLISH":
-        # Hammer/Pin Bar: Lower shadow should be at least 35% of total range (relaxed from 45%)
+        # Hammer/Pin Bar: Lower shadow should be at least threshold of total range
         lower_shadow = min(open_p, close) - low
-        return (lower_shadow >= candle_range * 0.35) and (close > low + candle_range * 0.3)
+        return (lower_shadow >= candle_range * threshold) and (close > low + candle_range * (threshold * 0.85))
     else:
-        # Shooting Star: Upper shadow should be at least 35% of total range
+        # Shooting Star: Upper shadow should be at least threshold of total range
         upper_shadow = high - max(open_p, close)
-        return (upper_shadow >= candle_range * 0.35) and (close < high - candle_range * 0.3)
+        return (upper_shadow >= candle_range * threshold) and (close < high - candle_range * (threshold * 0.85))
 
 
 def is_engulfing(curr_o, curr_c, prev_o, prev_c, candle_type="BULLISH"):
@@ -283,6 +288,20 @@ def find_indicator_based_trading_opportunities(
         else:
             instrument_names = instrument_name
         
+        # Date resolution
+        if date:
+            target_date = date
+        elif from_date:
+            target_date = from_date
+        else:
+            target_date = datetime.now().strftime("%Y-%m-%d")
+            
+        start_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+        if to_date:
+            end_dt = datetime.strptime(to_date, "%Y-%m-%d").date()
+        else:
+            end_dt = datetime.now().date()
+
         # Load local data if provided
         local_data = None
         sim_metadata = {}
@@ -305,7 +324,11 @@ def find_indicator_based_trading_opportunities(
                 print(f"[DEBUG] Trading Opportunities | Local data file {local_data_file} not found")
 
         kite = get_kite_instance()
-        
+
+        # BULK RESOLVE ALL INSTRUMENTS AT ONCE (to avoid rate limits)
+        print(f"[DEBUG] Bulk resolving {len(instrument_names)} instruments...")
+        resolved_instruments = bulk_resolve_instruments(instrument_names, exchange)
+
         # Helper function to process single instrument
         def process_instrument(inst_name):
             # Check local data first
@@ -319,15 +342,27 @@ def find_indicator_based_trading_opportunities(
                 tradingsymbol = inst_name
                 instrument_info = {"tradingsymbol": inst_name}
             else:
-                # Resolve instrument name
-                resolved = resolve_instrument_name(inst_name, exchange, return_multiple=False)
+                # Use pre-resolved instrument data
+                resolved = resolved_instruments.get(inst_name)
                 if not resolved:
                     return {"status": "error", "error": f"Instrument '{inst_name}' not found"}
-                
+
                 instrument_token = resolved["instrument_token"]
-                tradingsymbol = resolved["tradingsymbol"]
+            tradingsymbol = resolved["tradingsymbol"]
+            
+            # GET LIVE POSITIONS & PENDING (Single stock scan)
+            try:
+                pos_data = kite.positions().get("net", [])
+                if any(p["tradingsymbol"] == tradingsymbol and p["quantity"] != 0 for p in pos_data):
+                    return {"status": "success", "total_opportunities": 0, "message": f"Position already open for {tradingsymbol}"}
                 
-                # Fetch data with lookback
+                pending = get_approval_queue().list_pending()
+                if any(a.get("details", {}).get("symbol") == tradingsymbol for a in pending):
+                    return {"status": "success", "total_opportunities": 0, "message": f"Approval already pending for {tradingsymbol}"}
+            except Exception:
+                pass
+
+            # Fetch data with lookback
                 if interval == "day":
                     fetch_start = start_dt - timedelta(days=200)
                 else:
@@ -424,9 +459,9 @@ def find_indicator_based_trading_opportunities(
                 elif price < e50 and price < e200:
                     regime = "DOWNTREND"
                 
-                # --- PRIME SESSION FILTER (10:15 AM - 02:45 PM) ---
-                # We avoid the extreme volatile open (9:15-10:15) and erratic closing (after 14:45)
-                is_trade_window = datetime.strptime("10:15", "%H:%M").time() <= curr_time <= datetime.strptime("14:45", "%H:%M").time()
+                # --- PRIME SESSION FILTER (From Config) ---
+                # We avoid the extreme volatile open and erratic closing
+                is_trade_window = datetime.strptime(config.prime_session_start, "%H:%M").time() <= curr_time <= datetime.strptime(config.prime_session_end, "%H:%M").time()
                 
                 # --- ONLY STRATEGY: INSTITUTIONAL VWAP + RSI ---
                 signal_type = None
@@ -438,8 +473,8 @@ def find_indicator_based_trading_opportunities(
                     prev_rsi = rsi_values[idx-1]
                     v_price = vwap[idx]
                     
-                    # Check near VWAP (widened to 0.5% from 0.35%)
-                    is_near_vwap = abs(price - v_price) / v_price <= 0.005
+                    # Check near VWAP (Proximity from Config)
+                    is_near_vwap = abs(price - v_price) / v_price <= (config.vwap_proximity_pct / 100.0)
                     
                     if is_near_vwap:
                         if price > v_price: # Potential BUY (Uptrend)
@@ -465,6 +500,7 @@ def find_indicator_based_trading_opportunities(
                                     signal_reason = f"Institutional VWAP: Bearish @ VWAP + RSI {current_rsi:.1f} Turn Down"
 
                 if signal_type:
+                    add_agent_log(f"SIGNAL DETECTED! {signal_type} for {tradingsymbol} at {entry_time.strftime('%H:%M')}", "signal")
                     entry_price = price
                     entry_time = row['date']
                     
@@ -489,6 +525,47 @@ def find_indicator_based_trading_opportunities(
                         "risk_percentage": config.risk_per_trade_pct
                     })
                     qty = position_size_result.get("suggested_quantity", 1)
+
+                    # CREATE APPROVAL
+                    try:
+                        approval_queue = get_approval_queue()
+                        risk_amt = abs(entry_price - stop_loss_price) * qty
+                        reward_amt = abs(take_profit_price - entry_price) * qty
+                        
+                        # Determine if this is a live or simulated approval
+                        is_actually_simulated = local_data_file is not None or target_date != datetime.now().strftime("%Y-%m-%d")
+                        action_prefix = "SIMULATED" if is_actually_simulated else "LIVE"
+
+                        approval_id = approval_queue.create_approval(
+                            action=f"{action_prefix}_{signal_type}",
+                            details={
+                                "symbol": instrument_info["tradingsymbol"],
+                                "type": signal_type,
+                                "price": entry_price,
+                                "qty": qty,
+                                "sl": stop_loss_price,
+                                "tp": take_profit_price,
+                                "is_simulated": is_actually_simulated,
+                                "timestamp": str(entry_time),
+                                "signal_timestamp": datetime.now().isoformat(),  # When signal was generated
+                                "candle_timestamp": entry_time.isoformat() if isinstance(entry_time, datetime) else str(entry_time),  # Candle time
+                                "timeframe": interval  # Candle timeframe (5minute, minute, etc.)
+                            },
+                            trade_value=entry_price * qty,
+                            risk_amount=risk_amt,
+                            reward_amount=reward_amt,
+                            reasoning=signal_reason
+                        )
+                        
+                        # Handle auto-approval if enabled or below threshold
+                        if not approval_queue.needs_approval(entry_price * qty, risk_amt):
+                            approval_queue.approve(approval_id, approved_by="system_auto")
+                            add_agent_log(f"Auto-Approved {signal_type} {tradingsymbol} (Below Threshold)", "info")
+                        else:
+                            add_agent_log(f"Pending User Approval for {signal_type} {tradingsymbol}", "warning")
+
+                    except Exception as e:
+                        print(f"[ERROR] Could not create approval: {e}")
                     
                     # --- EXECUTION / EXIT SEARCH ---
                     exit_idx = None
@@ -529,11 +606,12 @@ def find_indicator_based_trading_opportunities(
                                 exit_reason = "RSI Oversold reached"
                                 break
                         
-                        # 2. End of Day Exit (Intraday Square-off at 3:15 PM)
+                        # 2. End of Day Exit (Intraday Square-off from Config)
                         row_date = df_all.iloc[search_idx]['date']
-                        if row_date.time() >= datetime.strptime("15:15", "%H:%M").time() or df_all.iloc[search_idx]['date_only'] != curr_date_only:
+                        square_off_time = datetime.strptime(config.intraday_square_off_time, "%H:%M").time()
+                        if row_date.time() >= square_off_time or df_all.iloc[search_idx]['date_only'] != curr_date_only:
                             exit_price = curr_p
-                            exit_reason = "3:15 PM Square-off" if row_date.time() >= datetime.strptime("15:15", "%H:%M").time() else "End of Day"
+                            exit_reason = f"{config.intraday_square_off_time} Square-off" if row_date.time() >= square_off_time else "End of Day"
                             break
                     
                     if exit_price is None:
@@ -623,9 +701,7 @@ def find_indicator_based_trading_opportunities(
             print(f"[DEBUG] Starting Global Sequential Analysis for {len(instrument_names)} instruments")
             
             all_instrument_data = {}
-            print(f"[DEBUG] Local data keys: {list(local_data.keys()) if local_data else 'None'}")
-            print(f"[DEBUG] Target instruments: {instrument_names}")
-            print(f"[DEBUG] Target range: {start_dt} to {end_dt}")
+            add_agent_log(f"Starting group scan for {len(instrument_names)} instruments...")
 
             for inst_name in instrument_names:
                 # Check local data first
@@ -654,7 +730,7 @@ def find_indicator_based_trading_opportunities(
                         fetch_start = start_dt - timedelta(days=5)
                     
                     try:
-                        print(f"[DEBUG] Fetching {symbol} from Kite...")
+                        add_agent_log(f"Fetching live data for {symbol}...")
                         data = kite.historical_data(token, fetch_start, end_dt, interval)
                         if not data: continue
                         df = pd.DataFrame(data)
@@ -686,12 +762,43 @@ def find_indicator_based_trading_opportunities(
             # Combine all candles and sort by time
             combined_timeline = pd.concat(all_instrument_data.values()).sort_values('date')
             
+            # DETERMINE IF LIVE MODE: Only process latest candle in live mode
+            is_live_mode = local_data_file is None and target_date == datetime.now().strftime("%Y-%m-%d")
+            
+            if is_live_mode:
+                # LIVE MODE: Only use the MOST RECENT candle (current market state)
+                # Get the latest timestamp across all instruments
+                latest_timestamp = combined_timeline['date'].max()
+                combined_timeline = combined_timeline[combined_timeline['date'] == latest_timestamp]
+                add_agent_log(f"LIVE MODE: Analyzing only the most recent candle at {latest_timestamp} (current market state)", "info")
+                print(f"[DEBUG] LIVE MODE: Filtered to {len(combined_timeline)} candles at latest timestamp {latest_timestamp}")
+            else:
+                # SIMULATION MODE: Process all candles chronologically
+                add_agent_log(f"SIMULATION MODE: Processing {len(combined_timeline)} candles chronologically", "info")
+            
             global_opportunities = []
             active_trade = None # Stores instrument symbol if in trade
             current_capital = config.trading_capital # SMART: Start with configured capital
             
             print(f"[DEBUG] Processing {len(combined_timeline)} total candles across the group timeline")
             
+            # GET LIVE POSITIONS (to avoid duplicates)
+            open_positions = []
+            try:
+                pos_data = kite.positions().get("net", [])
+                open_positions = [p["tradingsymbol"] for p in pos_data if p["quantity"] != 0]
+                if open_positions:
+                    add_agent_log(f"Active positions found: {', '.join(open_positions)}. Scanner will avoid these.")
+            except Exception:
+                pass
+
+            # GET PENDING APPROVALS (to avoid duplicates)
+            pending_approvals = []
+            try:
+                pending_approvals = [a["details"]["symbol"] for a in get_approval_queue().list_pending() if "details" in a and "symbol" in a["details"]]
+            except Exception:
+                pass
+
             # Group by timestamp to process all stocks simultaneously at each candle
             for timestamp, group in combined_timeline.groupby('date'):
                 # 1. If in a trade, only check for exit of that specific instrument
@@ -726,9 +833,10 @@ def find_indicator_based_trading_opportunities(
                         elif not pd.isna(curr_rsi) and curr_rsi < 30:
                             exit_triggered, exit_price, exit_reason = True, curr_p, "RSI Oversold reached"
                     
-                    # End of Day Exit (Intraday Square-off at 3:15 PM)
-                    if not exit_triggered and (timestamp.time() >= datetime.strptime("15:15", "%H:%M").time() or curr_date_only != active_trade['entry_date_only']):
-                        exit_triggered, exit_price, exit_reason = True, curr_p, "3:15 PM Square-off" if timestamp.time() >= datetime.strptime("15:15", "%H:%M").time() else "End of Day"
+                    # End of Day Exit (Intraday Square-off from Config)
+                    square_off_time = datetime.strptime(config.intraday_square_off_time, "%H:%M").time()
+                    if not exit_triggered and (timestamp.time() >= square_off_time or curr_date_only != active_trade['entry_date_only']):
+                        exit_triggered, exit_price, exit_reason = True, curr_p, f"{config.intraday_square_off_time} Square-off" if timestamp.time() >= square_off_time else "End of Day"
                     
                     if exit_triggered:
                         # Record the trade
@@ -757,9 +865,9 @@ def find_indicator_based_trading_opportunities(
                     continue 
 
                 # 2. If NOT in a trade, check for signals across ALL instruments in this candle
-                # --- PRIME SESSION FILTER (10:15 AM - 02:45 PM) ---
+                # --- PRIME SESSION FILTER (From Config) ---
                 curr_time = timestamp.time()
-                is_trade_window = datetime.strptime("10:15", "%H:%M").time() <= curr_time <= datetime.strptime("14:45", "%H:%M").time()
+                is_trade_window = datetime.strptime(config.prime_session_start, "%H:%M").time() <= curr_time <= datetime.strptime(config.prime_session_end, "%H:%M").time()
                 
                 if is_trade_window:
                     for _, row in group.iterrows():
@@ -771,10 +879,14 @@ def find_indicator_based_trading_opportunities(
                         
                         if pd.isna(v_price) or pd.isna(current_rsi): continue
                         
-                        # More inclusive zone for multi-stock scan (0.75% widened from 0.5%)
-                        is_near_vwap = abs(price - v_price) / v_price <= 0.0075
+                        # Proximity from Config
+                        is_near_vwap = abs(price - v_price) / v_price <= (config.vwap_group_proximity_pct / 100.0)
 
                         if is_near_vwap:
+                            # SKIP if already in a live position or have a pending approval
+                            if symbol in open_positions or symbol in pending_approvals:
+                                continue
+
                             signal_type = None
                             if price > v_price and current_rsi < 50: # Potential BUY
                                 bullish_rejection = is_rejection_candle(row['open'], row['high'], row['low'], row['close'], "BULLISH")
@@ -792,7 +904,15 @@ def find_indicator_based_trading_opportunities(
                                     signal_type = "SELL"
                             
                             if signal_type:
-                                print(f"[DEBUG] Global Scan | Found {signal_type} Signal for {symbol} at {timestamp}")
+                                # In live mode, verify this is the most recent candle
+                                if is_live_mode:
+                                    now = datetime.now()
+                                    candle_age_minutes = (now - timestamp).total_seconds() / 60
+                                    if candle_age_minutes > 10:  # If candle is more than 10 minutes old, skip
+                                        add_agent_log(f"⚠️ Skipping stale signal for {symbol} from {timestamp.strftime('%H:%M')} (candle is {candle_age_minutes:.1f} minutes old)", "warning")
+                                        continue
+                                
+                                add_agent_log(f"SIGNAL DETECTED! {signal_type} for {symbol} at {timestamp.strftime('%H:%M')}", "signal")
                                 # Found a valid signal! Enter and lock capital.
                                 entry_price = price
                                 
@@ -819,6 +939,48 @@ def find_indicator_based_trading_opportunities(
                                     "sl": sl, "tp": tp, "qty": ps.get("suggested_quantity", 1),
                                     "reason": f"Institutional VWAP: {signal_type} @ {symbol}"
                                 }
+
+                                # CREATE APPROVAL
+                                try:
+                                    approval_queue = get_approval_queue()
+                                    risk_amt = abs(entry_price - sl) * active_trade["qty"]
+                                    reward_amt = abs(tp - entry_price) * active_trade["qty"]
+                                    
+                                    # Determine if this is a live or simulated approval
+                                    is_actually_simulated = local_data_file is not None or target_date != datetime.now().strftime("%Y-%m-%d")
+                                    action_prefix = "SIMULATED" if is_actually_simulated else "LIVE"
+                                    
+                                    approval_id = approval_queue.create_approval(
+                                        action=f"{action_prefix}_{signal_type}",
+                                        details={
+                                            "symbol": symbol,
+                                            "type": signal_type,
+                                            "price": entry_price,
+                                            "qty": active_trade["qty"],
+                                            "sl": sl,
+                                            "tp": tp,
+                                            "is_simulated": is_actually_simulated,
+                                            "timestamp": str(timestamp),
+                                            "signal_timestamp": datetime.now().isoformat(),  # When signal was generated
+                                            "candle_timestamp": timestamp.isoformat() if isinstance(timestamp, datetime) else str(timestamp),  # Candle time
+                                            "timeframe": interval  # Candle timeframe (5minute, minute, etc.)
+                                        },
+                                        trade_value=entry_price * active_trade["qty"],
+                                        risk_amount=risk_amt,
+                                        reward_amount=reward_amt,
+                                        reasoning=active_trade["reason"]
+                                    )
+                                    
+                                    # Handle auto-approval if enabled or below threshold
+                                    if not approval_queue.needs_approval(entry_price * active_trade["qty"], risk_amt):
+                                        approval_queue.approve(approval_id, approved_by="system_auto")
+                                        add_agent_log(f"Auto-Approved {signal_type} {symbol} (Below Threshold)", "info")
+                                    else:
+                                        add_agent_log(f"Pending User Approval for {signal_type} {symbol}", "warning")
+                                        
+                                except Exception as e:
+                                    print(f"[ERROR] Could not create approval: {e}")
+
                                 break # Only take the first signal found in this candle group
 
             # Results aggregation
@@ -829,6 +991,7 @@ def find_indicator_based_trading_opportunities(
                 }
             
             total_pnl = sum(o["pnl"] for o in global_opportunities)
+            add_agent_log(f"Sequential Scan Complete. Total Trades: {len(global_opportunities)} | Total P&L: ₹{total_pnl:.2f}")
             return {
                 "status": "success",
                 "indicators": indicators, "date": f"{start_dt} to {end_dt}",

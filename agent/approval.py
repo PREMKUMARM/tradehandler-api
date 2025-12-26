@@ -6,18 +6,25 @@ from datetime import datetime
 import uuid
 from agent.config import get_agent_config
 from agent.safety import get_safety_manager
+from database.repositories import get_approval_repository, AgentApproval
+from database.models import AgentApproval as ApprovalModel
 
 
 class ApprovalQueue:
     """Manages approval queue for trades requiring human approval"""
-    
+
     def __init__(self):
-        self.queue: Dict[str, Dict[str, Any]] = {}
         self.config = get_agent_config()
         self.safety = get_safety_manager()
+        self.on_create_callback = None
+        self.repo = get_approval_repository()
     
     def needs_approval(self, trade_value: float, risk_amount: float, trade_type: str = "ORDER") -> bool:
         """Check if a trade needs approval"""
+        # If auto-trade is globally enabled from config, nothing needs approval
+        if self.config.is_auto_trade_enabled:
+            return False
+
         # Auto-approve if below threshold
         if trade_value <= self.config.auto_trade_threshold:
             return False
@@ -39,79 +46,81 @@ class ApprovalQueue:
         details: Dict[str, Any],
         trade_value: float,
         risk_amount: float,
+        reward_amount: float = 0.0,
         reasoning: str = ""
     ) -> str:
         """Create an approval request"""
         approval_id = str(uuid.uuid4())
-        
-        approval = {
-            "approval_id": approval_id,
-            "action": action,
-            "details": details,
-            "trade_value": trade_value,
-            "risk_amount": risk_amount,
-            "risk_percentage": (risk_amount / trade_value) * 100 if trade_value > 0 else 0,
-            "reasoning": reasoning,
-            "status": "PENDING",
-            "created_at": datetime.now().isoformat(),
-            "approved_at": None,
-            "rejected_at": None,
-            "approved_by": None
-        }
-        
-        self.queue[approval_id] = approval
+        now = datetime.now()
+
+        # Calculate risk metrics
+        risk_percentage = (risk_amount / trade_value) * 100 if trade_value > 0 else 0
+        rr_ratio = (reward_amount / risk_amount) if risk_amount > 0 else 0
+
+        # Create approval model
+        approval_model = ApprovalModel(
+            approval_id=approval_id,
+            action=action,
+            details=details,
+            trade_value=trade_value,
+            risk_amount=risk_amount,
+            reward_amount=reward_amount,
+            risk_percentage=risk_percentage,
+            rr_ratio=rr_ratio,
+            reasoning=reasoning,
+            status="PENDING",
+            created_at=now
+        )
+
+        # Save to database
+        success = self.repo.save(approval_model)
+        if not success:
+            raise Exception("Failed to save approval to database")
+
+        # Convert to dict for callback compatibility
+        approval_dict = approval_model.model_dump()
+
+        # Trigger callback if set
+        if self.on_create_callback:
+            try:
+                self.on_create_callback(approval_dict)
+            except Exception as e:
+                print(f"Error in approval callback: {e}")
+
         return approval_id
     
     def get_approval(self, approval_id: str) -> Optional[Dict[str, Any]]:
         """Get approval by ID"""
-        return self.queue.get(approval_id)
-    
+        approval = self.repo.get_by_id(approval_id)
+        return approval.model_dump() if approval else None
+
     def list_pending(self) -> List[Dict[str, Any]]:
         """List all pending approvals"""
-        return [
-            approval for approval in self.queue.values()
-            if approval["status"] == "PENDING"
-        ]
-    
+        approvals = self.repo.get_pending()
+        return [approval.model_dump() for approval in approvals]
+
     def approve(self, approval_id: str, approved_by: str = "user") -> bool:
         """Approve a pending action"""
-        approval = self.queue.get(approval_id)
-        if not approval:
-            return False
-        
-        if approval["status"] != "PENDING":
-            return False
-        
-        approval["status"] = "APPROVED"
-        approval["approved_at"] = datetime.now().isoformat()
-        approval["approved_by"] = approved_by
-        
-        return True
-    
+        return self.repo.update_status(approval_id, "APPROVED", approved_by=approved_by)
+
     def reject(self, approval_id: str, reason: str = "", rejected_by: str = "user") -> bool:
         """Reject a pending action"""
-        approval = self.queue.get(approval_id)
-        if not approval:
-            return False
-        
-        if approval["status"] != "PENDING":
-            return False
-        
-        approval["status"] = "REJECTED"
-        approval["rejected_at"] = datetime.now().isoformat()
-        approval["rejected_by"] = rejected_by
-        approval["rejection_reason"] = reason
-        
-        return True
+        return self.repo.update_status(approval_id, "REJECTED", rejected_by=rejected_by, rejection_reason=reason)
     
+    def list_approved(self) -> List[Dict[str, Any]]:
+        """List all approved trades"""
+        approvals = self.repo.get_approved()
+        return [approval.model_dump() for approval in approvals]
+
     def get_stats(self) -> Dict[str, Any]:
         """Get approval queue statistics"""
-        pending = len([a for a in self.queue.values() if a["status"] == "PENDING"])
-        approved = len([a for a in self.queue.values() if a["status"] == "APPROVED"])
-        rejected = len([a for a in self.queue.values() if a["status"] == "REJECTED"])
-        
+        all_approvals = self.repo.get_all()
+        pending = len([a for a in all_approvals if a.status == "PENDING"])
+        approved = len([a for a in all_approvals if a.status == "APPROVED"])
+        rejected = len([a for a in all_approvals if a.status == "REJECTED"])
+
         return {
-            "total": len(self.queue),
+            "total": len(all_approvals),
             "pending": pending,
             "approved": approved,
             "rejected": rejected

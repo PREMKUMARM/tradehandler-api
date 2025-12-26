@@ -9,6 +9,11 @@ from .kite_tools import (
     get_orders_tool,
     get_balance_tool,
     exit_position_tool,
+    place_gtt_tool,
+    modify_gtt_tool,
+    delete_gtt_tool,
+    get_gtt_tool,
+    get_gtts_tool,
 )
 from .market_tools import (
     get_quote_tool,
@@ -61,6 +66,12 @@ __all__ = [
     "get_orders_tool",
     "get_balance_tool",
     "exit_position_tool",
+    # GTT tools
+    "place_gtt_tool",
+    "modify_gtt_tool",
+    "delete_gtt_tool",
+    "get_gtt_tool",
+    "get_gtts_tool",
     # Market tools
     "get_quote_tool",
     "get_historical_data_tool",
@@ -105,6 +116,11 @@ ALL_TOOLS = [
     get_orders_tool,
     get_balance_tool,
     exit_position_tool,
+    place_gtt_tool,
+    modify_gtt_tool,
+    delete_gtt_tool,
+    get_gtt_tool,
+    get_gtts_tool,
     get_quote_tool,
     get_historical_data_tool,
     analyze_trend_tool,
