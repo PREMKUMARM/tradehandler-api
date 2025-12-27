@@ -270,19 +270,20 @@ class AgentLogRepository:
 
 
 class AgentConfigRepository:
-    """Repository for agent configuration"""
+    """Repository for agent configuration (user-specific)"""
 
     def save(self, config: AgentConfig) -> bool:
-        """Save configuration"""
+        """Save configuration for a specific user"""
         try:
             db = get_database()
             query = '''
                 INSERT OR REPLACE INTO agent_config
-                (key, value, value_type, category, description, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (key, user_id, value, value_type, category, description, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             '''
             params = (
                 config.key,
+                config.user_id,
                 config.value,
                 config.value_type,
                 config.category,
@@ -297,44 +298,60 @@ class AgentConfigRepository:
             print(f"Error saving config: {e}")
             return False
 
-    def get_by_key(self, key: str) -> Optional[AgentConfig]:
-        """Get config by key"""
+    def get_by_key(self, key: str, user_id: str = "default") -> Optional[AgentConfig]:
+        """Get configuration by key for a specific user"""
         try:
             db = get_database()
             cursor = db.execute_query(
-                "SELECT * FROM agent_config WHERE key = ?",
-                (key,)
+                "SELECT * FROM agent_config WHERE key = ? AND user_id = ?",
+                (key, user_id)
             )
             row = cursor.fetchone()
             if row:
                 return self._row_to_config(row)
+            return None
         except Exception as e:
             print(f"Error getting config: {e}")
-        return None
+            return None
 
-    def get_by_category(self, category: str) -> List[AgentConfig]:
-        """Get configs by category"""
+    def get_all(self, user_id: str = "default") -> List[AgentConfig]:
+        """Get all configurations for a specific user"""
         try:
             db = get_database()
             cursor = db.execute_query(
-                "SELECT * FROM agent_config WHERE category = ? ORDER BY key",
-                (category,)
-            )
-            return [self._row_to_config(row) for row in cursor.fetchall()]
-        except Exception as e:
-            print(f"Error getting configs by category: {e}")
-            return []
-
-    def get_all(self) -> List[AgentConfig]:
-        """Get all configurations"""
-        try:
-            db = get_database()
-            cursor = db.execute_query(
-                "SELECT * FROM agent_config ORDER BY category, key"
+                "SELECT * FROM agent_config WHERE user_id = ? ORDER BY category, key",
+                (user_id,)
             )
             return [self._row_to_config(row) for row in cursor.fetchall()]
         except Exception as e:
             print(f"Error getting all configs: {e}")
+            return []
+
+    def delete(self, key: str, user_id: str = "default") -> bool:
+        """Delete configuration for a specific user"""
+        try:
+            db = get_database()
+            db.execute_query(
+                "DELETE FROM agent_config WHERE key = ? AND user_id = ?",
+                (key, user_id)
+            )
+            db.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting config: {e}")
+            return False
+
+    def get_by_category(self, category: str, user_id: str = "default") -> List[AgentConfig]:
+        """Get configs by category for a specific user"""
+        try:
+            db = get_database()
+            cursor = db.execute_query(
+                "SELECT * FROM agent_config WHERE category = ? AND user_id = ? ORDER BY key",
+                (category, user_id)
+            )
+            return [self._row_to_config(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting configs by category: {e}")
             return []
 
     def _row_to_config(self, row) -> AgentConfig:

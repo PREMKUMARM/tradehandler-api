@@ -69,6 +69,11 @@ class AgentConfig(BaseSettings):
     gtt_for_intraday: bool = False  # Use GTT for intraday trades (MIS)
     gtt_for_positional: bool = True  # Use GTT for positional trades (CNC)
     
+    # Zerodha Kite Connect Configuration
+    kite_api_key: Optional[str] = None  # Zerodha Kite Connect API Key
+    kite_api_secret: Optional[str] = None  # Zerodha Kite Connect API Secret
+    kite_redirect_uri: str = "http://localhost:4200/auth-token"  # OAuth redirect URI
+    
     class Config:
         env_file = ".env"
         env_prefix = ""

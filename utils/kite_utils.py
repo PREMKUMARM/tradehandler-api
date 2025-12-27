@@ -5,8 +5,20 @@ from typing import Optional
 from kiteconnect import KiteConnect
 from fastapi import HTTPException
 
-# Global API key - try to get from environment, otherwise use default
-api_key = os.getenv('KITE_API_KEY', 'gle4opgggiing1ol')
+# Global API key - get from AgentConfig (managed via UI) or environment
+def get_kite_api_key():
+    """Get Kite API key from AgentConfig or environment"""
+    try:
+        from agent.config import get_agent_config
+        config = get_agent_config()
+        if config.kite_api_key:
+            return config.kite_api_key
+    except:
+        pass
+    # Fallback to environment variable
+    return os.getenv('KITE_API_KEY', 'gle4opgggiing1ol')
+
+api_key = get_kite_api_key()
 
 def get_access_token():
     """Read access token from config file"""

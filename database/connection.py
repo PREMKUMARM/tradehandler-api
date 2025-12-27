@@ -88,6 +88,30 @@ class DatabaseConnection:
             )
         ''')
 
+        # Users Table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT,
+                picture TEXT,
+                google_id TEXT UNIQUE,
+                created_at TEXT NOT NULL,
+                last_login TEXT,
+                is_active INTEGER DEFAULT 1
+            )
+        ''')
+        
+        # Create index for faster lookups
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_users_email 
+            ON users(email)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_users_google_id 
+            ON users(google_id)
+        ''')
+
         # Agent Logs Table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS agent_logs (
@@ -100,16 +124,73 @@ class DatabaseConnection:
             )
         ''')
 
-        # Agent Config Table
+        # Agent Config Table (user-specific)
+        # First, check if table exists and if it has user_id column
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_config'")
+        table_exists = cursor.fetchone() is not None
+        
+        if table_exists:
+            # Check if user_id column exists
+            cursor.execute("PRAGMA table_info(agent_config)")
+            columns = [row[1] for row in cursor.fetchall()]
+            has_user_id = 'user_id' in columns
+            
+            if not has_user_id:
+                # Migration: Recreate table with user_id column
+                try:
+                    # Create new table with correct schema
+                    cursor.execute('''
+                        CREATE TABLE agent_config_new (
+                            key TEXT NOT NULL,
+                            user_id TEXT NOT NULL DEFAULT 'default',
+                            value TEXT NOT NULL,
+                            value_type TEXT NOT NULL,
+                            category TEXT NOT NULL,
+                            description TEXT,
+                            updated_at TEXT NOT NULL,
+                            PRIMARY KEY (key, user_id)
+                        )
+                    ''')
+                    
+                    # Copy data from old table to new table (assign all to 'default' user)
+                    cursor.execute('''
+                        INSERT INTO agent_config_new (key, user_id, value, value_type, category, description, updated_at)
+                        SELECT key, 'default', value, value_type, category, description, updated_at
+                        FROM agent_config
+                    ''')
+                    
+                    # Drop old table
+                    cursor.execute('DROP TABLE agent_config')
+                    
+                    # Rename new table
+                    cursor.execute('ALTER TABLE agent_config_new RENAME TO agent_config')
+                    
+                    conn.commit()
+                    
+                except sqlite3.OperationalError as e:
+                    # If migration fails, log and continue
+                    print(f"Warning: Could not migrate agent_config table: {e}")
+                    # Try to create table anyway (will fail if old table exists)
+                    pass
+        
+        # Create table with new schema if it doesn't exist
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS agent_config (
-                key TEXT PRIMARY KEY,
+                key TEXT NOT NULL,
+                user_id TEXT NOT NULL DEFAULT 'default',
                 value TEXT NOT NULL,
                 value_type TEXT NOT NULL,
                 category TEXT NOT NULL,
                 description TEXT,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (key, user_id)
             )
+        ''')
+        
+        # Create index for faster user-based queries
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_agent_config_user_id 
+            ON agent_config(user_id)
         ''')
 
         # Simulation Results Table

@@ -9,8 +9,10 @@ from datetime import datetime
 
 from core.responses import SuccessResponse, ErrorResponse, APIResponse
 from core.exceptions import ValidationError, NotFoundError
+from core.user_context import get_user_id_from_request
 from agent.approval import get_approval_queue
 from agent.config import get_agent_config
+from agent.user_config import get_user_config, save_user_config
 from agent.graph import run_agent
 from agent.ws_manager import broadcast_agent_update, add_agent_log
 from agent.tools.kite_tools import place_order_tool, cancel_order_tool, place_gtt_tool
@@ -184,6 +186,7 @@ async def get_agent_config_endpoint(request: Request):
             "ollama_base_url": config.ollama_base_url,
             "agent_model": config.agent_model,
             "agent_temperature": config.agent_temperature,
+            "max_tokens": config.max_tokens,
             "auto_trade_threshold": auto_trade_threshold,
             "max_position_size": max_position_size,
             "trading_capital": trading_capital,
@@ -209,6 +212,9 @@ async def get_agent_config_endpoint(request: Request):
             "use_gtt_orders": config.use_gtt_orders,
             "gtt_for_intraday": config.gtt_for_intraday,
             "gtt_for_positional": config.gtt_for_positional,
+            "kite_api_key": config.kite_api_key or "",
+            "kite_api_secret": config.kite_api_secret or "",
+            "kite_redirect_uri": config.kite_redirect_uri,
             "zerodha_funds": zerodha_funds
         }
         
@@ -222,11 +228,13 @@ async def update_agent_config(
     request: Request,
     config_update: ConfigUpdateRequest
 ):
-    """Update agent configuration"""
+    """Update agent configuration for the logged-in user"""
     request_id = get_request_id(request)
+    user_id = get_user_id_from_request(request)
     
     try:
-        config = get_agent_config()
+        # Load current user config
+        config = get_user_config(user_id=user_id)
         update_dict = config_update.model_dump(exclude_unset=True)
         
         # Update config fields
@@ -235,15 +243,16 @@ async def update_agent_config(
             config.llm_provider = LLMProvider(update_dict["llm_provider"])
         for field in [
             "openai_api_key", "anthropic_api_key", "ollama_base_url",
-            "agent_model", "agent_temperature", "auto_trade_threshold",
+            "agent_model", "agent_temperature", "max_tokens", "auto_trade_threshold",
             "max_position_size", "trading_capital", "daily_loss_limit",
             "max_trades_per_day", "risk_per_trade_pct", "reward_per_trade_pct",
             "autonomous_mode", "autonomous_scan_interval_mins", "autonomous_target_group",
             "active_strategies", "is_auto_trade_enabled", "vwap_proximity_pct",
             "vwap_group_proximity_pct", "rejection_shadow_pct", "prime_session_start",
-            "prime_session_end", "intraday_square_off_time", "trading_start_time",
+            "prime_session_end",             "intraday_square_off_time", "trading_start_time",
             "trading_end_time", "circuit_breaker_enabled", "circuit_breaker_loss_threshold",
-            "use_gtt_orders", "gtt_for_intraday", "gtt_for_positional"
+            "use_gtt_orders", "gtt_for_intraday", "gtt_for_positional",
+            "kite_api_key", "kite_api_secret", "kite_redirect_uri"
         ]:
             if field in update_dict:
                 setattr(config, field, update_dict[field])
@@ -270,6 +279,7 @@ async def update_agent_config(
             "OLLAMA_BASE_URL": config.ollama_base_url,
             "AGENT_MODEL": config.agent_model,
             "AGENT_TEMPERATURE": str(config.agent_temperature),
+            "MAX_TOKENS": str(config.max_tokens),
             "AUTO_TRADE_THRESHOLD": str(config.auto_trade_threshold),
             "MAX_POSITION_SIZE": str(config.max_position_size),
             "TRADING_CAPITAL": str(config.trading_capital),
@@ -295,9 +305,15 @@ async def update_agent_config(
             "USE_GTT_ORDERS": str(config.use_gtt_orders),
             "GTT_FOR_INTRADAY": str(config.gtt_for_intraday),
             "GTT_FOR_POSITIONAL": str(config.gtt_for_positional),
+            "KITE_API_KEY": config.kite_api_key or "",
+            "KITE_API_SECRET": config.kite_api_secret or "",
+            "KITE_REDIRECT_URI": config.kite_redirect_uri,
         })
         
-        # Write back to .env
+        # Save user-specific config to database
+        save_user_config(user_id=user_id, config=config)
+        
+        # Write back to .env (for backward compatibility - global defaults)
         with open(".env", "w") as f:
             for key, value in env_dict.items():
                 f.write(f"{key}={value}\n")

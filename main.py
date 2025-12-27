@@ -1455,13 +1455,17 @@ def get_login_url():
     """Get Kite Connect login URL"""
     try:
         # Validate API key is set
-        if api_key == 'your_api_key_here' or not api_key:
+        # Get API key from config (may have been updated via UI)
+        from agent.config import get_agent_config
+        config = get_agent_config()
+        current_api_key = config.kite_api_key or api_key
+        if current_api_key == 'your_api_key_here' or not current_api_key:
             raise HTTPException(
                 status_code=500, 
-                detail="KITE_API_KEY is not configured. Please set it in environment variables or main.py"
+                detail="KITE_API_KEY is not configured. Please set it in the Configuration page or environment variables"
             )
         
-        kite = KiteConnect(api_key=api_key)
+        kite = KiteConnect(api_key=current_api_key)
         login_url = kite.login_url()
         print(f"Generated login URL with redirect_uri: {redirect_uri}")
         return {
@@ -1493,21 +1497,27 @@ async def set_token(req: Request):
         # If request_token is provided, generate access_token
         if request_token:
             # Validate API key and secret are set
-            if api_key == 'your_api_key_here' or not api_key:
+            # Get credentials from config (may have been updated via UI)
+            from agent.config import get_agent_config
+            config = get_agent_config()
+            current_api_key = config.kite_api_key or api_key
+            current_api_secret = config.kite_api_secret or api_secret
+            
+            if current_api_key == 'your_api_key_here' or not current_api_key:
                 raise HTTPException(
                     status_code=500, 
-                    detail="KITE_API_KEY is not configured. Please set it in environment variables or main.py"
+                    detail="KITE_API_KEY is not configured. Please set it in the Configuration page or environment variables"
                 )
-            if api_secret == 'your_api_secret_here' or not api_secret:
+            if current_api_secret == 'your_api_secret_here' or not current_api_secret:
                 raise HTTPException(
                     status_code=500, 
-                    detail="KITE_API_SECRET is not configured. Please set it in environment variables or main.py"
+                    detail="KITE_API_SECRET is not configured. Please set it in the Configuration page or environment variables"
                 )
             
-            kite = KiteConnect(api_key=api_key)
+            kite = KiteConnect(api_key=current_api_key)
             try:
                 print(f"Attempting to generate session with request_token...")
-                data_response = kite.generate_session(request_token, api_secret=api_secret)
+                data_response = kite.generate_session(request_token, api_secret=current_api_secret)
                 access_token = data_response.get('access_token')
                 print(f"Access token generated successfully: {access_token[:20] if access_token else None}...")
             except KiteException as e:
@@ -4302,10 +4312,11 @@ def get_agent_config_endpoint():
                 "ollama_base_url": config.ollama_base_url,
                 "agent_model": config.agent_model,
                 "agent_temperature": config.agent_temperature,
-                "auto_trade_threshold": config.auto_trade_threshold,
-                "max_position_size": config.max_position_size,
-                "trading_capital": config.trading_capital,
-                "daily_loss_limit": config.daily_loss_limit,
+                "max_tokens": config.max_tokens,
+                "auto_trade_threshold": auto_trade_threshold,
+                "max_position_size": max_position_size,
+                "trading_capital": trading_capital,
+                "daily_loss_limit": daily_loss_limit,
                 "max_trades_per_day": config.max_trades_per_day,
                 "risk_per_trade_pct": config.risk_per_trade_pct,
                 "reward_per_trade_pct": config.reward_per_trade_pct,
@@ -4323,10 +4334,13 @@ def get_agent_config_endpoint():
                 "trading_start_time": config.trading_start_time,
                 "trading_end_time": config.trading_end_time,
                 "circuit_breaker_enabled": config.circuit_breaker_enabled,
-                "circuit_breaker_loss_threshold": config.circuit_breaker_loss_threshold,
+                "circuit_breaker_loss_threshold": circuit_breaker_loss_threshold,
                 "use_gtt_orders": config.use_gtt_orders,
                 "gtt_for_intraday": config.gtt_for_intraday,
                 "gtt_for_positional": config.gtt_for_positional,
+                "kite_api_key": config.kite_api_key or "",
+                "kite_api_secret": config.kite_api_secret or "",
+                "kite_redirect_uri": config.kite_redirect_uri,
                 "zerodha_funds": zerodha_funds
             }
         }
@@ -4354,6 +4368,10 @@ async def update_agent_config(req: Request):
             config.agent_model = payload["agent_model"]
         if "agent_temperature" in payload:
             config.agent_temperature = float(payload["agent_temperature"])
+        if "max_tokens" in payload:
+            config.max_tokens = int(payload["max_tokens"])
+        if "trading_capital" in payload:
+            config.trading_capital = float(payload["trading_capital"])
         if "auto_trade_threshold" in payload:
             config.auto_trade_threshold = float(payload["auto_trade_threshold"])
         if "max_position_size" in payload:
@@ -4402,6 +4420,12 @@ async def update_agent_config(req: Request):
             config.gtt_for_intraday = bool(payload["gtt_for_intraday"])
         if "gtt_for_positional" in payload:
             config.gtt_for_positional = bool(payload["gtt_for_positional"])
+        if "kite_api_key" in payload:
+            config.kite_api_key = str(payload["kite_api_key"])
+        if "kite_api_secret" in payload:
+            config.kite_api_secret = str(payload["kite_api_secret"])
+        if "kite_redirect_uri" in payload:
+            config.kite_redirect_uri = str(payload["kite_redirect_uri"])
             
         # Persist to .env file
         with open(".env", "w") as f:
@@ -4411,11 +4435,12 @@ async def update_agent_config(req: Request):
             f.write(f"OLLAMA_BASE_URL={config.ollama_base_url}\n")
             f.write(f"AGENT_MODEL={config.agent_model}\n")
             f.write(f"AGENT_TEMPERATURE={config.agent_temperature}\n")
+            f.write(f"MAX_TOKENS={config.max_tokens}\n")
             f.write(f"AUTO_TRADE_THRESHOLD={config.auto_trade_threshold}\n")
             f.write(f"MAX_POSITION_SIZE={config.max_position_size}\n")
             f.write(f"TRADING_CAPITAL={config.trading_capital}\n")
             f.write(f"DAILY_LOSS_LIMIT={config.daily_loss_limit}\n")
-            f.write(            f"MAX_TRADES_PER_DAY={config.max_trades_per_day}\n")
+            f.write(f"MAX_TRADES_PER_DAY={config.max_trades_per_day}\n")
             f.write(f"RISK_PER_TRADE_PCT={config.risk_per_trade_pct}\n")
             f.write(f"REWARD_PER_TRADE_PCT={config.reward_per_trade_pct}\n")
             f.write(f"AUTONOMOUS_MODE={config.autonomous_mode}\n")
@@ -4436,6 +4461,9 @@ async def update_agent_config(req: Request):
             f.write(f"USE_GTT_ORDERS={config.use_gtt_orders}\n")
             f.write(f"GTT_FOR_INTRADAY={config.gtt_for_intraday}\n")
             f.write(f"GTT_FOR_POSITIONAL={config.gtt_for_positional}\n")
+            f.write(f"KITE_API_KEY={config.kite_api_key or ''}\n")
+            f.write(f"KITE_API_SECRET={config.kite_api_secret or ''}\n")
+            f.write(f"KITE_REDIRECT_URI={config.kite_redirect_uri}\n")
             
         # BROADCAST: Notify all clients that config has changed
         asyncio.create_task(broadcast_agent_update("CONFIG_UPDATED", payload))

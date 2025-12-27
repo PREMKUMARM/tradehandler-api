@@ -6,6 +6,18 @@ from typing import Optional, Dict, Any
 from pydantic import BaseModel
 
 
+class User(BaseModel):
+    """Model for user information"""
+    user_id: str
+    email: str
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    google_id: Optional[str] = None
+    created_at: datetime
+    last_login: Optional[datetime] = None
+    is_active: bool = True
+
+
 class AgentApproval(BaseModel):
     """Model for agent approvals and trade decisions"""
     approval_id: str
@@ -47,6 +59,7 @@ class AgentLog(BaseModel):
 class AgentConfig(BaseModel):
     """Model for agent configuration settings"""
     key: str
+    user_id: str = "default"  # User identifier for multi-user support
     value: str
     value_type: str  # str, int, float, bool
     category: str  # ai, autonomous, strategy, capital, market
