@@ -525,7 +525,7 @@ def execute_tools_node(state: AgentState) -> AgentState:
 
                 # Log detailed interaction for file-based debugging
                 log_tool_interaction(tool_name, tool_args, result)
-                print(f"[DEBUG] execute_tools_node | Tool {tool_name} finished successfully in {execution_time:.2f}s")
+                log_agent_activity(f"Tool {tool_name} finished successfully in {execution_time:.2f}s", "debug")
             
             # Save tool execution to database
             try:

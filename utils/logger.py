@@ -1,66 +1,101 @@
+"""
+Enterprise logging utility
+Centralized logging with structured format
+"""
 import logging
-import os
+import sys
+from pathlib import Path
 from datetime import datetime
-import json
-from typing import Any, Dict
+from typing import Optional
 
 # Create logs directory if it doesn't exist
-LOG_DIR = "logs"
-if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR)
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
 
-# Configure the main logger
-logger = logging.getLogger("tradehandler_agent")
-logger.setLevel(logging.DEBUG)
+# Configure root logger
+def setup_logging(log_level: str = "INFO"):
+    """Setup enterprise-level logging configuration"""
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format='%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(LOG_DIR / "app.log", encoding="utf-8")
+        ]
+    )
 
-# File handler for all logs
-file_handler = logging.FileHandler(os.path.join(LOG_DIR, "agent.log"))
-file_handler.setLevel(logging.DEBUG)
 
-# Console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+class RequestContextFilter(logging.Filter):
+    """Add request ID to log records"""
+    def filter(self, record):
+        record.request_id = getattr(record, 'request_id', 'N/A')
+        return True
 
-# Formatter
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-console_handler.setFormatter(formatter)
 
-# Add handlers
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-
-# Tool execution logger (specifically for inputs/outputs)
-tool_logger = logging.getLogger("tool_monitor")
-tool_logger.setLevel(logging.DEBUG)
-tool_file_handler = logging.FileHandler(os.path.join(LOG_DIR, "tools.log"))
-tool_file_handler.setFormatter(formatter)
-tool_logger.addHandler(tool_file_handler)
-
-def log_agent_activity(message: str, level: str = "info"):
-    """Log general agent activity"""
-    if level.lower() == "debug":
-        logger.debug(message)
-    elif level.lower() == "warning":
-        logger.warning(message)
-    elif level.lower() == "error":
-        logger.error(message)
-    else:
-        logger.info(message)
-
-def log_tool_interaction(tool_name: str, inputs: Dict[str, Any], output: Any):
-    """Log tool inputs and outputs specifically for debugging"""
-    try:
-        interaction = {
-            "timestamp": datetime.now().isoformat(),
-            "tool": tool_name,
-            "inputs": inputs,
-            "output_preview": str(output)[:1000] + ("..." if len(str(output)) > 1000 else "")
-        }
-        tool_logger.debug(f"TOOL_CALL | {json.dumps(interaction, indent=2, default=str)}")
-    except Exception as e:
-        tool_logger.error(f"Error logging tool interaction: {e}")
-
-def get_logger():
+def get_logger(name: str) -> logging.Logger:
+    """Get a logger instance with request context support"""
+    logger = logging.getLogger(name)
+    logger.addFilter(RequestContextFilter())
     return logger
 
+
+def log_agent_activity(message: str, level: str = "info", request_id: Optional[str] = None):
+    """
+    Log agent activity with structured format
+    
+    Args:
+        message: Log message
+        level: Log level (info, error, warning, debug)
+        request_id: Optional request ID for tracing
+    """
+    logger = get_logger("agent")
+    
+    # Add request ID to log record
+    extra = {"request_id": request_id or "N/A"}
+    
+    level_map = {
+        "info": logger.info,
+        "error": logger.error,
+        "warning": logger.warning,
+        "debug": logger.debug,
+        "critical": logger.critical
+    }
+    
+    log_func = level_map.get(level.lower(), logger.info)
+    log_func(message, extra=extra)
+
+
+def log_tool_execution(tool_name: str, input_data: dict, output_data: dict, 
+                      request_id: Optional[str] = None, duration_ms: Optional[float] = None):
+    """
+    Log tool execution with input/output
+    
+    Args:
+        tool_name: Name of the tool
+        input_data: Tool input parameters
+        output_data: Tool output
+        request_id: Optional request ID
+        duration_ms: Execution duration in milliseconds
+    """
+    logger = get_logger("tools")
+    extra = {"request_id": request_id or "N/A"}
+    
+    log_message = f"Tool: {tool_name}"
+    if duration_ms:
+        log_message += f" | Duration: {duration_ms:.2f}ms"
+    
+    logger.debug(f"{log_message} | Input: {input_data} | Output: {output_data}", extra=extra)
+
+
+def log_tool_interaction(tool_name: str, input_data: dict, output_data: dict, 
+                        request_id: Optional[str] = None):
+    """
+    Log tool interaction (alias for log_tool_execution for backward compatibility)
+    
+    Args:
+        tool_name: Name of the tool
+        input_data: Tool input parameters
+        output_data: Tool output
+        request_id: Optional request ID
+    """
+    log_tool_execution(tool_name, input_data, output_data, request_id)

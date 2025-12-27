@@ -1,8 +1,17 @@
 # TradeHandler AI - Trading Agent API
 
-A sophisticated AI-powered trading agent platform built with FastAPI, LangGraph, and Zerodha Kite Connect. The system provides autonomous market scanning, intelligent trade signal generation, risk management, and hybrid human-AI approval workflows.
+A sophisticated, enterprise-grade AI-powered trading agent platform built with FastAPI, LangGraph, and Zerodha Kite Connect. The system provides autonomous market scanning, intelligent trade signal generation, risk management, and hybrid human-AI approval workflows with comprehensive error handling, logging, and monitoring.
 
 ## 🚀 Features
+
+### Enterprise-Level Architecture
+- **API Versioning**: RESTful API with versioning support (`/api/v1/`)
+- **Request/Response Standardization**: Consistent response format with request ID tracking
+- **Comprehensive Error Handling**: Global exception handling with structured error responses
+- **Request Tracing**: Unique request ID for every request for end-to-end debugging
+- **Structured Logging**: Request/response logging with performance metrics
+- **Input Validation**: Pydantic-based request validation for type safety
+- **Auto-Generated Documentation**: OpenAPI/Swagger docs at `/docs` and ReDoc at `/redoc`
 
 ### Core Capabilities
 - **AI Trading Agent**: LangGraph-based intelligent agent that understands natural language queries and executes trading operations
@@ -46,16 +55,37 @@ tradehandler-api/
 │       ├── risk_tools.py    # Risk calculation tools
 │       ├── simulation_tools.py  # Historical simulation
 │       └── ...
+├── api/                      # API routes (enterprise structure)
+│   └── v1/                  # API version 1
+│       ├── __init__.py     # API router aggregation
+│       ├── health.py       # Health check endpoints
+│       └── routes/          # Modular route handlers
+│           └── agent.py    # Agent endpoints router
+├── core/                     # Core enterprise components
+│   ├── config.py           # Application settings
+│   ├── dependencies.py     # Dependency injection
+│   ├── exceptions.py       # Custom exception hierarchy
+│   ├── responses.py        # Standardized response models
+│   └── validators.py      # Input validation utilities
+├── middleware/              # Enterprise middleware stack
+│   ├── error_handler.py   # Global error handling
+│   ├── logging.py         # Request/response logging
+│   ├── request_id.py      # Request ID tracking
+│   └── __init__.py        # Middleware exports
+├── schemas/                 # Request/response schemas
+│   └── agent.py           # Agent API schemas
 ├── database/                # SQLite database layer
 │   ├── models.py           # Pydantic models
-│   ├── connection.py      # Database connection (thread-safe)
-│   └── repositories.py    # Data access layer
+│   ├── connection.py       # Database connection (thread-safe)
+│   └── repositories.py     # Data access layer
 ├── utils/                   # Utilities
-│   ├── kite_utils.py      # Kite Connect helpers
+│   ├── kite_utils.py       # Kite Connect helpers
 │   └── logger.py          # File-based logging
-├── main.py                 # FastAPI application
-├── requirements.txt        # Python dependencies
-└── .env                    # Environment configuration
+├── main.py                  # FastAPI application (enterprise setup)
+├── requirements.txt         # Python dependencies
+├── .env                     # Environment configuration
+├── ENTERPRISE_UPGRADE.md    # Enterprise upgrade documentation
+└── CHANGELOG_ENTERPRISE.md  # Enterprise upgrade changelog
 ```
 
 ## 🛠️ Installation
@@ -134,20 +164,41 @@ python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 
 The API will be available at `http://localhost:8000`
 
+### API Documentation
+Once the server is running, visit:
+- **Swagger UI**: `http://localhost:8000/docs` - Interactive API documentation
+- **ReDoc**: `http://localhost:8000/redoc` - Alternative documentation format
+
 ## 📡 API Endpoints
 
-### Agent Endpoints
-- `POST /agent/chat` - Chat with the AI agent
-- `GET /agent/status` - Get agent status
-- `GET /agent/config` - Get agent configuration
-- `POST /agent/config` - Update agent configuration
-- `GET /agent/approvals` - Get pending approvals
-- `GET /agent/approved-trades` - Get approved trades
-- `POST /agent/approve/{approval_id}` - Approve a trade
-- `POST /agent/reject/{approval_id}` - Reject a trade
+### Enterprise API Endpoints (Recommended)
+All endpoints under `/api/v1/` with standardized request/response format:
+
+**Agent Endpoints**
+- `POST /api/v1/agent/chat` - Chat with the AI agent
+- `GET /api/v1/agent/status` - Get agent status
+- `GET /api/v1/agent/config` - Get agent configuration
+- `POST /api/v1/agent/config` - Update agent configuration
+- `GET /api/v1/agent/approvals` - Get pending approvals
+- `GET /api/v1/agent/approved-trades` - Get approved trades
+- `POST /api/v1/agent/approve/{approval_id}` - Approve a trade
+- `POST /api/v1/agent/reject/{approval_id}` - Reject a trade
+
+**Health & Monitoring**
+- `GET /api/v1/health/health` - Health check endpoint
+- `GET /api/v1/health/ready` - Readiness check (Kubernetes)
+- `GET /api/v1/health/live` - Liveness check (Kubernetes)
+
+### Legacy Endpoints (Backward Compatible)
+All legacy endpoints at `/agent/*` continue to work for backward compatibility.
 
 ### WebSocket Endpoints
 - `WS /ws/agent` - Real-time agent updates (approvals, logs, status)
+
+### API Documentation
+- `GET /docs` - Interactive Swagger/OpenAPI documentation
+- `GET /redoc` - Alternative ReDoc documentation
+- `GET /openapi.json` - OpenAPI schema JSON
 
 ### Market Data Endpoints
 - `GET /api/quote/{exchange}/{symbol}` - Get current quote
@@ -220,27 +271,51 @@ The SQLite database stores:
 - **tool_executions**: Tool input/output logs
 - **chat_messages**: Conversation history
 
-## 📝 Logging
+## 📝 Logging & Monitoring
 
+### File-Based Logging
 Logs are written to:
 - `logs/agent.log` - Agent activity logs
 - `logs/tools.log` - Tool execution logs (inputs/outputs)
 
 Logs are automatically rotated (5MB max, 5 backups).
 
+### Request/Response Logging
+- All HTTP requests and responses are logged with:
+  - Request ID for tracing
+  - HTTP method and path
+  - Response status code
+  - Processing time (in `X-Process-Time` header)
+- Request IDs are included in all responses and error messages
+
+### Error Logging
+- Structured error logging with error codes
+- Request ID included in all error logs
+- Debug mode provides detailed stack traces
+
 ## 🔧 Configuration
 
 All configuration is managed through:
 1. `.env` file (persistent storage)
-2. `/agent/config` API endpoint (runtime updates)
+2. `/api/v1/agent/config` API endpoint (runtime updates)
 3. Frontend configuration page (UI-based updates)
 
-Configuration includes:
+### Configuration Categories
+
+**Application Settings** (via `core/config.py`):
+- `ENVIRONMENT` - development/staging/production
+- `DEBUG` - Enable debug mode
+- `LOG_LEVEL` - Logging verbosity
+- `CORS_ORIGINS` - Allowed CORS origins
+- `SECRET_KEY` - Application secret key
+
+**Trading Configuration**:
 - LLM provider and model settings
 - Trading capital and risk parameters
 - Strategy parameters (VWAP proximity, session times)
 - Autonomous mode settings
 - Safety limits and circuit breakers
+- GTT order settings
 
 ## 🧪 Testing
 
@@ -248,10 +323,34 @@ Test scripts available:
 - `test_database.py` - Database functionality tests
 - `test_threading.py` - Thread-safety tests
 
+### Testing API Endpoints
+
+Use the interactive Swagger documentation at `/docs` to test endpoints directly, or use curl:
+
+```bash
+# Test chat endpoint
+curl -X POST "http://localhost:8000/api/v1/agent/chat" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Show my positions", "session_id": "test"}'
+
+# Test health check
+curl "http://localhost:8000/api/v1/health/health"
+```
+
 ## 📚 Documentation
 
+### Enterprise Documentation
+- `ENTERPRISE_UPGRADE.md` - Comprehensive enterprise-level upgrade documentation
+- `CHANGELOG_ENTERPRISE.md` - Enterprise upgrade changelog
+
+### Feature Documentation
 - `AGENT_PROMPT_EXAMPLES.md` - Example queries for the AI agent
 - `CHART_REPLAY_IMPLEMENTATION.md` - Chart replay feature documentation
+- `GTT_IMPLEMENTATION_SUMMARY.md` - GTT (Good Till Triggered) orders documentation
+
+### API Documentation
+- Interactive API docs: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
 ## 🔐 Security Notes
 
@@ -259,6 +358,8 @@ Test scripts available:
 - Keep Kite Connect credentials secure
 - Use environment variables for sensitive data
 - API keys should be rotated regularly
+- Request ID tracking helps with security auditing
+- All errors are logged with request context for forensics
 
 ## 🐛 Troubleshooting
 
@@ -276,6 +377,19 @@ Test scripts available:
 4. **Missing order IDs in approvals**
    - Solution: Old approvals won't have order IDs. New approvals will include them automatically.
 
+5. **Request ID not appearing in responses**
+   - Solution: Ensure `RequestIDMiddleware` is properly configured. Check middleware order in `main.py`.
+
+6. **API endpoint not found**
+   - Solution: Use `/api/v1/agent/*` for new endpoints. Legacy `/agent/*` endpoints still work.
+
+### Debugging Tips
+
+- **Check Request IDs**: Every request has a unique ID. Use it to trace requests across logs.
+- **Review Logs**: Check `logs/agent.log` for detailed activity logs with request IDs.
+- **API Documentation**: Use `/docs` to explore available endpoints and test them.
+- **Error Responses**: All errors include `request_id` and `error_code` for easier debugging.
+
 ## 📄 License
 
 See LICENSE file for details.
@@ -286,11 +400,70 @@ See LICENSE file for details.
 2. Add type hints to all functions
 3. Write docstrings for all modules and functions
 4. Test thoroughly before submitting
+5. Use the enterprise API structure (`/api/v1/`) for new endpoints
+6. Follow the standardized response format (`APIResponse`, `SuccessResponse`, `ErrorResponse`)
+7. Include request ID tracking in all new endpoints
+8. Add proper error handling using custom exceptions from `core/exceptions.py`
 
 ## 📞 Support
 
 For issues or questions, check the logs in `logs/` directory and review the error messages in the API responses.
 
+## 🏗️ Enterprise Architecture
+
+### Middleware Stack
+The application uses a comprehensive middleware stack (applied in order):
+1. **RequestIDMiddleware** - Adds unique request ID to every request
+2. **LoggingMiddleware** - Logs all HTTP requests/responses with timing
+3. **ErrorHandlerMiddleware** - Global exception handling with structured responses
+4. **CORSMiddleware** - Cross-origin resource sharing
+
+### Response Format
+All API responses follow a standardized format:
+
+**Success Response:**
+```json
+{
+  "status": "success",
+  "message": "Optional message",
+  "data": { ... },
+  "timestamp": "2024-01-01T00:00:00",
+  "request_id": "uuid-here"
+}
+```
+
+**Error Response:**
+```json
+{
+  "status": "error",
+  "message": "Error message",
+  "error_code": "ERROR_CODE",
+  "details": { ... },
+  "timestamp": "2024-01-01T00:00:00",
+  "request_id": "uuid-here"
+}
+```
+
+### Error Codes
+- `VALIDATION_ERROR` - Input validation failed
+- `AUTHENTICATION_ERROR` - Authentication required
+- `NOT_FOUND` - Resource not found
+- `BUSINESS_LOGIC_ERROR` - Business rule violation
+- `EXTERNAL_API_ERROR` - External API (Kite) error
+- `INTERNAL_SERVER_ERROR` - Unexpected server error
+
+### Request ID Tracking
+- Every request automatically gets a unique `X-Request-ID` header
+- Request ID is included in:
+  - Response headers
+  - All log entries
+  - Error responses
+  - WebSocket messages
+
+This enables end-to-end request tracing for debugging and monitoring.
+
 ---
 
 **Built with ❤️ using FastAPI, LangGraph, and Zerodha Kite Connect**
+
+**Enterprise-Grade Architecture | Production-Ready | Fully Documented**

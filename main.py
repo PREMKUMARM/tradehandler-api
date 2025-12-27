@@ -39,8 +39,34 @@ from database.repositories import (
 from database.models import ChatMessage
 import uuid
 
-# Initialize FastAPI app
-app = FastAPI()
+# Initialize FastAPI app with enterprise-level configuration
+from core.config import get_settings
+from core.responses import APIResponse
+
+settings = get_settings()
+
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description="Enterprise AI Trading Agent API with Zerodha Kite Connect integration",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
+
+# Add enterprise middleware (order matters!)
+from middleware import RequestIDMiddleware, LoggingMiddleware, ErrorHandlerMiddleware
+
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(LoggingMiddleware)
+app.add_middleware(ErrorHandlerMiddleware)
+
+# Include API v1 routes
+from api.v1 import api_router
+app.include_router(api_router)
+
+# Legacy endpoints (maintained for backward compatibility)
+# These will be gradually migrated to v1 routes
 
 @app.websocket("/ws/agent")
 async def agent_websocket_endpoint(websocket: WebSocket):
@@ -59,23 +85,20 @@ async def agent_websocket_endpoint(websocket: WebSocket):
 
 # Helper to send agent updates - Redundant definition removed
 
-# Kite Connect credentials - Update these with your actual API key and secret
+# Kite Connect credentials - All loaded from environment variables
 # IMPORTANT: The redirect_uri must EXACTLY match what's configured in your Kite Connect app settings
 # Global API key handled by utils.kite_utils
-# api_key = os.getenv('KITE_API_KEY', 'gle4opgggiing1ol')
-api_secret = os.getenv('KITE_API_SECRET', 'vmrsky50fsozxonx2v5wwjwdmm6jcjtk')
-# For local development, use: http://localhost:4200/auth-token
-# For production, use: https://www.tradehandler.com/auth-token
+# All secrets should be in .env file, never hardcoded
+api_secret = os.getenv('KITE_API_SECRET')
 redirect_uri = os.getenv('KITE_REDIRECT_URI', 'http://localhost:4200/auth-token')
 
-origins = [
-    "https://www.tradehandler.com",
-    "http://localhost:4200",
-]
+# Note: api_secret validation is done in utils.kite_utils when actually needed
+# This allows the server to start even if Kite credentials aren't configured yet
 
+# CORS configuration from settings (already loaded above)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -3774,9 +3797,12 @@ async def backtest_nifty50_options(req: Request):
 
 # ============================================================================
 # AI Agent Endpoints
+# NOTE: Agent endpoints are now handled by api/v1/routes/agent.py
+# These legacy endpoints are kept for backward compatibility but will be deprecated
 # ============================================================================
 
-@app.post("/agent/chat")
+# Legacy agent endpoints - use /api/v1/agent/* instead
+# @app.post("/agent/chat")
 async def agent_chat(req: Request):
     """Natural language interaction with the AI agent"""
     try:
