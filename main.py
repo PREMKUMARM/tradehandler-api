@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 
@@ -1444,11 +1445,128 @@ def read_item(item_id: int, q: Union[str, None] = None):
 
 @app.get("/access-token")
 def get_access_token_endpoint():
-    """Get stored access token"""
+    """Get stored access token and validate it"""
     token = get_access_token()
     if token:
-        return {"access_token": token}
-    return {"access_token": None, "message": "No access token found"}
+        # Validate token
+        token_info = {
+            "length": len(token),
+            "preview": token[:20] + "..." if len(token) > 20 else token,
+            "is_valid_length": len(token) >= 20,
+            "status": "unknown"
+        }
+        
+        # Try to validate token if it's long enough
+        if len(token) >= 20:
+            try:
+                from utils.kite_utils import get_kite_api_key
+                api_key = get_kite_api_key()
+                kite = KiteConnect(api_key=api_key)
+                kite.set_access_token(token)
+                kite.profile()  # Quick validation
+                token_info["status"] = "valid"
+                token_info["api_key_used"] = api_key[:10] + "..." if api_key and len(api_key) > 10 else "NOT SET"
+                return {
+                    "access_token": token[:20] + "...",
+                    "token_info": token_info,
+                    "is_valid": True
+                }
+            except Exception as e:
+                token_info["status"] = "invalid"
+                token_info["error"] = str(e)
+                token_info["api_key_used"] = api_key[:10] + "..." if api_key and len(api_key) > 10 else "NOT SET"
+                return {
+                    "access_token": token[:20] + "...",
+                    "token_info": token_info,
+                    "is_valid": False,
+                    "message": f"Token exists but is invalid: {str(e)}"
+                }
+        else:
+            token_info["status"] = "too_short"
+            token_info["error"] = "Token is too short to be valid (expected at least 20 chars, got " + str(len(token)) + ")"
+            return {
+                "access_token": token[:20] + "...",
+                "token_info": token_info,
+                "is_valid": False,
+                "message": "Token is too short. Please regenerate using /auth and /set-token"
+            }
+    
+    return {
+        "access_token": None, 
+        "message": "No access token found. Please generate one using /auth and /set-token",
+        "token_info": None,
+        "is_valid": False
+    }
+
+@app.get("/test-token")
+def test_token():
+    """Test the current token with various Kite API calls"""
+    try:
+        from utils.kite_utils import get_kite_instance, get_access_token, get_kite_api_key
+        from datetime import datetime, timedelta
+        
+        token = get_access_token()
+        api_key = get_kite_api_key()
+        
+        if not token:
+            return {"error": "No token found"}
+        
+        results = {
+            "token_length": len(token),
+            "api_key": api_key[:10] + "..." if api_key else "NOT SET",
+            "tests": {}
+        }
+        
+        kite = get_kite_instance()
+        
+        # Test 1: Profile
+        try:
+            profile = kite.profile()
+            results["tests"]["profile"] = {
+                "status": "success",
+                "user_name": profile.get("user_name", "N/A"),
+                "user_id": profile.get("user_id", "N/A")
+            }
+        except Exception as e:
+            results["tests"]["profile"] = {
+                "status": "failed",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+        
+        # Test 2: Historical data
+        try:
+            today = datetime.now().date()
+            yesterday = today - timedelta(days=1)
+            data = kite.historical_data(2885, yesterday, today, "5minute")
+            results["tests"]["historical_data"] = {
+                "status": "success",
+                "candles_count": len(data) if data else 0
+            }
+        except Exception as e:
+            results["tests"]["historical_data"] = {
+                "status": "failed",
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "instrument": 2885,
+                "date_range": f"{yesterday} to {today}"
+            }
+        
+        return results
+    except Exception as e:
+        return {"error": str(e), "error_type": type(e).__name__}
+
+@app.delete("/access-token")
+def delete_access_token():
+    """Delete the stored access token (useful for clearing invalid tokens)"""
+    try:
+        token_path = Path("config/access_token.txt")
+        if token_path.exists():
+            token_path.unlink()
+            return {"status": "success", "message": "Access token deleted successfully"}
+        return {"status": "success", "message": "No access token file found"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting token: {str(e)}")
 
 @app.get("/auth")
 def get_login_url():
@@ -1485,23 +1603,37 @@ async def set_token(req: Request):
     try:
         data = await req.json()
         request_token = data.get('request_token')
-        access_token = data.get('access-token')
+        access_token_from_request = data.get('access-token')
+        
+        # Get user_id from request to use user-specific config
+        user_id = "default"
+        try:
+            from core.user_context import get_user_id_from_request
+            user_id = get_user_id_from_request(req)
+        except:
+            pass
         
         print(f"Received request_token: {request_token[:20] if request_token else None}...")
-        print(f"API Key configured: {api_key[:10] if api_key and len(api_key) > 10 else 'NOT SET'}...")
+        print(f"Received access-token from request: {access_token_from_request[:20] if access_token_from_request else None}...")
+        print(f"User ID: {user_id}")
         print(f"Redirect URI configured: {redirect_uri}")
         
-        if not request_token and not access_token:
+        if not request_token and not access_token_from_request:
             raise HTTPException(status_code=400, detail="Either request_token or access-token required")
         
-        # If request_token is provided, generate access_token
+        # Initialize access_token variable - will be set from generate_session() if request_token provided
+        access_token = None
+        
+        # If request_token is provided, generate access_token (ignore any access-token from request)
         if request_token:
             # Validate API key and secret are set
-            # Get credentials from config (may have been updated via UI)
-            from agent.config import get_agent_config
-            config = get_agent_config()
+            # Get credentials from user-specific config (may have been updated via UI)
+            from agent.user_config import get_user_config
+            config = get_user_config(user_id=user_id)
             current_api_key = config.kite_api_key or api_key
             current_api_secret = config.kite_api_secret or api_secret
+            
+            print(f"API Key configured: {current_api_key[:10] if current_api_key and len(current_api_key) > 10 else 'NOT SET'}...")
             
             if current_api_key == 'your_api_key_here' or not current_api_key:
                 raise HTTPException(
@@ -1517,9 +1649,51 @@ async def set_token(req: Request):
             kite = KiteConnect(api_key=current_api_key)
             try:
                 print(f"Attempting to generate session with request_token...")
+                print(f"Request token length: {len(request_token) if request_token else 0}")
+                print(f"Request token preview: {request_token[:30] if request_token and len(request_token) > 30 else request_token}...")
+                
                 data_response = kite.generate_session(request_token, api_secret=current_api_secret)
-                access_token = data_response.get('access_token')
-                print(f"Access token generated successfully: {access_token[:20] if access_token else None}...")
+                print(f"generate_session response type: {type(data_response)}")
+                print(f"generate_session response: {data_response}")
+                
+                # Handle both dict and object responses
+                if isinstance(data_response, dict):
+                    access_token = data_response.get('access_token')
+                    print(f"Response is dict, keys: {list(data_response.keys())}")
+                else:
+                    # If it's an object, try to get the attribute
+                    access_token = getattr(data_response, 'access_token', None) if hasattr(data_response, 'access_token') else None
+                    print(f"Response is object, has access_token attr: {hasattr(data_response, 'access_token')}")
+                
+                print(f"Access token extracted: {access_token is not None}")
+                print(f"Access token length: {len(access_token) if access_token else 0}")
+                if access_token:
+                    print(f"Access token preview: {access_token[:30]}...")
+                    # Safety check: access_token should NOT be the same as request_token
+                    if access_token == request_token:
+                        print(f"ERROR: access_token equals request_token! This indicates a problem.")
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Token exchange failed: Received request_token instead of access_token. "
+                                   "This usually means: 1) API key/secret mismatch, "
+                                   "2) Redirect URI mismatch, or 3) Request token expired. "
+                                   f"Please check your Kite Connect app settings. Redirect URI should be: {redirect_uri}"
+                        )
+                
+                if not access_token:
+                    print(f"WARNING: No access_token in response! Full response: {data_response}")
+                    print(f"Response type: {type(data_response)}")
+                    if isinstance(data_response, dict):
+                        print(f"Available keys: {list(data_response.keys())}")
+                        print(f"Full response content: {data_response}")
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Failed to get access_token from Kite. The generate_session() call did not return an access_token. "
+                               f"Response: {str(data_response)}. "
+                               "Please check: 1) API key and secret are correct, "
+                               f"2) Redirect URI matches exactly: {redirect_uri}, "
+                               "3) Request token is fresh (they expire quickly)."
+                    )
             except KiteException as e:
                 error_msg = str(e)
                 print(f"KiteException: {error_msg}")
@@ -1533,18 +1707,63 @@ async def set_token(req: Request):
                                f"3) API key and secret are correct."
                     )
                 raise HTTPException(status_code=400, detail=f"Kite API error: {error_msg}")
+            except Exception as e:
+                # Catch any other unexpected errors
+                error_msg = str(e)
+                print(f"Unexpected error during token exchange: {error_msg}")
+                print(f"Error type: {type(e)}")
+                import traceback
+                traceback.print_exc()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Unexpected error during token exchange: {error_msg}. "
+                           "Please check server logs for details."
+                )
+        else:
+            # No request_token provided, use access-token from request body
+            access_token = access_token_from_request
         
         if not access_token:
             raise HTTPException(status_code=400, detail="Failed to obtain access token")
+        
+        # Safety check: Make sure we're not accidentally saving the request_token
+        if request_token and access_token == request_token:
+            print(f"ERROR: access_token is the same as request_token! This should not happen.")
+            print(f"Request token: {request_token}")
+            print(f"Access token: {access_token}")
+            raise HTTPException(
+                status_code=400,
+                detail="Internal error: Access token matches request token. "
+                       "The token exchange may have failed. Please try again with a fresh request_token."
+            )
+        
+        # Validate token before saving (Kite access tokens are typically 32+ characters)
+        # Note: Kite access tokens can be 32 characters, so we use a lower threshold
+        if len(access_token) < 20:
+            print(f"WARNING: Access token seems invalid (length: {len(access_token)})")
+            print(f"Token value: {access_token}")
+            print(f"Request token was: {request_token[:20] if request_token else None}...")
+            print(f"Are they the same? {access_token == request_token if request_token else 'N/A'}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid access token (too short: {len(access_token)} chars). "
+                       "Kite access tokens should be at least 20 characters. "
+                       "The token you're trying to save appears to be invalid or corrupted. "
+                       "This usually means the token exchange failed. Please check: "
+                       "1) Your Kite API Key and Secret are correct in the Config page, "
+                       "2) The redirect URI matches exactly in your Kite Connect app settings, "
+                       "3) The request_token is fresh (they expire quickly). "
+                       "Try generating a new request_token and use it immediately."
+            )
         
         # Store access token
         config_path = Path("config")
         config_path.mkdir(exist_ok=True)
         
         with open("config/access_token.txt", "w") as f:
-            f.write(access_token)
+            f.write(access_token.strip())
         
-        print(f"Access token stored successfully in config/access_token.txt")
+        print(f"Access token stored successfully in config/access_token.txt (length: {len(access_token)})")
         return {
             "status": "success", 
             "message": "Access token stored successfully",
@@ -1774,11 +1993,42 @@ def get_orders():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting orders: {str(e)}")
 
+@app.get("/resolve-instrument/{instrument_name}")
+def resolve_instrument(instrument_name: str, exchange: str = "NSE"):
+    """Resolve instrument name to instrument token"""
+    try:
+        from agent.tools.instrument_resolver import resolve_instrument_name
+        result = resolve_instrument_name(instrument_name, exchange)
+        if result:
+            return {
+                "instrument_name": instrument_name,
+                "exchange": exchange,
+                "instrument_token": result.get("instrument_token"),
+                "tradingsymbol": result.get("tradingsymbol"),
+                "name": result.get("name"),
+                "instrument_type": result.get("instrument_type")
+            }
+        else:
+            raise HTTPException(status_code=404, detail=f"Instrument '{instrument_name}' not found in {exchange}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error resolving instrument: {str(e)}")
+
 @app.get("/getCandle/{instrument_token}/{interval}/{fromDate}/{toDate}")
-def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str):
+def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str, request: Request = None):
     """Get historical candle data"""
     try:
-        kite = get_kite_instance()
+        # Get user_id from request if available
+        user_id = "default"
+        if request:
+            try:
+                from core.user_context import get_user_id_from_request
+                user_id = get_user_id_from_request(request)
+            except:
+                pass
+        
+        kite = get_kite_instance(user_id=user_id)
         
         # Convert interval format (Kite uses: minute, day, etc.)
         interval_map = {
@@ -1791,19 +2041,73 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str)
         }
         kite_interval = interval_map.get(interval, interval)
         
-        # Parse dates
-        from_date = datetime.strptime(fromDate, "%Y-%m-%d")
-        to_date = datetime.strptime(toDate, "%Y-%m-%d")
+        # Parse dates - Kite expects date objects, not datetime objects
+        from_date = datetime.strptime(fromDate, "%Y-%m-%d").date()
+        to_date = datetime.strptime(toDate, "%Y-%m-%d").date()
         
         # Get historical data
-        historical_data = kite.historical_data(
-            instrument_token=int(instrument_token),
-            from_date=from_date,
-            to_date=to_date,
-            interval=kite_interval
-        )
+        try:
+            print(f"[get_candle] Calling historical_data with: token={int(instrument_token)}, from={from_date}, to={to_date}, interval={kite_interval}")
+            historical_data = kite.historical_data(
+                instrument_token=int(instrument_token),
+                from_date=from_date,
+                to_date=to_date,
+                interval=kite_interval
+            )
+            print(f"[get_candle] Successfully retrieved {len(historical_data) if historical_data else 0} candles")
+        except KiteException as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            print(f"[get_candle] KiteException ({error_type}): {error_msg}")
+            print(f"[get_candle] User ID: {user_id}")
+            print(f"[get_candle] Instrument: {instrument_token}, Interval: {interval} ({kite_interval}), Date: {fromDate} to {toDate}")
+            print(f"[get_candle] From date object: {from_date}, To date object: {to_date}")
+            
+            # Get current API key and token for debugging
+            from utils.kite_utils import get_kite_api_key, get_access_token
+            current_api_key = get_kite_api_key(user_id=user_id)
+            current_token = get_access_token()
+            print(f"[get_candle] Current API Key: {current_api_key[:15] if current_api_key else 'NOT SET'}...")
+            print(f"[get_candle] Current Token length: {len(current_token) if current_token else 0}")
+            print(f"[get_candle] Full error: {repr(e)}")
+            
+            # Check if it's actually a token error or something else
+            # InputException with "invalid token" might be misleading - could be invalid input
+            is_token_error = (
+                error_type != "InputException" and  # InputException usually means bad input, not token
+                any(keyword in error_msg.lower() for keyword in ["invalid", "expired", "token", "unauthorized", "authentication"])
+            )
+            
+            # If it's InputException, it's likely an input validation issue, not token
+            if error_type == "InputException":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Kite API input error: {error_msg}. "
+                           f"This might be due to: 1) Invalid instrument token ({instrument_token}), "
+                           f"2) Invalid date range ({fromDate} to {toDate} - check if dates are valid trading days), "
+                           f"3) Invalid interval ({kite_interval}). "
+                           f"Note: Markets are closed on weekends and holidays."
+                )
+            
+            if is_token_error:
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Kite API error: {error_msg} (Error type: {error_type}). "
+                           "Possible causes: 1) Token was generated with a different API key than currently configured, "
+                           "2) Token has expired (Kite tokens expire daily), or 3) API key was changed after token generation. "
+                           f"Current API Key: {current_api_key[:10] if current_api_key else 'NOT SET'}... "
+                           "Solution: Generate a new token using the current API key: "
+                           "1) GET /auth to get login URL, 2) Login through that URL, "
+                           "3) POST /set-token with the request_token from redirect."
+                )
+            # For non-token errors, provide more context
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Kite API error ({error_type}): {error_msg}. "
+                       f"Request: Instrument={instrument_token}, Interval={kite_interval}, From={fromDate}, To={toDate}"
+            )
         
-        # Convert to DataFrame for consistency
+        # Convert to DataFrame for processing
         if historical_data:
             df = pd.DataFrame(historical_data)
             # Rename columns to match expected format
@@ -1811,13 +2115,455 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str)
                 'date': 'timestamp',
                 'oi': 'openinterest'
             })
-            # Ensure timestamp is in the right format
-            if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp']).astype(int) // 10**9
             
-            return Response(df.to_json(orient='records'), media_type="application/json")
+            # Ensure timestamp is datetime for VWAP calculation
+            if 'timestamp' in df.columns:
+                if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Sort by timestamp (oldest first) for VWAP calculation
+            df = df.sort_values('timestamp').reset_index(drop=True)
+            
+            # Calculate VWAP (Volume Weighted Average Price)
+            # VWAP = Σ(Price × Volume) / Σ(Volume)
+            # Where Price = (High + Low + Close) / 3 (typical price)
+            typical_price = (df['high'] + df['low'] + df['close']) / 3
+            price_volume = typical_price * df['volume']
+            
+            # Cumulative VWAP from start of session
+            cumulative_price_volume = price_volume.cumsum()
+            cumulative_volume = df['volume'].cumsum()
+            df['vwap'] = cumulative_price_volume / cumulative_volume.replace(0, np.nan)
+            df['vwap'] = df['vwap'].fillna(df['close'])  # Fill NaN with close price if volume is 0
+            
+            # Calculate VWAP position and differences
+            df['is_above_vwap'] = df['close'] > df['vwap']
+            df['vwap_position'] = df['is_above_vwap'].map({True: 'Above', False: 'Below'})
+            df['vwap_diff'] = (df['close'] - df['vwap']).abs()
+            df['vwap_diff_percent'] = (df['close'] - df['vwap']) / df['vwap'] * 100
+            
+            # Detect candlestick patterns
+            def detect_candlestick_pattern(current_idx, df):
+                """
+                Detect candlestick pattern types based on OHLC data
+                Returns pattern name
+                """
+                row = df.loc[current_idx]
+                open_price = row['open']
+                high = row['high']
+                low = row['low']
+                close = row['close']
+                
+                # Calculate body and wick sizes
+                body_size = abs(close - open_price)
+                upper_wick = high - max(open_price, close)
+                lower_wick = min(open_price, close) - low
+                total_range = high - low
+                
+                # Avoid division by zero
+                if total_range == 0:
+                    return 'Doji'
+                
+                body_ratio = body_size / total_range
+                upper_wick_ratio = upper_wick / total_range
+                lower_wick_ratio = lower_wick / total_range
+                
+                is_bullish = close > open_price
+                is_bearish = close < open_price
+                is_doji = body_ratio < 0.1  # Body is less than 10% of total range
+                
+                # Get previous candles for multi-candle patterns
+                prev_row = df.loc[current_idx - 1] if current_idx > 0 else None
+                prev_prev_row = df.loc[current_idx - 2] if current_idx > 1 else None
+                
+                # 1. Doji patterns (very small body)
+                if is_doji:
+                    if upper_wick_ratio > 0.4 and lower_wick_ratio > 0.4:
+                        return 'Doji'  # Standard Doji
+                    elif upper_wick_ratio > 0.6:
+                        return 'Gravestone Doji'  # Long upper wick
+                    elif lower_wick_ratio > 0.6:
+                        return 'Dragonfly Doji'  # Long lower wick
+                    else:
+                        return 'Doji'
+                
+                # 2. Marubozu (no wicks, full body)
+                if upper_wick_ratio < 0.05 and lower_wick_ratio < 0.05:
+                    if is_bullish:
+                        return 'Bullish Marubozu'
+                    else:
+                        return 'Bearish Marubozu'
+                
+                # 3. Hammer patterns (long lower wick, small body at top)
+                if lower_wick_ratio > 0.6 and body_ratio < 0.3 and upper_wick_ratio < 0.2:
+                    if is_bullish:
+                        return 'Hammer'  # Bullish reversal
+                    else:
+                        return 'Hanging Man'  # Bearish reversal (at top of uptrend)
+                
+                # 4. Inverted Hammer / Shooting Star (long upper wick, small body at bottom)
+                if upper_wick_ratio > 0.6 and body_ratio < 0.3 and lower_wick_ratio < 0.2:
+                    if is_bullish:
+                        return 'Inverted Hammer'  # Bullish reversal (at bottom)
+                    else:
+                        return 'Shooting Star'  # Bearish reversal (at top)
+                
+                # 5. Spinning Top (small body, wicks on both sides)
+                if body_ratio < 0.3 and upper_wick_ratio > 0.3 and lower_wick_ratio > 0.3:
+                    return 'Spinning Top'
+                
+                # 6. Engulfing patterns (need previous candle)
+                if prev_row is not None:
+                    prev_open = prev_row['open']
+                    prev_close = prev_row['close']
+                    prev_body_size = abs(prev_close - prev_open)
+                    
+                    # Bullish Engulfing
+                    if (is_bullish and prev_close < prev_open and  # Previous was bearish
+                        close > prev_open and open_price < prev_close and  # Current engulfs previous
+                        body_size > prev_body_size * 1.1):  # Current body is significantly larger
+                        return 'Bullish Engulfing'
+                    
+                    # Bearish Engulfing
+                    if (is_bearish and prev_close > prev_open and  # Previous was bullish
+                        close < prev_open and open_price > prev_close and  # Current engulfs previous
+                        body_size > prev_body_size * 1.1):  # Current body is significantly larger
+                        return 'Bearish Engulfing'
+                
+                # 7. Piercing Pattern / Dark Cloud Cover (need previous candle)
+                if prev_row is not None:
+                    prev_open = prev_row['open']
+                    prev_close = prev_row['close']
+                    
+                    # Piercing Pattern (bullish)
+                    if (is_bullish and prev_close < prev_open and  # Previous was bearish
+                        open_price < prev_close and  # Opens below previous close
+                        close > (prev_open + prev_close) / 2 and  # Closes above midpoint of previous body
+                        close < prev_open):  # But below previous open
+                        return 'Piercing Pattern'
+                    
+                    # Dark Cloud Cover (bearish)
+                    if (is_bearish and prev_close > prev_open and  # Previous was bullish
+                        open_price > prev_close and  # Opens above previous close
+                        close < (prev_open + prev_close) / 2 and  # Closes below midpoint of previous body
+                        close > prev_open):  # But above previous open
+                        return 'Dark Cloud Cover'
+                
+                # 8. Harami patterns (need previous candle)
+                if prev_row is not None:
+                    prev_open = prev_row['open']
+                    prev_close = prev_row['close']
+                    prev_body_size = abs(prev_close - prev_open)
+                    
+                    # Bullish Harami
+                    if (prev_close < prev_open and  # Previous was bearish
+                        open_price > prev_close and close < prev_open and  # Current is inside previous
+                        body_size < prev_body_size * 0.5):  # Current body is much smaller
+                        return 'Bullish Harami'
+                    
+                    # Bearish Harami
+                    if (prev_close > prev_open and  # Previous was bullish
+                        open_price < prev_close and close > prev_open and  # Current is inside previous
+                        body_size < prev_body_size * 0.5):  # Current body is much smaller
+                        return 'Bearish Harami'
+                
+                # 9. Three White Soldiers / Three Black Crows (need 2 previous candles)
+                if prev_row is not None and prev_prev_row is not None:
+                    prev_open = prev_row['open']
+                    prev_close = prev_row['close']
+                    prev_prev_open = prev_prev_row['open']
+                    prev_prev_close = prev_prev_row['close']
+                    
+                    # Three White Soldiers (bullish)
+                    if (is_bullish and prev_close > prev_open and prev_prev_close > prev_prev_open and
+                        close > prev_close and prev_close > prev_prev_close):
+                        return 'Three White Soldiers'
+                    
+                    # Three Black Crows (bearish)
+                    if (is_bearish and prev_close < prev_open and prev_prev_close < prev_prev_open and
+                        close < prev_close and prev_close < prev_prev_close):
+                        return 'Three Black Crows'
+                
+                # 10. Morning Star / Evening Star (need 2 previous candles)
+                if prev_row is not None and prev_prev_row is not None:
+                    prev_prev_open = prev_prev_row['open']
+                    prev_prev_close = prev_prev_row['close']
+                    prev_open = prev_row['open']
+                    prev_close = prev_row['close']
+                    prev_body_size = abs(prev_close - prev_open)
+                    prev_prev_body_size = abs(prev_prev_close - prev_prev_open)
+                    
+                    # Morning Star (bullish reversal)
+                    if (is_bullish and prev_prev_close < prev_prev_open and  # First candle bearish
+                        prev_body_size < prev_prev_body_size * 0.5 and  # Middle candle small
+                        close > (prev_prev_open + prev_prev_close) / 2):  # Third candle closes above midpoint
+                        return 'Morning Star'
+                    
+                    # Evening Star (bearish reversal)
+                    if (is_bearish and prev_prev_close > prev_prev_open and  # First candle bullish
+                        prev_body_size < prev_prev_body_size * 0.5 and  # Middle candle small
+                        close < (prev_prev_open + prev_prev_close) / 2):  # Third candle closes below midpoint
+                        return 'Evening Star'
+                
+                # 11. Default patterns based on body size
+                if body_ratio > 0.7:
+                    if is_bullish:
+                        return 'Long White Candle'
+                    else:
+                        return 'Long Black Candle'
+                elif body_ratio > 0.4:
+                    if is_bullish:
+                        return 'White Candle'
+                    else:
+                        return 'Black Candle'
+                else:
+                    if is_bullish:
+                        return 'Small White Candle'
+                    else:
+                        return 'Small Black Candle'
+            
+            # Apply candlestick pattern detection
+            df['candle_type'] = None
+            for i in range(len(df)):
+                df.loc[i, 'candle_type'] = detect_candlestick_pattern(i, df)
+            
+            # Detect VWAP reversal signals
+            df['reversal_signal'] = None
+            df['reversal_strength'] = 0.0
+            
+            for i in range(1, len(df)):
+                prev_above = df.loc[i-1, 'is_above_vwap']
+                curr_above = df.loc[i, 'is_above_vwap']
+                current_reversal = None
+                current_strength = 0.0
+                
+                # Detect crossover
+                if prev_above != curr_above:
+                    if not prev_above and curr_above:
+                        # Bullish Reversal: crossed from below to above
+                        current_reversal = 'Bullish Reversal'
+                        
+                        # Calculate reversal strength
+                        prev_volume = df.loc[i-1, 'volume']
+                        curr_volume = df.loc[i, 'volume']
+                        volume_ratio = curr_volume / prev_volume if prev_volume > 0 else 1
+                        price_distance = abs(df.loc[i, 'vwap_diff_percent'])
+                        candle_body = abs(df.loc[i, 'close'] - df.loc[i, 'open'])
+                        body_percent = (candle_body / df.loc[i, 'close'] * 100) if df.loc[i, 'close'] > 0 else 0
+                        
+                        current_strength = min(100, 
+                            (30 if volume_ratio > 1 else 10) +
+                            min(40, price_distance * 10) +
+                            min(30, body_percent * 5)
+                        )
+                        
+                    elif prev_above and not curr_above:
+                        # Bearish Reversal: crossed from above to below
+                        current_reversal = 'Bearish Reversal'
+                        
+                        # Calculate reversal strength
+                        prev_volume = df.loc[i-1, 'volume']
+                        curr_volume = df.loc[i, 'volume']
+                        volume_ratio = curr_volume / prev_volume if prev_volume > 0 else 1
+                        price_distance = abs(df.loc[i, 'vwap_diff_percent'])
+                        candle_body = abs(df.loc[i, 'close'] - df.loc[i, 'open'])
+                        body_percent = (candle_body / df.loc[i, 'close'] * 100) if df.loc[i, 'close'] > 0 else 0
+                        
+                        current_strength = min(100,
+                            (30 if volume_ratio > 1 else 10) +
+                            min(40, price_distance * 10) +
+                            min(30, body_percent * 5)
+                        )
+                
+                # Set current candle's reversal signal if there's a new reversal
+                if current_reversal:
+                    df.loc[i, 'reversal_signal'] = current_reversal
+                    df.loc[i, 'reversal_strength'] = current_strength
+                
+                # Confirm reversal if previous candle had reversal and current maintains position
+                # Only confirm if there was NO new reversal on current candle
+                if i > 1 and current_reversal is None:
+                    prev_prev_above = df.loc[i-2, 'is_above_vwap']
+                    prev_signal = df.loc[i-1, 'reversal_signal']
+                    
+                    # Confirm Bullish Reversal: Previous had bullish reversal, and current maintains above VWAP
+                    if (prev_signal == 'Bullish Reversal' and 
+                        not prev_prev_above and  # Was below before reversal
+                        df.loc[i-1, 'is_above_vwap'] and  # Previous candle is above
+                        curr_above):  # Current candle also above (confirmation)
+                        df.loc[i-1, 'reversal_signal'] = 'Confirmed Bullish'
+                    
+                    # Confirm Bearish Reversal: Previous had bearish reversal, and current maintains below VWAP
+                    if (prev_signal == 'Bearish Reversal' and 
+                        prev_prev_above and  # Was above before reversal
+                        not df.loc[i-1, 'is_above_vwap'] and  # Previous candle is below
+                        not curr_above):  # Current candle also below (confirmation)
+                        df.loc[i-1, 'reversal_signal'] = 'Confirmed Bearish'
+            
+            # Generate Buy/Sell signals based on candlestick patterns, VWAP position, and reversal signals
+            def generate_trading_signal(current_idx, df, instrument_token=None):
+                """
+                Generate buy/sell signal based on:
+                1. Custom buy condition: Green candle (closing above VWAP OR high above VWAP) 
+                   AND previous candle is "Three Black Crows"
+                   AND current candle is one of high-performing patterns:
+                   - Dragonfly Doji (100% win rate)
+                   - Piercing Pattern (87.5% win rate)
+                   - Inverted Hammer (high profit potential)
+                   - Long White Candle (most common profitable pattern)
+                   AND instrument is NOT in blacklist (PERSISTENT excluded)
+                   Note: Morning Star removed due to 33.3% win rate in actual trading
+                2. Strong reversal signals [DISABLED]
+                3. Candlestick pattern (bullish patterns = buy, bearish = sell) [DISABLED]
+                4. VWAP position (above = bullish, below = bearish) [DISABLED]
+                Returns: (signal, priority_level, reason) or (None, None, None) if no signal
+                """
+                # Instrument blacklist (based on loss analysis)
+                # PERSISTENT shows severe losses (₹-50.08 avg loss)
+                instrument_blacklist = ['4701441']  # PERSISTENT token
+                
+                if instrument_token and str(instrument_token) in instrument_blacklist:
+                    return (None, None, None)  # Skip blacklisted instruments
+                
+                row = df.loc[current_idx]
+                candle_type = row.get('candle_type', '')
+                reversal_signal = row.get('reversal_signal')
+                is_above_vwap = row.get('is_above_vwap', False)
+                vwap_diff_percent = row.get('vwap_diff_percent', 0)
+                close = row.get('close', 0)
+                open_price = row.get('open', 0)
+                high = row.get('high', 0)
+                vwap = row.get('vwap', 0)
+                
+                # Priority 1: Custom buy condition [ACTIVE - FINE-TUNED]
+                # BUY when (green candle closing above vwap) OR (green candle high is above vwap) 
+                # AND (previous candle is "Three Black Crows" candle)
+                # AND (current candle is one of the high-performing patterns)
+                # Morning Star removed - 33.3% win rate in actual trading
+                if current_idx > 0:
+                    prev_row = df.loc[current_idx - 1]
+                    prev_candle_type = prev_row.get('candle_type', '')
+                    is_green_candle = close > open_price  # Green/bullish candle
+                    close_above_vwap = close > vwap
+                    high_above_vwap = high > vwap
+                    
+                    # High-performing candle types (Morning Star removed - 33.3% win rate)
+                    # Based on loss analysis, Morning Star showed poor performance in actual trading
+                    high_performance_candle_types = [
+                        'Dragonfly Doji',      # 100% win rate
+                        'Piercing Pattern',    # 87.5% win rate
+                        'Inverted Hammer',   # High profit potential (52.6% win rate)
+                        'Long White Candle'  # Most common profitable pattern (44.3% win rate)
+                    ]
+                    
+                    # Check if current candle type matches one of the high-performing patterns
+                    current_candle_matches = any(pattern in candle_type for pattern in high_performance_candle_types)
+                    
+                    if (prev_candle_type == 'Three Black Crows' and is_green_candle and 
+                        (close_above_vwap or high_above_vwap) and current_candle_matches):
+                        # Get the specific pattern name for the reason
+                        matched_pattern = next((p for p in high_performance_candle_types if p in candle_type), candle_type)
+                        reason = f"Priority 1: {matched_pattern} candle {'closing' if close_above_vwap else 'high'} above VWAP after Three Black Crows"
+                        return ('BUY', 1, reason)
+                
+                # Priority 2: Strong reversal signals [DISABLED]
+                # DISABLED: Only Priority 1 is active based on validation results
+                # if reversal_signal:
+                #     if 'Bullish' in reversal_signal or 'Confirmed Bullish' in reversal_signal:
+                #         reason = f"Priority 2: {reversal_signal}"
+                #         return ('BUY', 2, reason)
+                #     elif 'Bearish' in reversal_signal or 'Confirmed Bearish' in reversal_signal:
+                #         reason = f"Priority 2: {reversal_signal}"
+                #         return ('SELL', 2, reason)
+                
+                # Priority 3: Strong candlestick patterns [DISABLED]
+                # DISABLED: Only Priority 1 is active based on validation results
+                # bullish_patterns = [
+                #     'Bullish Engulfing', 'Hammer', 'Inverted Hammer', 'Morning Star',
+                #     'Three White Soldiers', 'Piercing Pattern', 'Bullish Harami',
+                #     'Bullish Marubozu', 'Long White Candle'
+                # ]
+                # bearish_patterns = [
+                #     'Bearish Engulfing', 'Shooting Star', 'Hanging Man', 'Evening Star',
+                #     'Three Black Crows', 'Dark Cloud Cover', 'Bearish Harami',
+                #     'Bearish Marubozu', 'Long Black Candle'
+                # ]
+                # 
+                # for pattern in bullish_patterns:
+                #     if pattern in candle_type:
+                #         reason = f"Priority 3: {pattern} pattern"
+                #         return ('BUY', 3, reason)
+                # 
+                # for pattern in bearish_patterns:
+                #     if pattern in candle_type:
+                #         reason = f"Priority 3: {pattern} pattern"
+                #         return ('SELL', 3, reason)
+                
+                # Priority 4: VWAP position with significant distance [DISABLED]
+                # DISABLED: Only Priority 1 is active based on validation results
+                # if is_above_vwap and vwap_diff_percent > 0.1:  # Significantly above VWAP
+                #     reason = f"Priority 4: Significantly above VWAP ({vwap_diff_percent:.2f}%)"
+                #     return ('BUY', 4, reason)
+                # elif not is_above_vwap and vwap_diff_percent < -0.1:  # Significantly below VWAP
+                #     reason = f"Priority 4: Significantly below VWAP ({vwap_diff_percent:.2f}%)"
+                #     return ('SELL', 4, reason)
+                
+                # Priority 5: General VWAP position [DISABLED]
+                # DISABLED: Only Priority 1 is active based on validation results
+                # if is_above_vwap:
+                #     reason = f"Priority 5: Above VWAP ({vwap_diff_percent:.2f}%)"
+                #     return ('BUY', 5, reason)
+                # else:
+                #     reason = f"Priority 5: Below VWAP ({vwap_diff_percent:.2f}%)"
+                #     return ('SELL', 5, reason)
+                
+                # No signal if Priority 1 condition not met
+                return (None, None, None)
+            
+            # Apply trading signal generation
+            # Only Priority 1 signals are generated (other priorities disabled)
+            df['trading_signal'] = None
+            df['signal_priority'] = None
+            df['signal_reason'] = None
+            for i in range(len(df)):
+                signal, priority, reason = generate_trading_signal(i, df, instrument_token=instrument_token)
+                if signal is not None:  # Only set if Priority 1 condition is met
+                    df.loc[i, 'trading_signal'] = signal
+                    df.loc[i, 'signal_priority'] = priority
+                    df.loc[i, 'signal_reason'] = reason
+            
+            # Convert all datetime columns to Unix timestamps (integers)
+            for col in df.columns:
+                if pd.api.types.is_datetime64_any_dtype(df[col]):
+                    df[col] = (df[col].astype('int64') // 10**9).astype(int)
+                elif 'timestamp' in col.lower() and df[col].dtype == 'object':
+                    try:
+                        df[col] = (pd.to_datetime(df[col]).astype('int64') // 10**9).astype(int)
+                    except:
+                        pass
+            
+            # Convert DataFrame to dict and ensure all values are JSON serializable
+            records = df.to_dict(orient='records')
+            
+            # Convert any remaining non-serializable types
+            for record in records:
+                for key, value in record.items():
+                    if pd.isna(value):
+                        record[key] = None
+                    elif isinstance(value, pd.Timestamp):
+                        record[key] = int(value.timestamp())
+                    elif isinstance(value, pd.Timedelta):
+                        record[key] = int(value.total_seconds())
+                    elif isinstance(value, (np.integer, np.floating)):
+                        record[key] = value.item() if hasattr(value, 'item') else float(value) if isinstance(value, np.floating) else int(value)
+                    elif isinstance(value, (np.bool_, bool)):
+                        record[key] = bool(value)
+                    elif isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+                        record[key] = None
+            
+            return JSONResponse(content=records)
         else:
-            return Response(json.dumps([]), media_type="application/json")
+            return JSONResponse(content=[])
     except KiteException as e:
         raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
     except Exception as e:

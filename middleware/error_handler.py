@@ -5,6 +5,7 @@ import traceback
 from typing import Callable
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.exceptions import TradeHandlerException
@@ -35,9 +36,11 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
                 f"[{request_id}] TradeHandlerException: {e.message} (Code: {e.error_code})",
                 "error"
             )
+            # Convert to dict and ensure datetime is JSON serializable
+            content = error_response.model_dump(exclude_none=True)
             return JSONResponse(
                 status_code=e.status_code,
-                content=error_response.model_dump(exclude_none=True)
+                content=jsonable_encoder(content)
             )
         except Exception as e:
             # Handle unexpected errors
@@ -65,8 +68,10 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
                 timestamp=datetime.now(),
                 request_id=request_id
             )
+            # Convert to dict and ensure datetime is JSON serializable
+            content = error_response.model_dump(exclude_none=True)
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content=error_response.model_dump(exclude_none=True)
+                content=jsonable_encoder(content)
             )
 

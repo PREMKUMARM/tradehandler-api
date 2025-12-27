@@ -125,9 +125,11 @@ async def get_agent_status(request: Request):
 async def get_agent_config_endpoint(request: Request):
     """Get agent configuration"""
     request_id = get_request_id(request)
+    user_id = get_user_id_from_request(request)
     
     try:
-        config = get_agent_config()
+        # Load user-specific config from database
+        config = get_user_config(user_id=user_id)
         
         # Try to get live funds from Zerodha if possible
         zerodha_funds = 0.0

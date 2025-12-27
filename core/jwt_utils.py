@@ -79,13 +79,19 @@ def get_user_id_from_token_or_header(
     """
     # Try JWT token first
     if authorization:
-        user_id = extract_user_id_from_jwt(request, authorization)
-        if user_id:
-            return user_id
+        # Handle Header object - extract string value if it's a Header object
+        auth_str = authorization if isinstance(authorization, str) else str(authorization) if authorization else None
+        if auth_str:
+            user_id = extract_user_id_from_jwt(request, auth_str)
+            if user_id:
+                return user_id
     
     # Try X-User-ID header
     if x_user_id:
-        return x_user_id.strip()
+        # Handle Header object - extract string value if it's a Header object
+        user_id_str = x_user_id if isinstance(x_user_id, str) else str(x_user_id) if x_user_id else None
+        if user_id_str:
+            return user_id_str.strip()
     
     # Try query parameter
     user_id = request.query_params.get("user_id")

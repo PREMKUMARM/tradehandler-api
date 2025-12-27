@@ -37,6 +37,14 @@ def get_user_config(user_id: str = "default") -> AgentConfig:
         
         # Set the attribute if it exists in AgentConfig
         if hasattr(config, key):
+            # Special handling for LLMProvider enum
+            if key == "llm_provider" and isinstance(value, str):
+                try:
+                    from agent.config import LLMProvider
+                    value = LLMProvider(value)
+                except (ValueError, AttributeError):
+                    # Invalid provider, skip
+                    continue
             setattr(config, key, value)
     
     return config

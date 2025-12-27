@@ -8,8 +8,8 @@ from core.jwt_utils import get_user_id_from_token_or_header
 
 def get_user_id_from_request(
     request: Request,
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    x_user_id: Optional[str] = Header(None, alias="X-User-ID")
+    authorization: Optional[str] = None,
+    x_user_id: Optional[str] = None
 ) -> str:
     """
     Extract user ID from request.
@@ -19,6 +19,12 @@ def get_user_id_from_request(
     3. user_id query parameter
     4. Default to 'default' for backward compatibility
     """
+    # Extract headers from request if not provided
+    if authorization is None:
+        authorization = request.headers.get("Authorization")
+    if x_user_id is None:
+        x_user_id = request.headers.get("X-User-ID")
+    
     return get_user_id_from_token_or_header(request, authorization, x_user_id)
 
 

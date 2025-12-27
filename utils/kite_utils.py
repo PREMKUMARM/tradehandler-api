@@ -6,8 +6,15 @@ from kiteconnect import KiteConnect
 from fastapi import HTTPException
 
 # Global API key - get from AgentConfig (managed via UI) or environment
-def get_kite_api_key():
-    """Get Kite API key from AgentConfig or environment"""
+def get_kite_api_key(user_id: str = "default"):
+    """Get Kite API key from user-specific AgentConfig or environment"""
+    try:
+        from agent.user_config import get_user_config
+        config = get_user_config(user_id=user_id)
+        if config.kite_api_key:
+            return config.kite_api_key
+    except:
+        pass
     try:
         from agent.config import get_agent_config
         config = get_agent_config()
@@ -29,16 +36,53 @@ def get_access_token():
             return token if token else None
     return None
 
-def get_kite_instance():
+def get_kite_instance(user_id: str = "default"):
     """Get authenticated KiteConnect instance"""
     access_token = get_access_token()
     if not access_token:
         # Note: In a production app, you might want to return None or handle this differently 
         # for background tasks vs API requests
-        raise HTTPException(status_code=401, detail="Access token not found. Please authenticate first.")
+        raise HTTPException(
+            status_code=401, 
+            detail="Access token not found. Please authenticate first. "
+                   "Steps: 1) GET /auth to get login URL, 2) Login through that URL, "
+                   "3) POST /set-token with the request_token from redirect to store access token."
+        )
     
-    kite = KiteConnect(api_key=api_key)
+    # Validate token length before using it (Kite access tokens can be 32 characters)
+    if len(access_token) < 20:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid access token detected (length: {len(access_token)} chars). "
+                   "Kite Connect access tokens should be at least 20 characters. "
+                   "The stored token appears to be invalid or corrupted. "
+                   "Please regenerate: 1) DELETE /access-token to clear invalid token, "
+                   "2) GET /auth to get login URL, 3) Login and POST /set-token with request_token."
+        )
+    
+    # Get user-specific API key
+    current_api_key = get_kite_api_key(user_id=user_id)
+    
+    print(f"[get_kite_instance] User ID: {user_id}")
+    print(f"[get_kite_instance] API Key: {current_api_key[:15] if current_api_key and len(current_api_key) > 15 else 'NOT SET'}...")
+    print(f"[get_kite_instance] Token length: {len(access_token)}, preview: {access_token[:20]}...")
+    
+    kite = KiteConnect(api_key=current_api_key)
     kite.set_access_token(access_token)
+    
+    # Try a quick validation to catch API key mismatches early
+    # But don't fail if profile() doesn't work - historical data might still work
+    try:
+        kite.profile()
+        print(f"[get_kite_instance] Token validated successfully with profile()")
+    except Exception as profile_error:
+        error_str = str(profile_error).lower()
+        # Only warn if it's clearly a token/auth issue, not if it's a network or other issue
+        if "invalid" in error_str or "expired" in error_str or "token" in error_str or "unauthorized" in error_str:
+            print(f"[get_kite_instance] WARNING: Token validation failed: {profile_error}")
+            print(f"[get_kite_instance] This might indicate API key mismatch. API Key used: {current_api_key[:15]}...")
+        # Continue anyway - historical data might still work even if profile() fails
+    
     return kite
 
 def calculate_trend_and_suggestions(kite: KiteConnect, instrument_token: int, current_price: float):
