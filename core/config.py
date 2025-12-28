@@ -27,7 +27,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,  # Allows CORS_ORIGINS to match cors_origins
         extra="ignore",        # Tells Pydantic to ignore any extra env vars
-        populate_by_name=true
+        populate_by_name=True
     )
     
     # Application
