@@ -74,3 +74,4 @@ def analyze_trend(candles):
     return "SIDEWAYS"
 
 
+

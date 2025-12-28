@@ -143,3 +143,4 @@ def calculate_support_resistance(candles, lookback=20):
     return resistance, support
 
 
+
