@@ -1,0 +1,15 @@
+[Unit]
+Description=AlgoFeast API Backend
+After=network.target
+
+[Service]
+User=ubuntu
+Group=www-data
+WorkingDirectory=/home/ubuntu/algofeast-workspace/algofeast-api
+Environment="PATH=/home/ubuntu/algofeast-workspace/algofeast-api/algo-env/bin"
+EnvironmentFile=/home/ubuntu/algofeast-workspace/algofeast-api/.env
+ExecStart=/home/ubuntu/algofeast-workspace/algofeast-api/algo-env/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+
+[Install]
+WantedBy=multi-user.target
+
