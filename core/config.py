@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     secret_key: str = Field(default="change-me-in-production", env="SECRET_KEY")
     allowed_hosts: list[str] = Field(default_factory=lambda: ["*"], env="ALLOWED_HOSTS")
     cors_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:4200", "https://algofeast.com", "https://www.algofeast.com"],
+        default_factory=lambda: ["http://localhost:4200", "http://13.201.222.26"],
         env="CORS_ORIGINS"
     )
     
@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     kite_api_key: Optional[str] = Field(default=None, env="KITE_API_KEY")
     kite_api_secret: Optional[str] = Field(default=None, env="KITE_API_SECRET")
     kite_redirect_uri: str = Field(
-        default="https://algofeast.com/auth-token",
+        default="http://13.201.222.26/auth-token",
         env="KITE_REDIRECT_URI"
     )
     
