@@ -2,8 +2,9 @@
 Enhanced configuration management with validation
 """
 import os
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Union
 from pydantic_settings import BaseSettings
 from pydantic import Field, validator
 from enum import Enum
@@ -36,8 +37,8 @@ class Settings(BaseSettings):
     
     # Security
     secret_key: str = Field(default="change-me-in-production", env="SECRET_KEY")
-    allowed_hosts: list[str] = Field(default_factory=lambda: ["*"], env="ALLOWED_HOSTS")
-    cors_origins: list[str] = Field(
+    allowed_hosts: Any = Field(default_factory=lambda: ["*"], env="ALLOWED_HOSTS")
+    cors_origins: Any = Field(
         default_factory=lambda: ["http://localhost:4200", "https://algofeast.com", "https://www.algofeast.com"],
         env="CORS_ORIGINS"
     )
@@ -71,13 +72,23 @@ class Settings(BaseSettings):
     @validator("cors_origins", pre=True)
     def parse_cors_origins(cls, v):
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
+            if v.startswith("[") and v.endswith("]"):
+                try:
+                    return json.loads(v)
+                except:
+                    pass
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
     
     @validator("allowed_hosts", pre=True)
     def parse_allowed_hosts(cls, v):
         if isinstance(v, str):
-            return [host.strip() for host in v.split(",")]
+            if v.startswith("[") and v.endswith("]"):
+                try:
+                    return json.loads(v)
+                except:
+                    pass
+            return [host.strip() for host in v.split(",") if host.strip()]
         return v
     
     class Config:
