@@ -5,7 +5,7 @@ import os
 import json
 from pathlib import Path
 from typing import Optional, Any, Union
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, validator
 from enum import Enum
 
@@ -22,51 +22,55 @@ class Environment(str, Enum):
 
 class Settings(BaseSettings):
     """Enterprise-level application settings"""
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore"
+    )
     
     # Application
-    app_name: str = "AlgoFeast API"
-    app_version: str = "1.0.0"
-    environment: Environment = Field(default=Environment.DEVELOPMENT, env="ENVIRONMENT")
-    debug: bool = Field(default=False, env="DEBUG")
-    api_prefix: str = "/api/v1"
+    app_name: str = Field(default="AlgoFeast API")
+    app_version: str = Field(default="1.0.0")
+    environment: Environment = Field(default=Environment.DEVELOPMENT)
+    debug: bool = Field(default=False)
+    api_prefix: str = Field(default="/api/v1")
     
     # Server
-    host: str = Field(default="0.0.0.0", env="HOST")
-    port: int = Field(default=8000, env="PORT")
-    reload: bool = Field(default=False, env="RELOAD")
+    host: str = Field(default="0.0.0.0")
+    port: int = Field(default=8000)
+    reload: bool = Field(default=False)
     
     # Security
-    secret_key: str = Field(default="change-me-in-production", env="SECRET_KEY")
-    allowed_hosts: Any = Field(default_factory=lambda: ["*"], env="ALLOWED_HOSTS")
+    secret_key: str = Field(default="change-me-in-production")
+    allowed_hosts: Any = Field(default_factory=lambda: ["*"])
     cors_origins: Any = Field(
-        default_factory=lambda: ["http://localhost:4200", "https://algofeast.com", "https://www.algofeast.com"],
-        env="CORS_ORIGINS"
+        default_factory=lambda: ["http://localhost:4200", "https://algofeast.com", "https://www.algofeast.com"]
     )
     
     # Database
-    database_path: str = Field(default="data/algofeast.db", env="DATABASE_PATH")
-    database_pool_size: int = Field(default=10, env="DATABASE_POOL_SIZE")
+    database_path: str = Field(default="data/algofeast.db")
+    database_pool_size: int = Field(default=10)
     
     # Logging
-    log_level: str = Field(default="INFO", env="LOG_LEVEL")
-    log_file: str = Field(default="logs/app.log", env="LOG_FILE")
-    log_max_bytes: int = Field(default=10485760, env="LOG_MAX_BYTES")  # 10MB
-    log_backup_count: int = Field(default=5, env="LOG_BACKUP_COUNT")
+    log_level: str = Field(default="INFO")
+    log_file: str = Field(default="logs/app.log")
+    log_max_bytes: int = Field(default=10485760)  # 10MB
+    log_backup_count: int = Field(default=5)
     
     # Rate Limiting
-    rate_limit_enabled: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
-    rate_limit_per_minute: int = Field(default=60, env="RATE_LIMIT_PER_MINUTE")
+    rate_limit_enabled: bool = Field(default=True)
+    rate_limit_per_minute: int = Field(default=60)
     
     # Monitoring
-    enable_metrics: bool = Field(default=True, env="ENABLE_METRICS")
-    metrics_port: int = Field(default=9090, env="METRICS_PORT")
+    enable_metrics: bool = Field(default=True)
+    metrics_port: int = Field(default=9090)
     
     # Kite Connect (from existing)
-    kite_api_key: Optional[str] = Field(default=None, env="KITE_API_KEY")
-    kite_api_secret: Optional[str] = Field(default=None, env="KITE_API_SECRET")
+    kite_api_key: Optional[str] = Field(default=None)
+    kite_api_secret: Optional[str] = Field(default=None)
     kite_redirect_uri: str = Field(
-        default="https://algofeast.com/auth-token",
-        env="KITE_REDIRECT_URI"
+        default="https://algofeast.com/auth-token"
     )
     
     @validator("cors_origins", pre=True)
@@ -91,11 +95,7 @@ class Settings(BaseSettings):
             return [host.strip() for host in v.split(",") if host.strip()]
         return v
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
-        extra = "ignore"  # Ignore extra fields from .env (agent config fields are handled separately)
+    # Remove the old Config class at the bottom
 
 
 # Global settings instance
