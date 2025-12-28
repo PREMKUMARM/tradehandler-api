@@ -1,7 +1,7 @@
 # Enterprise-Level Backend Upgrade - Changelog
 
 ## Summary
-Upgraded the TradeHandler AI backend to enterprise-level standards while maintaining 100% backward compatibility.
+Upgraded the AlgoFeast AI backend to enterprise-level standards while maintaining 100% backward compatibility.
 
 ## Changes Made
 

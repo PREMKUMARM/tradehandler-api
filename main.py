@@ -50,7 +50,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Enterprise AI Trading Agent API with Zerodha Kite Connect integration",
+    description="AlgoFeast - Enterprise AI Trading Agent API with Zerodha Kite Connect integration",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json"
@@ -2595,7 +2595,7 @@ async def set_token(req: Request):
             "squareoff": payload.get('squareoff'),
             "stoploss": payload.get('stoploss'),
             "trailing_stoploss": payload.get('trailing_stoploss'),
-            "tag": payload.get('tag', 'tradehandler')
+            "tag": payload.get('tag', 'algofeast')
         }
         
         # Remove None values
@@ -2686,7 +2686,7 @@ async def set_token(req: Request):
             "validity": payload.get('validity', kite.VALIDITY_DAY),
             "disclosed_quantity": payload.get('disclosed_quantity', payload.get('disclosedQuantity', 0)),
             "trigger_price": payload.get('trigger_price', payload.get('triggerPrice')),
-            "tag": payload.get('tag', 'tradehandler')
+            "tag": payload.get('tag', 'algofeast')
         }
         
         # Remove None values

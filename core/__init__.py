@@ -3,7 +3,7 @@ Core enterprise-level functionality
 """
 from .config import get_settings
 from .exceptions import (
-    TradeHandlerException,
+    AlgoFeastException,
     ValidationError,
     AuthenticationError,
     NotFoundError,
@@ -18,7 +18,7 @@ from .responses import (
 
 __all__ = [
     "get_settings",
-    "TradeHandlerException",
+    "AlgoFeastException",
     "ValidationError",
     "AuthenticationError",
     "NotFoundError",

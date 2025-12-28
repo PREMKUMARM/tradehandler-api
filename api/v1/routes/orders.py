@@ -40,7 +40,7 @@ async def place_order(req: Request):
             "squareoff": payload.get('squareoff'),
             "stoploss": payload.get('stoploss'),
             "trailing_stoploss": payload.get('trailing_stoploss'),
-            "tag": payload.get('tag', 'tradehandler')
+            "tag": payload.get('tag', 'algofeast')
         }
         
         # Remove None values
@@ -149,7 +149,7 @@ async def sell_order(req: Request):
             "validity": payload.get('validity', kite.VALIDITY_DAY),
             "disclosed_quantity": payload.get('disclosed_quantity', payload.get('disclosedQuantity', 0)),
             "trigger_price": payload.get('trigger_price', payload.get('triggerPrice')),
-            "tag": payload.get('tag', 'tradehandler')
+            "tag": payload.get('tag', 'algofeast')
         }
         
         # Remove None values

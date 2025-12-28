@@ -1,4 +1,4 @@
-# TradeHandler AI - Trading Agent API
+# AlgoFeast - Trading Agent API
 
 A sophisticated, enterprise-grade AI-powered trading agent platform built with FastAPI, LangGraph, and Zerodha Kite Connect. The system provides autonomous market scanning, intelligent trade signal generation, risk management, and hybrid human-AI approval workflows with comprehensive error handling, logging, and monitoring.
 
@@ -148,7 +148,7 @@ tradehandler-api/
    ```
 
 5. **Initialize database**
-   The database is automatically initialized on first run. SQLite database is created at `data/tradehandler.db`.
+   The database is automatically initialized on first run. SQLite database is created at `data/algofeast.db`.
 
 ## 🚀 Running the Application
 

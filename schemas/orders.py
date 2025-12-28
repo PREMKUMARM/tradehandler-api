@@ -17,7 +17,7 @@ class PlaceOrderRequest(BaseModel):
     trigger_price: Optional[float] = Field(None, gt=0, description="Trigger price for SL orders")
     validity: Optional[str] = Field(default="DAY", description="Order validity")
     disclosed_quantity: Optional[int] = Field(None, ge=0, description="Disclosed quantity")
-    tag: Optional[str] = Field(default="tradehandler", description="Order tag")
+    tag: Optional[str] = Field(default="algofeast", description="Order tag")
 
     @validator("transaction_type")
     def validate_transaction_type(cls, v):

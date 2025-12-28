@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from core.exceptions import TradeHandlerException
+from core.exceptions import AlgoFeastException
 from core.responses import ErrorResponse
 from utils.logger import log_agent_activity
 
@@ -20,7 +20,7 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             return response
-        except TradeHandlerException as e:
+        except AlgoFeastException as e:
             # Handle custom exceptions
             request_id = getattr(request.state, "request_id", "unknown")
             from datetime import datetime
@@ -33,7 +33,7 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
                 request_id=request_id
             )
             log_agent_activity(
-                f"[{request_id}] TradeHandlerException: {e.message} (Code: {e.error_code})",
+                f"[{request_id}] AlgoFeastException: {e.message} (Code: {e.error_code})",
                 "error"
             )
             # Convert to dict and ensure datetime is JSON serializable

@@ -15,7 +15,7 @@ pip install httpx PyJWT
 4. Go to **Credentials** → **Create Credentials** → **OAuth 2.0 Client ID**
 5. Configure OAuth consent screen:
    - User Type: External (or Internal for G Suite)
-   - Application name: TradeHandler AI
+   - Application name: AlgoFeast AI
    - Authorized domains: your domain
    - Scopes: `email`, `profile`, `openid`
 6. Create OAuth 2.0 Client ID:

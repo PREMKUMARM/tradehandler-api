@@ -1,5 +1,5 @@
 """
-AI Agent package for tradehandler-api
+AI Agent package for AlgoFeast API
 Provides LangGraph-based agentic trading capabilities
 """
 

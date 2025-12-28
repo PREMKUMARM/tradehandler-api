@@ -1,7 +1,7 @@
 # Enterprise-Level Backend Upgrade
 
 ## Overview
-This document outlines the enterprise-level improvements made to the TradeHandler AI backend application.
+This document outlines the enterprise-level improvements made to the AlgoFeast AI backend application.
 
 ## Key Improvements
 
@@ -16,7 +16,7 @@ This document outlines the enterprise-level improvements made to the TradeHandle
 - **Request ID Tracking**: Every request gets a unique ID for tracing
 
 ### 3. **Error Handling**
-- **Custom Exception Hierarchy**: `TradeHandlerException` with specific error types
+- **Custom Exception Hierarchy**: `AlgoFeastException` with specific error types
 - **Global Error Middleware**: Catches and formats all exceptions consistently
 - **Structured Error Responses**: Consistent error format with error codes
 

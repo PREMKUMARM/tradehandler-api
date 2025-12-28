@@ -4,8 +4,8 @@ Custom exception classes for enterprise-level error handling
 from typing import Optional, Dict, Any
 
 
-class TradeHandlerException(Exception):
-    """Base exception for all TradeHandler errors"""
+class AlgoFeastException(Exception):
+    """Base exception for all AlgoFeast errors"""
     
     def __init__(
         self,
@@ -21,7 +21,7 @@ class TradeHandlerException(Exception):
         super().__init__(self.message)
 
 
-class ValidationError(TradeHandlerException):
+class ValidationError(AlgoFeastException):
     """Validation error for invalid input"""
     
     def __init__(self, message: str, field: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
@@ -34,7 +34,7 @@ class ValidationError(TradeHandlerException):
         self.field = field
 
 
-class AuthenticationError(TradeHandlerException):
+class AuthenticationError(AlgoFeastException):
     """Authentication/authorization error"""
     
     def __init__(self, message: str = "Authentication required", details: Optional[Dict[str, Any]] = None):
@@ -46,7 +46,7 @@ class AuthenticationError(TradeHandlerException):
         )
 
 
-class NotFoundError(TradeHandlerException):
+class NotFoundError(AlgoFeastException):
     """Resource not found error"""
     
     def __init__(self, resource: str, identifier: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
@@ -63,7 +63,7 @@ class NotFoundError(TradeHandlerException):
         self.identifier = identifier
 
 
-class BusinessLogicError(TradeHandlerException):
+class BusinessLogicError(AlgoFeastException):
     """Business logic violation error"""
     
     def __init__(self, message: str, error_code: str = "BUSINESS_LOGIC_ERROR", details: Optional[Dict[str, Any]] = None):
@@ -75,7 +75,7 @@ class BusinessLogicError(TradeHandlerException):
         )
 
 
-class ExternalAPIError(TradeHandlerException):
+class ExternalAPIError(AlgoFeastException):
     """Error from external API (e.g., Kite Connect)"""
     
     def __init__(self, message: str, service: str, details: Optional[Dict[str, Any]] = None):

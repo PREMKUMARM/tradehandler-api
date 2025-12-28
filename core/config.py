@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     """Enterprise-level application settings"""
     
     # Application
-    app_name: str = "TradeHandler AI API"
+    app_name: str = "AlgoFeast API"
     app_version: str = "1.0.0"
     environment: Environment = Field(default=Environment.DEVELOPMENT, env="ENVIRONMENT")
     debug: bool = Field(default=False, env="DEBUG")
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     )
     
     # Database
-    database_path: str = Field(default="data/tradehandler.db", env="DATABASE_PATH")
+    database_path: str = Field(default="data/algofeast.db", env="DATABASE_PATH")
     database_pool_size: int = Field(default=10, env="DATABASE_POOL_SIZE")
     
     # Logging

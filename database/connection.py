@@ -13,7 +13,7 @@ import threading
 class DatabaseConnection:
     """SQLite database connection manager - thread-safe"""
 
-    def __init__(self, db_path: str = "tradehandler.db"):
+    def __init__(self, db_path: str = "algofeast.db"):
         self.db_path = db_path
         self._connections = {}  # Thread-local connections
         self._lock = threading.Lock()
@@ -285,7 +285,7 @@ def get_database() -> DatabaseConnection:
     """Get global database instance"""
     global _db_instance
     if _db_instance is None:
-        db_path = os.getenv("DATABASE_PATH", "data/tradehandler.db")
+        db_path = os.getenv("DATABASE_PATH", "data/algofeast.db")
         _db_instance = DatabaseConnection(db_path)
     return _db_instance
 
