@@ -67,6 +67,26 @@ app.add_middleware(ErrorHandlerMiddleware)
 from api.v1 import api_router
 app.include_router(api_router)
 
+# Import utilities and modules
+from utils.candle_utils import aggregate_to_tf, analyze_trend
+from utils.indicators import (
+    calculate_bollinger_bands,
+    calculate_bollinger_bands_full,
+    calculate_rsi,
+    calculate_pivot_points,
+    calculate_support_resistance
+)
+from simulation import (
+    simulation_state,
+    live_logs,
+    get_instrument_history,
+    add_sim_order,
+    calculate_sim_qty,
+    find_option
+)
+from tasks import live_market_scanner, monitor_order_execution
+from strategies.runner import run_strategy_on_candles
+
 # Legacy endpoints (maintained for backward compatibility)
 # These will be gradually migrated to v1 routes
 
@@ -108,427 +128,62 @@ app.add_middleware(
 
 # Helper function to get access token from file
 # Helper function to get KiteConnect instance
-@app.get("/live-positions")
-def get_live_positions():
-    """Fetch current open positions from Zerodha Kite"""
-    try:
-        kite = get_kite_instance()
-        positions = kite.positions()
-        
-        # Calculate live MTM and totals
-        net_positions = positions.get("net", [])
-        total_pnl = 0
-        active_count = 0
-        
-        for pos in net_positions:
-            total_pnl += pos.get("pnl", 0)
-            if pos.get("quantity", 0) != 0:
-                active_count += 1
-                
-        return {
-            "data": {
-                "positions": net_positions,
-                "total_pnl": round(total_pnl, 2),
-                "active_count": active_count
-            }
-        }
-    except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching positions: {str(e)}")
+# Moved to api/v1/routes/portfolio.py
+# @app.get("/live-positions")
+# def get_live_positions():
+#     """Fetch current open positions from Zerodha Kite"""
+#     try:
+#         kite = get_kite_instance()
+#         positions = kite.positions()
+#         
+#         # Calculate live MTM and totals
+#         net_positions = positions.get("net", [])
+#         total_pnl = 0
+#         active_count = 0
+#         
+#         for pos in net_positions:
+#             total_pnl += pos.get("pnl", 0)
+#             if pos.get("quantity", 0) != 0:
+#                 active_count += 1
+#                 
+#         return {
+#             "data": {
+#                 "positions": net_positions,
+#                 "total_pnl": round(total_pnl, 2),
+#                 "active_count": active_count
+#             }
+#         }
+#     except KiteException as e:
+#         raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Error fetching positions: {str(e)}")
 
-@app.post("/place-strategy-order")
-async def place_strategy_order(req: Request):
-    """Place a live order based on a strategy signal"""
-    try:
-        kite = get_kite_instance()
-        payload = await req.json()
-        
-        strategy_type = payload.get("strategy_type")
-        symbol = payload.get("tradingsymbol")
-        exchange = payload.get("exchange", "NFO")
-        transaction_type = payload.get("transaction_type", "BUY")
-        quantity = payload.get("quantity", 75)
-        order_type = payload.get("order_type", "MARKET")
-        product = payload.get("product", "MIS") # MIS for Intraday
-        
-        is_multi_leg = payload.get("multi_leg", False)
-        legs = payload.get("legs", [])
-        
-        order_ids = []
-        
-        if is_multi_leg and legs:
-            # Place multi-leg orders (e.g., Bull Call Spread)
-            for leg in legs:
-                order_id = kite.place_order(
-                    variety=kite.VARIETY_REGULAR,
-                    exchange=exchange,
-                    tradingsymbol=leg.get("tradingsymbol"),
-                    transaction_type=leg.get("action"), # BUY or SELL
-                    quantity=quantity,
-                    product=product,
-                    order_type=order_type
-                )
-                order_ids.append(order_id)
-        else:
-            # Place single leg order
-            order_id = kite.place_order(
-                variety=kite.VARIETY_REGULAR,
-                exchange=exchange,
-                tradingsymbol=symbol,
-                transaction_type=transaction_type,
-                quantity=quantity,
-                product=product,
-                order_type=order_type
-            )
-            order_ids.append(order_id)
-            
-        return {
-            "status": "success",
-            "message": f"Successfully placed {len(order_ids)} order(s)",
-            "order_ids": order_ids
-        }
-    except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error placing order: {str(e)}")
+# Moved to api/v1/routes/orders.py
+# @app.post("/place-strategy-order")
+# async def place_strategy_order(req: Request):
+#     """Place a live order based on a strategy signal"""
+#     ... (function body moved to api/v1/routes/orders.py)
 
-@app.post("/exit-all-positions")
-def exit_all_positions():
-    """Kill Switch: Exit all open positions immediately at MARKET price"""
-    try:
-        # Check if in simulation mode
-        if simulation_state["is_active"]:
-            exit_count = 0
-            for pos in simulation_state["positions"]:
-                if pos["quantity"] != 0:
-                    old_qty = pos["quantity"]
-                    pos["quantity"] = 0
-                    pos["exit_reason"] = "Manual Exit"
-                    add_sim_order(pos["strategy"], pos["tradingsymbol"], "SELL", old_qty, pos["last_price"], reason="Manual Exit (Emergency)")
-                    exit_count += 1
-            return {"status": "success", "message": f"Simulation: Exited {exit_count} positions"}
-
-        kite = get_kite_instance()
-        positions = kite.positions().get("net", [])
-        exit_orders = []
-        
-        for pos in positions:
-            qty = pos.get("quantity", 0)
-            if qty != 0:
-                # Opposite transaction to close
-                trans_type = kite.TRANSACTION_TYPE_SELL if qty > 0 else kite.TRANSACTION_TYPE_BUY
-                abs_qty = abs(qty)
-                
-                order_id = kite.place_order(
-                    variety=kite.VARIETY_REGULAR,
-                    exchange=pos.get("exchange"),
-                    tradingsymbol=pos.get("tradingsymbol"),
-                    transaction_type=trans_type,
-                    quantity=abs_qty,
-                    product=pos.get("product"),
-                    order_type=kite.ORDER_TYPE_MARKET
-                )
-                exit_orders.append({
-                    "symbol": pos.get("tradingsymbol"),
-                    "order_id": order_id
-                })
-                
-        return {
-            "status": "success",
-            "message": f"Exited {len(exit_orders)} positions",
-            "exits": exit_orders
-        }
-    except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error exiting positions: {str(e)}")
+# Moved to api/v1/routes/orders.py
+# @app.post("/exit-all-positions")
+# def exit_all_positions():
+#     """Kill Switch: Exit all open positions immediately at MARKET price"""
+#     ... (function body moved to api/v1/routes/orders.py)
 
 from concurrent.futures import ThreadPoolExecutor
 
-# Global state for Live Trading
+# Moved to tasks/market_scanner.py
+# async def live_market_scanner():
+#     """Background task to scan market and execute strategies"""
+#     ... (function body moved to tasks/market_scanner.py)
 
-def aggregate_to_tf(candles_1m, tf_min):
-    """
-    Aggregate 1-minute candles into any timeframe (5, 15, 30, 60 min)
-    
-    OHLC Aggregation Rules (TradingView standard):
-    - Open: First value in period
-    - High: Maximum value in period
-    - Low: Minimum value in period
-    - Close: Last value in period
-    - Volume: Sum of volumes in period
-    
-    Note: For better performance with large datasets, consider using pandas resample:
-        df = pd.DataFrame(candles_1m)
-        df['date'] = pd.to_datetime(df['date'])
-        df.set_index('date', inplace=True)
-        resampled = df.resample(f'{tf_min}T').agg({
-            'open': 'first', 'high': 'max', 'low': 'min', 
-            'close': 'last', 'volume': 'sum'
-        })
-    """
-    if not candles_1m: return []
-    
-    aggregated = []
-    for i in range(0, len(candles_1m), tf_min):
-        chunk = candles_1m[i:i+tf_min]
-        if not chunk: continue
-        
-        aggregated.append({
-            'date': chunk[0]['date'],
-            'open': chunk[0]['open'],
-            'high': max(c['high'] for c in chunk),
-            'low': min(c['low'] for c in chunk),
-            'close': chunk[-1]['close'],
-            'volume': sum(c.get('volume', 0) for c in chunk)
-        })
-    return aggregated
-
-def analyze_trend(candles):
-    """Simple trend analysis for a set of candles"""
-    if len(candles) < 5: return "NEUTRAL"
-    
-    closes = [c['close'] for c in candles]
-    # Simple moving average (5)
-    sma_5 = sum(closes[-5:]) / 5
-    current_price = closes[-1]
-    
-    # Calculate RSI for trend strength
-    rsi = 50
-    if len(closes) >= 14:
-        deltas = np.diff(closes)
-        seed = deltas[:14]
-        up = seed[seed >= 0].sum() / 14
-        down = -seed[seed < 0].sum() / 14
-        if down == 0:
-            rsi = 100
-        else:
-            rs = up / down
-            rsi = 100 - (100 / (1 + rs))
-            
-    if current_price > sma_5 * 1.002 and rsi > 55: return "BULLISH"
-    if current_price < sma_5 * 0.998 and rsi < 45: return "BEARISH"
-    return "SIDEWAYS"
-
-async def live_market_scanner():
-    """Background task to scan market and execute strategies"""
-    add_agent_log("Live Market Scanner initializing...", "info")
-    config = get_agent_config()
-    
-    # Heartbeat tracker to avoid log spam
-    last_heartbeat_min = -1
-    last_analysis_min = -1
-    
-    while True:
-        try:
-            # Only scan between market hours from config
-            now = datetime.now()
-            start_time = datetime.strptime(config.trading_start_time, "%H:%M").time()
-            end_time = datetime.strptime(config.trading_end_time, "%H:%M").time()
-            
-            # Indian Market Hours (From Config)
-            if start_time <= now.time() <= end_time:
-                active_strats = config.active_strategies.split(",") if config.active_strategies else []
-                if active_strats:
-                    # 1. Fetch live quotes/candles
-                    kite = get_kite_instance()
-                    
-                    # Get Nifty index price
-                    quote = kite.quote(["NSE:NIFTY 50"])
-                    nifty_data = quote.get("NSE:NIFTY 50", {})
-                    nifty_price = nifty_data.get("last_price", 0)
-                    
-                    if nifty_price > 0:
-                        # Multi-Timeframe Analysis Feed
-                        # Log detailed analysis every 3 minutes
-                        if now.minute % 3 == 0 and now.minute != last_analysis_min:
-                            from_date = now - timedelta(days=5) # Get 5 days for enough 1h/Day data
-                            nifty_candles_1m = kite.historical_data(256265, from_date, now, "minute")
-                            
-                            if nifty_candles_1m:
-                                analysis_parts = []
-                                for tf_name, tf_min in [("1m", 1), ("5m", 5), ("15m", 15), ("1h", 60)]:
-                                    tf_candles = aggregate_to_tf(nifty_candles_1m, tf_min)
-                                    trend = analyze_trend(tf_candles)
-                                    # Add small indicator like 🟢 🔴 ⚪
-                                    icon = "🟢" if trend == "BULLISH" else "🔴" if trend == "BEARISH" else "⚪"
-                                    analysis_parts.append(f"{tf_name}: {icon} {trend}")
-                                
-                                # Fetch Day candle separately from Kite for accuracy
-                                day_hist = kite.historical_data(256265, now - timedelta(days=30), now, "day")
-                                day_trend = analyze_trend(day_hist)
-                                day_icon = "🟢" if day_trend == "BULLISH" else "🔴" if day_trend == "BEARISH" else "⚪"
-                                analysis_parts.append(f"DAY: {day_icon} {day_trend}")
-                                
-                                add_agent_log(f"ANALYSIS: " + " | ".join(analysis_parts), "info")
-                                last_analysis_min = now.minute
-
-                        # Heartbeat tracker for Nifty price and active strategies
-                        if now.minute % 5 == 0 and now.minute != last_heartbeat_min:
-                            active_strats_str = ", ".join(active_strats) if active_strats else "None"
-                            add_agent_log(f"LIVE SCANNING: Nifty @ {nifty_price} | Active: {active_strats_str}", "info")
-                            last_heartbeat_min = now.minute
-                            
-                        current_strike = round(nifty_price / 50) * 50
-                        
-                        # Get NFO instruments for expiry matching
-                        all_instruments = kite.instruments("NFO")
-                        nifty_options = [inst for inst in all_instruments if inst.get("name") == "NIFTY"]
-                        
-                        # Find nearest expiry
-                        today = now.date()
-                        valid_options = [inst for inst in nifty_options if inst.get("expiry") and inst.get("expiry") >= today]
-                        valid_options.sort(key=lambda x: x["expiry"])
-                        
-                        if valid_options:
-                            nearest_expiry = valid_options[0]["expiry"]
-                            atm_options = [inst for inst in valid_options if inst["expiry"] == nearest_expiry and inst["strike"] == current_strike]
-                            
-                            atm_ce = next((inst for inst in atm_options if inst["instrument_type"] == "CE"), None)
-                            atm_pe = next((inst for inst in atm_options if inst["instrument_type"] == "PE"), None)
-                            
-                            if atm_ce and atm_pe:
-                                # Fetch recent 1-minute candles for Nifty 50 to run strategies (mostly 5m based)
-                                from_date_strat = now - timedelta(hours=6)
-                                nifty_candles_strat = kite.historical_data(256265, from_date_strat, now, "minute")
-                                
-                                if len(nifty_candles_strat) >= 20:
-                                    trading_candles_5m = aggregate_to_tf(nifty_candles_strat, 5)
-                                    first_candle = trading_candles_5m[0] if trading_candles_5m else None
-                                    
-                                    # Run each active strategy
-                                    for strategy_id in active_strats:
-                                        res = await run_strategy_on_candles(
-                                            kite, strategy_id, trading_candles_5m, first_candle, 
-                                            nifty_price, current_strike, atm_ce, atm_pe, 
-                                            now.strftime("%Y-%m-%d"), nifty_options, today
-                                        )
-                                        
-                                        if res:
-                                            # Signal detected in LIVE market
-                                            message = f"LIVE SIGNAL: {strategy_id} triggered. Reason: {res['reason']}"
-                                            
-                                            if config.is_auto_trade_enabled:
-                                                add_agent_log(f"EXECUTING LIVE ORDER: {message}", "signal")
-                                            else:
-                                                add_agent_log(f"ALERT (Auto-Trade OFF): {message}", "info")
-                else:
-                    # Log once that no strategies are active
-                    if now.minute % 30 == 0 and now.minute != last_heartbeat_min:
-                        add_agent_log("LIVE MONITORING: Waiting for strategies to be selected...", "info")
-                        last_heartbeat_min = now.minute
-            else:
-                # Outside market hours
-                if now.minute % 60 == 0 and now.minute != last_heartbeat_min:
-                    add_agent_log(f"LIVE FEED: Market is currently CLOSED ({now.strftime('%H:%M')}). Scanning resumes at 09:15 AM.", "info")
-                    last_heartbeat_min = now.minute
-            
-            # Run every 10 seconds (more responsive scanner)
-            await asyncio.sleep(10)
-        except Exception as e:
-            print(f"Scanner error: {e}")
-            await asyncio.sleep(30) # Wait longer on error
-
-async def monitor_order_execution():
-    """
-    Background task to monitor order execution and auto-cancel remaining orders.
-    When SL or Target executes, the other order should be cancelled automatically.
-    """
-    
-    while True:
-        try:
-            await asyncio.sleep(10)  # Check every 10 seconds
-            
-            approval_queue = get_approval_queue()
-            approved_trades = approval_queue.list_approved()
-            
-            if not approved_trades:
-                continue
-            
-            kite = get_kite_instance()
-            
-            # Get all orders from Kite
-            try:
-                orders = kite.orders()
-            except Exception as e:
-                add_agent_log(f"Error fetching orders for monitoring: {e}", "error")
-                continue
-            
-            # Process each approved trade
-            for approval in approved_trades:
-                details = approval.get("details", {})
-                if details.get("is_simulated", False):
-                    continue  # Skip simulated trades
-                
-                approval_id = approval.get("approval_id")
-                approval_obj = approval_queue.get_approval(approval_id)
-                
-                if not approval_obj:
-                    continue
-                
-                sl_order_id = approval_obj.get("sl_order_id")
-                tp_order_id = approval_obj.get("tp_order_id")
-                
-                # Skip if no exit orders
-                if not sl_order_id and not tp_order_id:
-                    continue
-                
-                # Check order statuses
-                sl_executed = False
-                tp_executed = False
-                sl_cancelled = False
-                tp_cancelled = False
-                
-                for order in orders:
-                    order_id_str = str(order.get("order_id", ""))
-                    
-                    if sl_order_id and order_id_str == str(sl_order_id):
-                        status = order.get("status", "").upper()
-                        if status in ["COMPLETE", "FILLED"]:
-                            sl_executed = True
-                        elif status in ["CANCELLED", "REJECTED"]:
-                            sl_cancelled = True
-                    
-                    if tp_order_id and order_id_str == str(tp_order_id):
-                        status = order.get("status", "").upper()
-                        if status in ["COMPLETE", "FILLED"]:
-                            tp_executed = True
-                        elif status in ["CANCELLED", "REJECTED"]:
-                            tp_cancelled = True
-                
-                # Auto-cancel logic
-                if sl_executed and tp_order_id and not tp_cancelled:
-                    # SL executed, cancel Target
-                    try:
-                        cancel_result = cancel_order_tool.invoke({
-                            "order_id": str(tp_order_id),
-                            "variety": "regular"
-                        })
-                        if cancel_result.get("status") == "success":
-                            add_agent_log(f"✅ Auto-cancelled Target order {tp_order_id} (SL executed)", "info")
-                        else:
-                            add_agent_log(f"⚠️ Failed to cancel Target order {tp_order_id}: {cancel_result.get('error')}", "warning")
-                    except Exception as e:
-                        add_agent_log(f"Error cancelling Target order: {e}", "error")
-                
-                elif tp_executed and sl_order_id and not sl_cancelled:
-                    # Target executed, cancel SL
-                    try:
-                        cancel_result = cancel_order_tool.invoke({
-                            "order_id": str(sl_order_id),
-                            "variety": "regular"
-                        })
-                        if cancel_result.get("status") == "success":
-                            add_agent_log(f"✅ Auto-cancelled Stop Loss order {sl_order_id} (Target executed)", "info")
-                        else:
-                            add_agent_log(f"⚠️ Failed to cancel SL order {sl_order_id}: {cancel_result.get('error')}", "warning")
-                    except Exception as e:
-                        add_agent_log(f"Error cancelling SL order: {e}", "error")
-                        
-        except Exception as e:
-            add_agent_log(f"Error in order monitoring task: {e}", "error")
-            await asyncio.sleep(30)  # Wait longer on error
+# Moved to tasks/market_scanner.py
+# async def monitor_order_execution():
+#     """
+#     Background task to monitor order execution and auto-cancel remaining orders.
+#     When SL or Target executes, the other order should be cancelled automatically.
+#     """
+#     ... (function body moved to tasks/market_scanner.py)
 
 @app.on_event("startup")
 async def startup_event():
@@ -550,42 +205,25 @@ async def startup_event():
     # Start order monitoring task for auto-cancellation
     asyncio.create_task(monitor_order_execution())
 
-# Global state for Simulation
-simulation_state = {
-    "is_active": False,
-    "date": None,
-    "current_index": 0,
-    "speed": 1,
-    "candles": [],
-    "instrument_history": {}, # Cache for all traded instrument historical data
-    "nifty_options": [],
-    "atm_ce": None,
-    "atm_pe": None,
-    "positions": [],
-    "orders": [], # Track entry and exit orders
-    "strategy_cooldown": {}, # Track last exit time per strategy to prevent infinite loops
-    "executed_strategies": set(),
-    "nifty_price": 0,
-    "last_update": None
-}
+# Simulation state and helpers moved to simulation/ module
 
-# Global state for Live Monitoring Logs
-live_logs = []
+# Moved to api/v1/routes/simulation.py
+# @app.get("/live-logs")
+# async def get_live_logs():
+#     """Endpoint for UI to fetch latest monitoring logs"""
+#     return {"data": live_logs}
 
-@app.get("/live-logs")
-async def get_live_logs():
-    """Endpoint for UI to fetch latest monitoring logs"""
-    return {"data": live_logs}
-
-@app.post("/simulation/speed")
-async def set_simulation_speed(req: Request):
+# Moved to api/v1/routes/simulation.py
+# @app.post("/simulation/speed")
+# async def set_simulation_speed(req: Request):
     payload = await req.json()
     speed = payload.get("speed", 1)
     simulation_state["speed"] = max(1, speed)
     return {"status": "success", "speed": simulation_state["speed"]}
 
-@app.post("/simulation/start")
-async def start_simulation(req: Request):
+# Moved to api/v1/routes/simulation.py
+# @app.post("/simulation/start")
+# async def start_simulation(req: Request):
     """Start a live-market simulation using historical data"""
     try:
         global live_logs
@@ -673,93 +311,17 @@ async def start_simulation(req: Request):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-async def run_strategy_on_candles(kite, strategy_type, trading_candles, first_candle, nifty_price, current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date):
-    """Unified function to run any strategy on a set of candles"""
-    if strategy_type == "915_candle_break":
-        return strategy_915_candle_break(kite, trading_candles, first_candle, nifty_price, current_strike, atm_ce, atm_pe, date_str)
-    elif strategy_type == "mean_reversion":
-        return strategy_mean_reversion_bollinger(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
-    elif strategy_type == "momentum_breakout":
-        return strategy_momentum_breakout(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
-    elif strategy_type == "support_resistance":
-        return strategy_support_resistance_breakout(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
-    elif strategy_type == "long_straddle":
-        return strategy_long_straddle(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date)
-    elif strategy_type == "long_strangle":
-        return strategy_long_strangle(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date)
-    elif strategy_type == "bull_call_spread":
-        return strategy_bull_call_spread(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date)
-    elif strategy_type == "bear_put_spread":
-        return strategy_bear_put_spread(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date)
-    elif strategy_type == "iron_condor":
-        return strategy_iron_condor(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date)
-    elif strategy_type == "macd_crossover":
-        return strategy_macd_crossover(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
-    elif strategy_type == "rsi_reversal":
-        return strategy_rsi_reversal(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
-    elif strategy_type == "ema_cross":
-        return strategy_ema_cross(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
-    return None
+# Moved to strategies/runner.py
+# async def run_strategy_on_candles(...):
 
-def get_instrument_history(kite, token, sim_date):
-    """Helper to fetch and cache full day history for an instrument during simulation"""
-    cache_key = f"{token}_{sim_date}"
-    if cache_key in simulation_state["instrument_history"]:
-        return simulation_state["instrument_history"][cache_key]
-    
-    try:
-        data = kite.historical_data(token, sim_date, sim_date + timedelta(days=1), "minute")
-        # Filter for market hours to match Nifty candles index
-        filtered_data = [c for c in data if time(9, 15) <= c["date"].time() <= time(15, 30)]
-        simulation_state["instrument_history"][cache_key] = filtered_data
-        return filtered_data
-    except Exception as e:
-        print(f"Error caching instrument {token}: {e}")
-        return []
+# Moved to simulation/helpers.py
+# def get_instrument_history(...):
+# def add_sim_order(...):
+# def calculate_sim_qty(...):
 
-def add_sim_order(strategy, symbol, action, quantity, price, order_type="MARKET", status="COMPLETE", reason=""):
-    """Helper to track mock orders in simulation"""
-    order = {
-        "order_id": f"SIM{datetime.now().strftime('%H%M%S%f')[:-3]}",
-        "order_timestamp": simulation_state["time"] if "time" in simulation_state else datetime.now().strftime("%H:%M:%S"),
-        "strategy": strategy,
-        "tradingsymbol": symbol,
-        "transaction_type": action, # BUY/SELL
-        "quantity": quantity,
-        "average_price": price,
-        "order_type": order_type,
-        "status": status,
-        "reason": reason
-    }
-    simulation_state["orders"].insert(0, order) # Keep newest at top
-    return order
-
-def calculate_sim_qty(entry_price, fund, risk_pct, reward_pct):
-    """Calculates quantity based on User's Risk Management formula: Qty = Risk / (Target - SL)"""
-    # Professional Filter: Ignore trades if total gap (Risk + Reward) is less than 10% of premium
-    # This prevents entering trades where the targets are too small to cover brokerage/slippage
-    # and results in unrealistically high quantities.
-    total_gap_pct = reward_pct + risk_pct
-    if total_gap_pct < 10:
-        return 0 # Signal to skip this trade
-        
-    risk_amount = fund * (risk_pct / 100)
-    
-    # price_range = Target - SL = (Reward% + Risk%) of Entry
-    price_range = abs(entry_price) * total_gap_pct / 100
-    
-    if price_range <= 0.1: price_range = 0.1 # Tick size safety
-    
-    target_qty = risk_amount / price_range
-    
-    # Round to nearest lot of 75, minimum 75
-    lots = round(target_qty / 75)
-    if lots < 1: lots = 1
-    
-    return lots * 75
-
-@app.get("/simulation/chart-data")
-async def get_simulation_chart_data(timeframe: str = "1m", indicators: str = ""):
+# Moved to api/v1/routes/simulation.py
+# @app.get("/simulation/chart-data")
+# async def get_simulation_chart_data(timeframe: str = "1m", indicators: str = ""):
     """Get chart data for simulation replay - returns candles up to current index
     timeframe: 1m, 5m, 15m, 30m, 1h, 1d
     indicators: comma-separated list (e.g., "rsi,bollinger,pivot")
@@ -1175,8 +737,9 @@ async def get_simulation_chart_data(timeframe: str = "1m", indicators: str = "")
         }
     }
 
-@app.get("/simulation/state")
-async def get_simulation_state():
+# Moved to api/v1/routes/simulation.py
+# @app.get("/simulation/state")
+# async def get_simulation_state():
     """Advance simulation by 1 minute and run active strategies"""
     if not simulation_state["is_active"]:
         return {"data": {"is_active": False}}
@@ -1431,8 +994,9 @@ async def get_simulation_state():
         }
     }
 
-@app.post("/simulation/stop")
-def stop_simulation():
+# Moved to api/v1/routes/simulation.py
+# @app.post("/simulation/stop")
+# def stop_simulation():
     simulation_state["is_active"] = False
     return {"status": "success"}
 
@@ -1444,7 +1008,8 @@ def read_root():
 def read_item(item_id: int, q: Union[str, None] = None):
     return {"item_id": item_id, "q": q}
 
-@app.get("/access-token")
+# Moved to api/v1/routes/auth.py
+# @app.get("/access-token")
 def get_access_token_endpoint():
     """Get stored access token and validate it"""
     token = get_access_token()
@@ -1557,7 +1122,8 @@ def test_token():
     except Exception as e:
         return {"error": str(e), "error_type": type(e).__name__}
 
-@app.delete("/access-token")
+# Moved to api/v1/routes/auth.py
+# @app.delete("/access-token")
 def delete_access_token():
     """Delete the stored access token (useful for clearing invalid tokens)"""
     try:
@@ -1569,7 +1135,8 @@ def delete_access_token():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting token: {str(e)}")
 
-@app.get("/auth")
+# Moved to api/v1/routes/auth.py
+# @app.get("/auth")
 def get_login_url():
     """Get Kite Connect login URL"""
     try:
@@ -1598,7 +1165,8 @@ def get_login_url():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating login URL: {str(e)}")
 
-@app.post("/set-token")
+# Moved to api/v1/routes/auth.py
+# @app.post("/set-token")
 async def set_token(req: Request):
     """Store access token after authentication"""
     try:
@@ -1776,91 +1344,93 @@ async def set_token(req: Request):
         print(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error setting token: {str(e)}")
 
-@app.get("/getBalance")
-def get_balance():
-    """Get user margin/funds"""
-    try:
-        kite = get_kite_instance()
-        margins = kite.margins()
-        
-        # Kite Connect margins() returns:
-        # {
-        #   'equity': {
-        #     'enabled': True,
-        #     'net': float,
-        #     'available': float,  # Available margin for trading
-        #     'utilised': float,   # Utilised margin
-        #     'adhoc_margin': float,
-        #     'cash': float,
-        #     'collateral': float,
-        #     'intraday_payin': float,
-        #     'live_balance': float,
-        #     'opening_balance': float
-        #   },
-        #   'commodity': {...}
-        # }
-        
-        equity_data = margins.get('equity', {})
-        
-        print(f"Raw Kite Connect margins response: {margins}")
-        print(f"Equity data: {equity_data}")
-        
-        # Kite Connect 'available' can be a number or dict with 'cash' and 'intraday_payin'
-        # Kite Connect 'utilised' can be a number or dict with 'debits', 'exposure', etc.
-        available_value = equity_data.get('available', 0)
-        utilised_value = equity_data.get('utilised', 0)
-        
-        # Extract numeric values if they're dictionaries
-        if isinstance(available_value, dict):
-            # If available is a dict, use 'cash' (this is the available margin)
-            # Based on user's requirement: _available_margin should be 120608.6 (which is cash)
-            available_margin = available_value.get('cash', 0)
-            if available_margin == 0:
-                available_margin = equity_data.get('opening_balance', 0) or equity_data.get('live_balance', 0)
-        else:
-            # Use available, or fallback to cash/opening_balance
-            available_margin = available_value if available_value else equity_data.get('cash', 0) or equity_data.get('opening_balance', 0)
-        
-        if isinstance(utilised_value, dict):
-            # If utilised is a dict, use 'debits' (this is the utilised margin)
-            # Based on user's requirement: _utilised_margin should be 15258.75 (which is debits)
-            utilised_margin = utilised_value.get('debits', 0)
-        else:
-            utilised_margin = utilised_value
-        
-        # Total margin is the net value (live_balance or net)
-        # Based on user's requirement: _total_margin should be 64741.85 (which is net/live_balance)
-        total_margin = equity_data.get('net', 0) or equity_data.get('live_balance', 0)
-        
-        print(f"Calculated available_margin: {available_margin}")
-        print(f"Calculated utilised_margin: {utilised_margin}")
-        print(f"Calculated total_margin: {total_margin}")
-        
-        # Transform to match frontend expected format (Upstox-style)
-        # Frontend expects: res.data.equity._available_margin (as a NUMBER, not object)
-        # CRITICAL: _available_margin must be INSIDE equity object, and must be a number
-        transformed_margins = {
-            "equity": {
-                # Upstox-style fields (what frontend expects) - MUST be numbers, INSIDE equity
-                "_available_margin": float(available_margin) if available_margin else 0.0,
-                "_utilised_margin": float(utilised_margin) if utilised_margin else 0.0,
-                "_total_margin": float(total_margin) if total_margin else 0.0,
-                # Keep original Kite Connect fields for reference
-                **equity_data
-            },
-            "commodity": margins.get('commodity', {})
-        }
-        
-        print(f"Transformed margins structure: {transformed_margins}")
-        
-        return {"data": transformed_margins}
-    except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting balance: {str(e)}")
+# Moved to api/v1/routes/portfolio.py
+# @app.get("/getBalance")
+# def get_balance():
+#     """Get user margin/funds"""
+#     try:
+#         kite = get_kite_instance()
+#         margins = kite.margins()
+#         
+#         # Kite Connect margins() returns:
+#         # {
+#         #   'equity': {
+#         #     'enabled': True,
+#         #     'net': float,
+#         #     'available': float,  # Available margin for trading
+#         #     'utilised': float,   # Utilised margin
+#         #     'adhoc_margin': float,
+#         #     'cash': float,
+#         #     'collateral': float,
+#         #     'intraday_payin': float,
+#         #     'live_balance': float,
+#         #     'opening_balance': float
+#         #   },
+#         #   'commodity': {...}
+#         # }
+#         
+#         equity_data = margins.get('equity', {})
+#         
+#         print(f"Raw Kite Connect margins response: {margins}")
+#         print(f"Equity data: {equity_data}")
+#         
+#         # Kite Connect 'available' can be a number or dict with 'cash' and 'intraday_payin'
+#         # Kite Connect 'utilised' can be a number or dict with 'debits', 'exposure', etc.
+#         available_value = equity_data.get('available', 0)
+#         utilised_value = equity_data.get('utilised', 0)
+#         
+#         # Extract numeric values if they're dictionaries
+#         if isinstance(available_value, dict):
+#             # If available is a dict, use 'cash' (this is the available margin)
+#             # Based on user's requirement: _available_margin should be 120608.6 (which is cash)
+#             available_margin = available_value.get('cash', 0)
+#             if available_margin == 0:
+#                 available_margin = equity_data.get('opening_balance', 0) or equity_data.get('live_balance', 0)
+#         else:
+#             # Use available, or fallback to cash/opening_balance
+#             available_margin = available_value if available_value else equity_data.get('cash', 0) or equity_data.get('opening_balance', 0)
+#         
+#         if isinstance(utilised_value, dict):
+#             # If utilised is a dict, use 'debits' (this is the utilised margin)
+#             # Based on user's requirement: _utilised_margin should be 15258.75 (which is debits)
+#             utilised_margin = utilised_value.get('debits', 0)
+#         else:
+#             utilised_margin = utilised_value
+#         
+#         # Total margin is the net value (live_balance or net)
+#         # Based on user's requirement: _total_margin should be 64741.85 (which is net/live_balance)
+#         total_margin = equity_data.get('net', 0) or equity_data.get('live_balance', 0)
+#         
+#         print(f"Calculated available_margin: {available_margin}")
+#         print(f"Calculated utilised_margin: {utilised_margin}")
+#         print(f"Calculated total_margin: {total_margin}")
+#         
+#         # Transform to match frontend expected format (Upstox-style)
+#         # Frontend expects: res.data.equity._available_margin (as a NUMBER, not object)
+#         # CRITICAL: _available_margin must be INSIDE equity object, and must be a number
+#         transformed_margins = {
+#             "equity": {
+#                 # Upstox-style fields (what frontend expects) - MUST be numbers, INSIDE equity
+#                 "_available_margin": float(available_margin) if available_margin else 0.0,
+#                 "_utilised_margin": float(utilised_margin) if utilised_margin else 0.0,
+#                 "_total_margin": float(total_margin) if total_margin else 0.0,
+#                 # Keep original Kite Connect fields for reference
+#                 **equity_data
+#             },
+#             "commodity": margins.get('commodity', {})
+#         }
+#         
+#         print(f"Transformed margins structure: {transformed_margins}")
+#         
+#         return {"data": transformed_margins}
+#     except KiteException as e:
+#         raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Error getting balance: {str(e)}")
 
-@app.get("/getPositions")
-def get_positions():
+# Moved to api/v1/routes/portfolio.py
+# @app.get("/getPositions")
+# def get_positions():
     """Get user positions"""
     try:
         kite = get_kite_instance()
@@ -1910,8 +1480,9 @@ def get_positions():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting positions: {str(e)}")
 
-@app.get("/getOrders")
-def get_orders():
+# Moved to api/v1/routes/portfolio.py
+# @app.get("/getOrders")
+# def get_orders():
     """Get user orders"""
     try:
         kite = get_kite_instance()
@@ -1994,8 +1565,9 @@ def get_orders():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting orders: {str(e)}")
 
-@app.get("/resolve-instrument/{instrument_name}")
-def resolve_instrument(instrument_name: str, exchange: str = "NSE"):
+# Moved to api/v1/routes/market.py
+# @app.get("/resolve-instrument/{instrument_name}")
+# def resolve_instrument(instrument_name: str, exchange: str = "NSE"):
     """Resolve instrument name to instrument token"""
     try:
         from agent.tools.instrument_resolver import resolve_instrument_name
@@ -2016,8 +1588,9 @@ def resolve_instrument(instrument_name: str, exchange: str = "NSE"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error resolving instrument: {str(e)}")
 
-@app.get("/getCandle/{instrument_token}/{interval}/{fromDate}/{toDate}")
-def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str, request: Request = None):
+# Moved to api/v1/routes/market.py
+# @app.get("/getCandle/{instrument_token}/{interval}/{fromDate}/{toDate}")
+# def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str, request: Request = None):
     """Get historical candle data"""
     try:
         # Get user_id from request if available
@@ -2570,478 +2143,12 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting candles: {str(e)}")
 
-@app.websocket("/ws/backtest-vwap-strategy")
-async def backtest_vwap_strategy_websocket(websocket: WebSocket):
-    """
-    WebSocket endpoint for streaming backtest results in real-time
-    Client sends: {"start_date": "2025-11-17", "end_date": "2025-12-26", "timeframe": "5minute"}
-    Server streams: {"type": "result", "data": {...}} for each instrument
-    Server sends: {"type": "summary", "data": {...}} when complete
-    Server sends: {"type": "error", "message": "..."} on error
-    """
-    await websocket.accept()
-    try:
-        # Receive initial message with parameters
-        message = await websocket.receive_text()
-        params = json.loads(message)
-        
-        start_date = params.get("start_date")
-        end_date = params.get("end_date")
-        timeframe = params.get("timeframe", "5minute")
-        
-        if not start_date or not end_date:
-            await websocket.send_json({
-                "type": "error",
-                "message": "start_date and end_date are required"
-            })
-            await websocket.close()
-            return
-        
-        # Get user_id from query params or headers if available
-        user_id = "default"
-        try:
-            from core.user_context import get_user_id_from_request
-            # For WebSocket, we can't use Request object, so we'll use query params
-            user_id_param = websocket.query_params.get("user_id")
-            if user_id_param:
-                user_id = user_id_param
-        except:
-            pass
-        
-        # Send start message
-        await websocket.send_json({
-            "type": "start",
-            "message": "Backtest started",
-            "params": {"start_date": start_date, "end_date": end_date, "timeframe": timeframe}
-        })
-        # Yield control to event loop to ensure message is sent
-        await asyncio.sleep(0.01)
-        
-        # All 25 stocks with validated tokens
-        instruments = [
-            {"name": "RELIANCE", "token": "738561"},
-            {"name": "TCS", "token": "2953217"},
-            {"name": "HDFCBANK", "token": "341249"},
-            {"name": "INFY", "token": "408065"},
-            {"name": "ICICIBANK", "token": "1270529"},
-            {"name": "SBIN", "token": "779521"},
-            {"name": "KOTAKBANK", "token": "492033"},
-            {"name": "AXISBANK", "token": "1510401"},
-            {"name": "INDUSINDBK", "token": "1346049"},
-            {"name": "FEDERALBNK", "token": "261889"},
-            {"name": "WIPRO", "token": "969473"},
-            {"name": "HCLTECH", "token": "1850625"},
-            {"name": "TECHM", "token": "3465729"},
-            {"name": "LTIM", "token": "4561409"},
-            {"name": "PERSISTENT", "token": "4701441"},
-            {"name": "SUNPHARMA", "token": "857857"},
-            {"name": "DRREDDY", "token": "225537"},
-            {"name": "CIPLA", "token": "177665"},
-            {"name": "LUPIN", "token": "2672641"},
-            {"name": "DIVISLAB", "token": "2800641"},
-            {"name": "BHARTIARTL", "token": "2714625"},
-            {"name": "BAJFINANCE", "token": "81153"},
-            {"name": "ITC", "token": "424961"},
-            {"name": "HINDUNILVR", "token": "356865"},
-            {"name": "MARUTI", "token": "2815745"},
-        ]
-        
-        kite = get_kite_instance(user_id=user_id)
-        
-        # Convert interval format
-        interval_map = {
-            '1minute': 'minute',
-            '5minute': '5minute',
-            '15minute': '15minute',
-            '30minute': '30minute',
-            '60minute': '60minute',
-            'day': 'day'
-        }
-        timeframe = str(timeframe).strip() if timeframe else "5minute"
-        kite_interval = interval_map.get(timeframe, timeframe)
-        
-        # Parse dates
-        from_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-        to_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-        
-        # Get all trading dates in range
-        trading_dates = []
-        current_date = from_date
-        while current_date <= to_date:
-            if current_date.weekday() < 5:  # Monday=0 to Friday=4
-                trading_dates.append(current_date.strftime("%Y-%m-%d"))
-            current_date += timedelta(days=1)
-        
-        results = []
-        total_signals = 0
-        total_profit = 0
-        
-        # Process each instrument and stream results
-        for inst_idx, inst in enumerate(instruments):
-            try:
-                # Send progress update
-                await websocket.send_json({
-                    "type": "progress",
-                    "instrument": inst["name"],
-                    "progress": f"{inst_idx + 1}/{len(instruments)}",
-                    "message": f"Processing {inst['name']}..."
-                })
-                # Yield control to event loop to ensure message is sent immediately
-                await asyncio.sleep(0.05)
-                
-                instrument_signals = []
-                instrument_profit = 0
-                instrument_profitable = 0
-                instrument_losses = 0
-                
-                # Process each trading date
-                for date_str in trading_dates:
-                    try:
-                        from_date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-                        to_date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-                        
-                        historical_data = kite.historical_data(
-                            instrument_token=int(inst["token"]),
-                            from_date=from_date_obj,
-                            to_date=to_date_obj,
-                            interval=kite_interval
-                        )
-                        
-                        if not historical_data or len(historical_data) == 0:
-                            continue
-                        
-                        # Process same as getCandle endpoint
-                        df = pd.DataFrame(historical_data)
-                        if 'date' in df.columns:
-                            df['timestamp'] = pd.to_datetime(df['date'])
-                        elif 'timestamp' not in df.columns:
-                            df['timestamp'] = pd.to_datetime(df.index)
-                        df = df.sort_values('timestamp').reset_index(drop=True)
-                        
-                        # Calculate VWAP
-                        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
-                        df['cumulative_volume'] = df['volume'].cumsum()
-                        df['cumulative_tpv'] = (df['typical_price'] * df['volume']).cumsum()
-                        df['vwap'] = df['cumulative_tpv'] / df['cumulative_volume']
-                        
-                        # Get current price (last candle close) for PnL - convert to float
-                        current_price = float(df.iloc[-1]['close']) if len(df) > 0 else 0.0
-                        
-                        # Process signals using same logic as getCandle endpoint
-                        df['is_above_vwap'] = df['close'] > df['vwap']
-                        df['vwap_position'] = df['is_above_vwap'].map({True: 'Above', False: 'Below'})
-                        df['vwap_diff'] = (df['close'] - df['vwap']).abs()
-                        df['vwap_diff_percent'] = (df['close'] - df['vwap']) / df['vwap'] * 100
-                        
-                        # Detect candlestick patterns (reuse logic from getCandle)
-                        def detect_candlestick_pattern_bk(current_idx, df):
-                            """Detect candlestick pattern - same as getCandle"""
-                            row = df.loc[current_idx]
-                            open_price = row['open']
-                            high = row['high']
-                            low = row['low']
-                            close = row['close']
-                            body_size = abs(close - open_price)
-                            upper_wick = high - max(open_price, close)
-                            lower_wick = min(open_price, close) - low
-                            total_range = high - low
-                            if total_range == 0:
-                                return 'Doji'
-                            body_ratio = body_size / total_range
-                            upper_wick_ratio = upper_wick / total_range
-                            lower_wick_ratio = lower_wick / total_range
-                            is_bullish = close > open_price
-                            is_bearish = close < open_price
-                            is_doji = body_ratio < 0.1
-                            prev_row = df.loc[current_idx - 1] if current_idx > 0 else None
-                            prev_prev_row = df.loc[current_idx - 2] if current_idx > 1 else None
-                            
-                            if is_doji:
-                                if upper_wick_ratio > 0.4 and lower_wick_ratio > 0.4:
-                                    return 'Doji'
-                                elif upper_wick_ratio > 0.6:
-                                    return 'Gravestone Doji'
-                                elif lower_wick_ratio > 0.6:
-                                    return 'Dragonfly Doji'
-                                else:
-                                    return 'Doji'
-                            if upper_wick_ratio < 0.05 and lower_wick_ratio < 0.05:
-                                return 'Bullish Marubozu' if is_bullish else 'Bearish Marubozu'
-                            if lower_wick_ratio > 0.6 and body_ratio < 0.3 and upper_wick_ratio < 0.2:
-                                return 'Hammer' if is_bullish else 'Hanging Man'
-                            if upper_wick_ratio > 0.6 and body_ratio < 0.3 and lower_wick_ratio < 0.2:
-                                return 'Inverted Hammer' if is_bullish else 'Shooting Star'
-                            if body_ratio > 0.7:
-                                return 'Long White Candle' if is_bullish else 'Long Black Candle'
-                            if body_ratio < 0.3:
-                                return 'Small White Candle' if is_bullish else 'Small Black Candle'
-                            if prev_row is not None:
-                                prev_open = prev_row['open']
-                                prev_close = prev_row['close']
-                                prev_high = prev_row['high']
-                                prev_low = prev_row['low']
-                                if is_bullish and prev_close < prev_open and close > prev_open and open_price < prev_close:
-                                    return 'Bullish Engulfing'
-                                if is_bearish and prev_close > prev_open and close < prev_open and open_price > prev_close:
-                                    return 'Bearish Engulfing'
-                                if is_bullish and prev_close > prev_open and open_price > prev_close and close < prev_open:
-                                    return 'Bullish Harami'
-                                if is_bearish and prev_close < prev_open and open_price < prev_close and close > prev_open:
-                                    return 'Bearish Harami'
-                                if is_bullish and prev_close < prev_open and close > (prev_open + prev_close) / 2:
-                                    return 'Piercing Pattern'
-                                if is_bearish and prev_close > prev_open and close < (prev_open + prev_close) / 2:
-                                    return 'Dark Cloud Cover'
-                            if prev_row is not None and prev_prev_row is not None:
-                                prev_prev_open = prev_prev_row['open']
-                                prev_prev_close = prev_prev_row['close']
-                                prev_open = prev_row['open']
-                                prev_close = prev_row['close']
-                                prev_body_size = abs(prev_close - prev_open)
-                                prev_prev_body_size = abs(prev_prev_close - prev_prev_open)
-                                if is_bullish and prev_prev_close < prev_prev_open and prev_body_size < prev_prev_body_size * 0.5 and close > (prev_prev_open + prev_prev_close) / 2:
-                                    return 'Morning Star'
-                                if is_bearish and prev_prev_close > prev_prev_open and prev_body_size < prev_prev_body_size * 0.5 and close < (prev_prev_open + prev_prev_close) / 2:
-                                    return 'Evening Star'
-                                if is_bullish and prev_close > prev_open and prev_prev_close > prev_prev_open and close > prev_close and prev_close > prev_prev_close:
-                                    return 'Three White Soldiers'
-                                if is_bearish and prev_close < prev_open and prev_prev_close < prev_prev_open and close < prev_close and prev_close < prev_prev_close:
-                                    return 'Three Black Crows'
-                            return 'Small White Candle' if is_bullish else 'Small Black Candle'
-                        
-                        # Apply pattern detection
-                        df['candle_type'] = df.index.map(lambda i: detect_candlestick_pattern_bk(i, df))
-                        
-                        # Generate trading signals (reuse logic from getCandle)
-                        def generate_trading_signal_bk(current_idx, df, instrument_token=None):
-                            """Generate trading signal - same as getCandle"""
-                            instrument_blacklist = ['4701441']  # PERSISTENT
-                            if instrument_token and str(instrument_token) in instrument_blacklist:
-                                return (None, None, None)
-                            row = df.loc[current_idx]
-                            candle_type = row.get('candle_type', '')
-                            close = row.get('close', 0)
-                            open_price = row.get('open', 0)
-                            high = row.get('high', 0)
-                            vwap = row.get('vwap', 0)
-                            if current_idx > 0:
-                                prev_row = df.loc[current_idx - 1]
-                                prev_candle_type = prev_row.get('candle_type', '')
-                                is_green_candle = close > open_price
-                                close_above_vwap = close > vwap
-                                high_above_vwap = high > vwap
-                                high_performance_candle_types = [
-                                    'Dragonfly Doji', 'Piercing Pattern',
-                                    'Inverted Hammer', 'Long White Candle'
-                                ]
-                                current_candle_matches = any(pattern in candle_type for pattern in high_performance_candle_types)
-                                if (prev_candle_type == 'Three Black Crows' and is_green_candle and 
-                                    (close_above_vwap or high_above_vwap) and current_candle_matches):
-                                    matched_pattern = next((p for p in high_performance_candle_types if p in candle_type), candle_type)
-                                    reason = f"Priority 1: {matched_pattern} candle {'closing' if close_above_vwap else 'high'} above VWAP after Three Black Crows"
-                                    return ('BUY', 1, reason)
-                            return (None, None, None)
-                        
-                        # Apply signal generation
-                        df['trading_signal'] = None
-                        df['signal_priority'] = None
-                        df['signal_reason'] = None
-                        for i in range(len(df)):
-                            signal, priority, reason = generate_trading_signal_bk(i, df, instrument_token=inst["token"])
-                            if signal is not None:
-                                df.loc[i, 'trading_signal'] = signal
-                                df.loc[i, 'signal_priority'] = priority
-                                df.loc[i, 'signal_reason'] = reason
-                        
-                        # Extract Priority 1 signals
-                        priority1_rows = df[(df['trading_signal'] == 'BUY') & (df['signal_priority'] == 1)]
-                        for idx, signal_row in priority1_rows.iterrows():
-                            # Convert numpy types to native Python types
-                            try:
-                                entry_price_val = signal_row['close']
-                                if isinstance(entry_price_val, (pd.Series, np.ndarray)):
-                                    entry_price = float(entry_price_val.iloc[0] if hasattr(entry_price_val, 'iloc') else entry_price_val[0])
-                                else:
-                                    entry_price = float(entry_price_val)
-                            except (ValueError, TypeError) as e:
-                                print(f"Error converting entry_price: {e}, value: {signal_row['close']}, type: {type(signal_row['close'])}")
-                                entry_price = float(str(signal_row['close']))
-                            
-                            try:
-                                current_price_float = float(current_price)
-                            except (ValueError, TypeError):
-                                current_price_float = float(str(current_price))
-                            
-                            profit = current_price_float - entry_price
-                            
-                            # Format entry time (from signal timestamp)
-                            entry_timestamp = signal_row['timestamp']
-                            try:
-                                if pd.api.types.is_datetime64_any_dtype(entry_timestamp):
-                                    entry_time = entry_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                                elif isinstance(entry_timestamp, pd.Timestamp):
-                                    entry_time = entry_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                                elif isinstance(entry_timestamp, (int, float, np.integer, np.floating)):
-                                    entry_timestamp_float = float(entry_timestamp)
-                                    if entry_timestamp_float > 1e10:  # milliseconds
-                                        entry_time = datetime.fromtimestamp(entry_timestamp_float / 1000).strftime('%Y-%m-%d %H:%M:%S')
-                                    else:  # seconds
-                                        entry_time = datetime.fromtimestamp(entry_timestamp_float).strftime('%Y-%m-%d %H:%M:%S')
-                                else:
-                                    try:
-                                        entry_time = pd.to_datetime(entry_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                                    except:
-                                        entry_time = str(entry_timestamp) if entry_timestamp else '-'
-                            except Exception as e:
-                                print(f"Error formatting entry_time: {e}, timestamp: {entry_timestamp}")
-                                entry_time = '-'
-                            
-                            # Format exit time (last candle timestamp)
-                            exit_timestamp = df.iloc[-1]['timestamp']
-                            try:
-                                if pd.api.types.is_datetime64_any_dtype(exit_timestamp):
-                                    exit_time = exit_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                                elif isinstance(exit_timestamp, pd.Timestamp):
-                                    exit_time = exit_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                                elif isinstance(exit_timestamp, (int, float, np.integer, np.floating)):
-                                    exit_timestamp_float = float(exit_timestamp)
-                                    if exit_timestamp_float > 1e10:  # milliseconds
-                                        exit_time = datetime.fromtimestamp(exit_timestamp_float / 1000).strftime('%Y-%m-%d %H:%M:%S')
-                                    else:  # seconds
-                                        exit_time = datetime.fromtimestamp(exit_timestamp_float).strftime('%Y-%m-%d %H:%M:%S')
-                                else:
-                                    try:
-                                        exit_time = pd.to_datetime(exit_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                                    except:
-                                        exit_time = str(exit_timestamp) if exit_timestamp else '-'
-                            except Exception as e:
-                                print(f"Error formatting exit_time: {e}, timestamp: {exit_timestamp}")
-                                exit_time = '-'
-                            
-                            # Convert numpy types to native Python types for JSON serialization
-                            timestamp_val = signal_row['timestamp']
-                            try:
-                                if pd.api.types.is_datetime64_any_dtype(timestamp_val) or isinstance(timestamp_val, pd.Timestamp):
-                                    timestamp_val = int(timestamp_val.timestamp())
-                                elif isinstance(timestamp_val, (int, float, np.integer, np.floating)):
-                                    timestamp_val = int(float(timestamp_val))
-                                else:
-                                    timestamp_val = int(pd.to_datetime(timestamp_val).timestamp())
-                            except Exception as e:
-                                print(f"Error converting timestamp: {e}, type: {type(timestamp_val)}, value: {timestamp_val}")
-                                timestamp_val = 0
-                            
-                            instrument_signals.append({
-                                "date": date_str,
-                                "timestamp": timestamp_val,
-                                "entry_time": entry_time,
-                                "exit_time": exit_time,
-                                "entry_price": float(round(float(entry_price), 2)),
-                                "exit_price": float(round(float(current_price), 2)),
-                                "qty": 1,
-                                "profit": float(round(float(profit), 2)),
-                                "profit_percent": float(round((float(profit) / float(entry_price) * 100) if entry_price > 0 else 0, 2)),
-                                "candle_type": str(signal_row.get('candle_type', '')) if signal_row.get('candle_type') is not None else '',
-                                "signal_reason": str(signal_row.get('signal_reason', '')) if signal_row.get('signal_reason') is not None else ''
-                            })
-                            
-                            instrument_profit += float(profit)
-                            if float(profit) > 0:
-                                instrument_profitable += 1
-                            elif float(profit) < 0:
-                                instrument_losses += 1
-                            
-                    except Exception as e:
-                        print(f"Error processing {inst['name']} on {date_str}: {str(e)}")
-                        continue
-                
-                # Calculate summary for this instrument
-                if len(instrument_signals) > 0:
-                    avg_profit = float(instrument_profit) / len(instrument_signals)
-                    win_rate = (float(instrument_profitable) / len(instrument_signals)) * 100 if len(instrument_signals) > 0 else 0
-                else:
-                    avg_profit = 0.0
-                    win_rate = 0.0
-                
-                result = {
-                    "instrument": str(inst["name"]),
-                    "instrument_token": str(inst["token"]),
-                    "total_signals": int(len(instrument_signals)),
-                    "total_profit": float(round(float(instrument_profit), 2)),
-                    "avg_profit": float(round(float(avg_profit), 2)),
-                    "win_rate": float(round(float(win_rate), 2)),
-                    "profitable_signals": int(instrument_profitable),
-                    "loss_signals": int(instrument_losses),
-                    "orders": instrument_signals
-                }
-                
-                results.append(result)
-                total_signals += int(len(instrument_signals))
-                total_profit += float(instrument_profit)
-                
-                # Stream result immediately (only if has signals)
-                if len(instrument_signals) > 0:
-                    print(f"[WS] Sending result for {inst['name']}: {len(instrument_signals)} signals, profit: {instrument_profit}")
-                    await websocket.send_json({
-                        "type": "result",
-                        "data": result
-                    })
-                    # Yield control to event loop to ensure message is sent immediately
-                    # This allows the WebSocket to flush the message before continuing
-                    await asyncio.sleep(0.05)
-                    print(f"[WS] Result sent for {inst['name']}")
-                else:
-                    print(f"[WS] Skipping {inst['name']} - no signals")
-                    
-            except Exception as e:
-                print(f"Error processing instrument {inst['name']}: {str(e)}")
-                await websocket.send_json({
-                    "type": "error",
-                    "instrument": inst["name"],
-                    "message": f"Error processing {inst['name']}: {str(e)}"
-                })
-                continue
-        
-        # Send final summary
-        summary = {
-            "total_instruments": int(len(instruments)),
-            "total_signals": int(total_signals),
-            "total_profit": float(round(float(total_profit), 2)),
-            "avg_profit_per_signal": float(round(float(total_profit) / float(total_signals), 2)) if total_signals > 0 else 0.0,
-            "profitable_instruments": int(len([r for r in results if float(r["total_profit"]) > 0])),
-            "loss_instruments": int(len([r for r in results if float(r["total_profit"]) < 0])),
-            "test_period": {
-                "start_date": str(start_date),
-                "end_date": str(end_date),
-                "trading_days": int(len(trading_dates))
-            }
-        }
-        
-        await websocket.send_json({
-            "type": "summary",
-            "data": summary
-        })
-        
-        await websocket.send_json({
-            "type": "complete",
-            "message": "Backtest completed"
-        })
-        
-    except WebSocketDisconnect:
-        print("[WS] Client disconnected from backtest")
-    except Exception as e:
-        print(f"[WS] Backtest error: {e}")
-        try:
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Error running backtest: {str(e)}"
-            })
-        except:
-            pass
-        await websocket.close()
+# Backtest WebSocket endpoint moved to api/v1/routes/strategies.py
+# Use: /api/v1/strategies/ws/backtest-vwap-strategy
 
-@app.post("/backtest-vwap-strategy")
-async def backtest_vwap_strategy(request: Request):
+# Moved to api/v1/routes/strategies.py (WebSocket version is active)
+# @app.post("/backtest-vwap-strategy")
+# async def backtest_vwap_strategy(request: Request):
     """
     Backtest VWAP Priority 1 strategy across all 25 stocks
     Returns order details, PnL, and summary for each instrument
@@ -3464,8 +2571,9 @@ async def backtest_vwap_strategy(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error running backtest: {str(e)}")
 
-@app.post("/placeOrder")
-async def place_order(req: Request):
+# Moved to api/v1/routes/orders.py
+# @app.post("/placeOrder")
+# async def place_order(req: Request):
     """Place an order"""
     try:
         kite = get_kite_instance()
@@ -3500,8 +2608,9 @@ async def place_order(req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error placing order: {str(e)}")
 
-@app.post("/modifyOrder")
-async def modify_order(req: Request):
+# Moved to api/v1/routes/orders.py
+# @app.post("/modifyOrder")
+# async def modify_order(req: Request):
     """Modify an existing order"""
     try:
         kite = get_kite_instance()
@@ -3533,8 +2642,9 @@ async def modify_order(req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error modifying order: {str(e)}")
 
-@app.post("/cancelOrder")
-async def cancel_order(req: Request):
+# Moved to api/v1/routes/orders.py
+# @app.post("/cancelOrder")
+# async def cancel_order(req: Request):
     """Cancel an order"""
     try:
         kite = get_kite_instance()
@@ -3552,8 +2662,9 @@ async def cancel_order(req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error cancelling order: {str(e)}")
 
-@app.post("/sellOrder")
-async def sell_order(req: Request):
+# Moved to api/v1/routes/orders.py
+# @app.post("/sellOrder")
+# async def sell_order(req: Request):
     """Place a sell order (same as placeOrder but with transaction_type=SELL)"""
     try:
         kite = get_kite_instance()
@@ -3588,8 +2699,9 @@ async def sell_order(req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error placing sell order: {str(e)}")
 
-@app.get("/ws-portfolio")
-def get_portfolio_ws():
+# Moved to api/v1/routes/portfolio.py
+# @app.get("/ws-portfolio")
+# def get_portfolio_ws():
     """Get WebSocket authorization for portfolio streaming"""
     try:
         access_token = get_access_token()
@@ -3614,8 +2726,9 @@ def get_portfolio_ws():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting WebSocket info: {str(e)}")
 
-@app.get("/ws-orders")
-def get_orders_ws():
+# Moved to api/v1/routes/portfolio.py
+# @app.get("/ws-orders")
+# def get_orders_ws():
     """Get WebSocket authorization for orders streaming"""
     try:
         access_token = get_access_token()
@@ -3640,8 +2753,9 @@ def get_orders_ws():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting WebSocket info: {str(e)}")
 
-@app.get("/instruments")
-def get_instruments():
+# Moved to api/v1/routes/market.py
+# @app.get("/instruments")
+# def get_instruments():
     """Get all instruments (for option chain, etc.)"""
     try:
         kite = get_kite_instance()
@@ -3653,8 +2767,9 @@ def get_instruments():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting instruments: {str(e)}")
 
-@app.get("/quote/{instrument_key}")
-def get_quote(instrument_key: str):
+# Moved to api/v1/routes/market.py
+# @app.get("/quote/{instrument_key}")
+# def get_quote(instrument_key: str):
     """Get quote for an instrument"""
     try:
         kite = get_kite_instance()
@@ -3670,8 +2785,9 @@ def get_quote(instrument_key: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting quote: {str(e)}")
 
-@app.get("/nifty50-options")
-def get_nifty50_options():
+# Moved to api/v1/routes/market.py
+# @app.get("/nifty50-options")
+# def get_nifty50_options():
     """Get Nifty50 options with current strike, 2 ITM and 2 OTM strikes"""
     try:
         kite = get_kite_instance()
@@ -3822,8 +2938,9 @@ def get_nifty50_options():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting Nifty50 options: {str(e)}")
 
-@app.get("/ws-nifty50-options")
-def get_nifty50_options_ws():
+# Moved to api/v1/routes/market.py
+# @app.get("/ws-nifty50-options")
+# def get_nifty50_options_ws():
     """Get WebSocket URL for Nifty50 options streaming"""
     try:
         access_token = get_access_token()
@@ -3846,138 +2963,12 @@ def get_nifty50_options_ws():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting WebSocket info: {str(e)}")
 
-def calculate_bollinger_bands(closes, period=20, num_std=2):
-    """Calculate Bollinger Bands for mean reversion strategy"""
-    if len(closes) < period:
-        return None, None, None
-    
-    df = pd.DataFrame({'close': closes})
-    df['sma'] = df['close'].rolling(window=period).mean()
-    df['std'] = df['close'].rolling(window=period).std()
-    df['upper_band'] = df['sma'] + (df['std'] * num_std)
-    df['lower_band'] = df['sma'] - (df['std'] * num_std)
-    
-    return df['upper_band'].iloc[-1], df['sma'].iloc[-1], df['lower_band'].iloc[-1]
-
-def calculate_bollinger_bands_full(closes, period=20, num_std=2):
-    """Calculate full Bollinger Bands array for chart display - matches TradingView/Zerodha standard"""
-    if len(closes) < period:
-        return [], [], []
-    
-    df = pd.DataFrame({'close': closes})
-    # Use Simple Moving Average (SMA) - standard for Bollinger Bands
-    df['sma'] = df['close'].rolling(window=period, min_periods=1).mean()
-    # Use Population Standard Deviation (ddof=0) - matches TradingView default
-    # Note: pandas std() uses ddof=1 by default (sample std), we need ddof=0 (population std)
-    df['std'] = df['close'].rolling(window=period, min_periods=1).std(ddof=0)
-    df['upper_band'] = df['sma'] + (df['std'] * num_std)
-    df['lower_band'] = df['sma'] - (df['std'] * num_std)
-    
-    # Return arrays - keep NaN for first period-1 values (no forward fill for accuracy)
-    # Only fill backward for the very first value if needed
-    upper = df['upper_band'].fillna(method='bfill', limit=1).tolist()
-    middle = df['sma'].fillna(method='bfill', limit=1).tolist()
-    lower = df['lower_band'].fillna(method='bfill', limit=1).tolist()
-    
-    return upper, middle, lower
-
-def calculate_rsi(closes, period=14):
-    """Calculate RSI (Relative Strength Index) using Wilder's Smoothing Method - matches TradingView/Zerodha"""
-    if len(closes) < period + 1:
-        return [np.nan] * len(closes)  # Return NaN if not enough data
-    
-    # Convert to numpy array for faster computation
-    closes_arr = np.array(closes, dtype=float)
-    deltas = np.diff(closes_arr)
-    
-    # Separate gains and losses
-    gains = np.where(deltas > 0, deltas, 0.0)
-    losses = np.where(deltas < 0, -deltas, 0.0)
-    
-    # Initialize arrays for average gain and loss (same length as deltas)
-    avg_gains = np.full(len(gains), np.nan, dtype=float)
-    avg_losses = np.full(len(losses), np.nan, dtype=float)
-    
-    # First average: Simple average of first 'period' delta values
-    # This corresponds to the RSI value at index 'period' in the closes array
-    if len(gains) >= period:
-        avg_gains[period - 1] = np.mean(gains[:period])
-        avg_losses[period - 1] = np.mean(losses[:period])
-        
-        # Apply Wilder's smoothing for remaining values
-        # Formula: avg = (prev_avg * (period - 1) + current) / period
-        for i in range(period, len(gains)):
-            avg_gains[i] = (avg_gains[i - 1] * (period - 1) + gains[i]) / period
-            avg_losses[i] = (avg_losses[i - 1] * (period - 1) + losses[i]) / period
-    
-    # Calculate RS and RSI
-    # Handle division by zero
-    rs = np.divide(avg_gains, avg_losses, out=np.full_like(avg_gains, np.nan), where=(avg_losses != 0))
-    rsi_deltas = 100 - (100 / (1 + rs))
-    
-    # RSI array should match closes length
-    # First 'period' values are NaN (not enough data)
-    # RSI at index i corresponds to close at index i
-    rsi_list = [np.nan] * period  # First period values are NaN
-    
-    # Append calculated RSI values (starting from index period)
-    for i in range(period - 1, len(rsi_deltas)):
-        val = rsi_deltas[i]
-        if np.isnan(val):
-            rsi_list.append(np.nan)
-        else:
-            rsi_list.append(float(val))
-    
-    # Ensure length matches closes
-    while len(rsi_list) < len(closes):
-        rsi_list.append(np.nan)
-    
-    return rsi_list[:len(closes)]
-
-def calculate_pivot_points(high, low, close):
-    """Calculate Pivot Points (Traditional/Standard method) - matches TradingView/Zerodha"""
-    # Traditional Pivot Point calculation (Standard method)
-    # Pivot = (High + Low + Close) / 3
-    pivot = (high + low + close) / 3
-    
-    # Resistance levels (Traditional method)
-    # R1 = 2 * Pivot - Low
-    # R2 = Pivot + (High - Low)
-    # R3 = High + 2 * (Pivot - Low)
-    r1 = 2 * pivot - low
-    r2 = pivot + (high - low)
-    r3 = high + 2 * (pivot - low)
-    
-    # Support levels (Traditional method)
-    # S1 = 2 * Pivot - High
-    # S2 = Pivot - (High - Low)
-    # S3 = Low - 2 * (High - Pivot)
-    s1 = 2 * pivot - high
-    s2 = pivot - (high - low)
-    s3 = low - 2 * (high - pivot)
-    
-    return {
-        "pivot": float(pivot),
-        "r1": float(r1), 
-        "r2": float(r2), 
-        "r3": float(r3),
-        "s1": float(s1), 
-        "s2": float(s2), 
-        "s3": float(s3)
-    }
-
-def calculate_support_resistance(candles, lookback=20):
-    """Calculate support and resistance levels"""
-    if len(candles) < lookback:
-        return None, None
-    
-    highs = [c.get("high", 0) for c in candles[-lookback:]]
-    lows = [c.get("low", 0) for c in candles[-lookback:]]
-    
-    resistance = max(highs)
-    support = min(lows)
-    
-    return resistance, support
+# Moved to utils/indicators.py
+# def calculate_bollinger_bands(...):
+# def calculate_bollinger_bands_full(...):
+# def calculate_rsi(...):
+# def calculate_pivot_points(...):
+# def calculate_support_resistance(...):
 
 def strategy_915_candle_break(kite, trading_candles, first_candle, nifty_price, current_strike, atm_ce, atm_pe, date_str):
     """9:15 Candle Break Strategy - Smart with Nifty trend confirmation"""
@@ -4339,24 +3330,8 @@ def strategy_support_resistance_breakout(kite, trading_candles, nifty_price, cur
 # SENSIBULL-STYLE MULTI-LEG STRATEGIES
 # ============================================================================
 
-def find_option(nifty_options, strike, type, sim_date=None):
-    """Helper to find an option instrument by strike and type, with expiry awareness"""
-    matches = [o for o in nifty_options if o.get("strike") == strike and o.get("instrument_type") == type]
-    if not matches: return None
-    
-    # If in simulation, find the nearest expiry >= simulation date
-    if sim_date:
-        if isinstance(sim_date, str):
-            sim_date = datetime.strptime(sim_date, "%Y-%m-%d").date()
-        elif isinstance(sim_date, datetime):
-            sim_date = sim_date.date()
-            
-        expiries = sorted(list(set([o["expiry"] for o in matches if o.get("expiry")])))
-        for exp in expiries:
-            if exp >= sim_date:
-                return next((o for o in matches if o["expiry"] == exp), matches[0])
-                
-    return matches[0]
+# Moved to simulation/helpers.py
+# def find_option(...):
 
 def get_leg_price_at_time(kite, instrument, date, time_str):
     """Helper to get historical price for a leg at a specific time"""
@@ -4725,726 +3700,12 @@ def strategy_ema_cross(kite, trading_candles, nifty_price, current_strike, atm_c
     
     return None
 
-@app.post("/backtest-nifty50-options")
-async def backtest_nifty50_options(req: Request):
-    """Backtest Nifty50 options strategy for given date range with multiple strategy options"""
-    try:
-        kite = get_kite_instance()
-        payload = await req.json()
-        
-        start_date_str = payload.get("start_date")
-        end_date_str = payload.get("end_date")
-        strategy_type = payload.get("strategy_type", "915_candle_break")  # Default strategy
-        fund = payload.get("fund", 200000)
-        risk_pct = payload.get("risk", 1) / 100
-        reward_pct = payload.get("reward", 3) / 100
-        
-        # Debug logging
-        print(f"Backtest request received:")
-        print(f"  Start date: {start_date_str}")
-        print(f"  End date: {end_date_str}")
-        print(f"  Strategy type: {strategy_type}")
-        print(f"  Full payload: {payload}")
-        
-        if not start_date_str or not end_date_str:
-            raise HTTPException(status_code=400, detail="start_date and end_date are required (format: YYYY-MM-DD)")
-        
-        # Parse dates
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-        
-        if start_date > end_date:
-            raise HTTPException(status_code=400, detail="start_date must be before end_date")
-        
-        # Get all NFO instruments
-        all_instruments = kite.instruments("NFO")
-        
-        # Filter for Nifty50 options
-        nifty_options = [
-            inst for inst in all_instruments 
-            if inst.get("name") == "NIFTY" and inst.get("instrument_type") in ["CE", "PE"]
-        ]
-        
-        if not nifty_options:
-            raise HTTPException(status_code=404, detail="Nifty50 options not found")
-        
-        # Generate list of trading dates (excluding weekends)
-        trading_dates = []
-        current_date = start_date
-        while current_date <= end_date:
-            # Check if weekday (Monday=0, Sunday=6)
-            if current_date.weekday() < 5:  # Monday to Friday
-                trading_dates.append(current_date)
-            current_date += timedelta(days=1)
-        
-        if not trading_dates:
-            raise HTTPException(status_code=400, detail="No trading days found in date range")
-        
-        # Backtest results
-        backtest_results = {
-            "start_date": start_date_str,
-            "end_date": end_date_str,
-            "strategy_type": strategy_type,
-            "total_trading_days": len(trading_dates),
-            "trades": [],
-            "statistics": {
-                "total_trades": 0,
-                "winning_trades": 0,
-                "losing_trades": 0,
-                "total_pnl": 0.0,
-                "win_rate": 0.0,
-                "average_profit": 0.0,
-                "average_loss": 0.0,
-                "max_profit": 0.0,
-                "max_loss": 0.0
-            }
-        }
-        
-        # Get Nifty50 index instrument token for historical data
-        nse_instruments = kite.instruments("NSE")
-        nifty_index = next(
-            (inst for inst in nse_instruments if inst.get("tradingsymbol") == "NIFTY 50"),
-            None
-        )
-        
-        if not nifty_index:
-            raise HTTPException(status_code=404, detail="Nifty50 index not found")
-        
-        nifty_token = nifty_index.get("instrument_token")
-        
-        print(f"Backtesting from {start_date} to {end_date}")
-        print(f"Total trading days: {len(trading_dates)}")
-        print(f"Nifty50 token: {nifty_token}")
-        print(f"Total Nifty options found: {len(nifty_options)}")
-        
-        # Process each trading day
-        for trade_date in trading_dates:
-            try:
-                date_str = trade_date.strftime("%Y-%m-%d")
-                
-                # Get historical Nifty50 price for this date and previous day (for gap analysis)
-                try:
-                    # Get current day and previous day data
-                    nifty_historical = kite.historical_data(
-                        instrument_token=nifty_token,
-                        from_date=trade_date - timedelta(days=2),
-                        to_date=trade_date + timedelta(days=1),
-                        interval="day"
-                    )
-                    
-                    if not nifty_historical or len(nifty_historical) < 2:
-                        # Try wider range
-                        nifty_historical = kite.historical_data(
-                            instrument_token=nifty_token,
-                            from_date=trade_date - timedelta(days=7),
-                            to_date=trade_date + timedelta(days=1),
-                            interval="day"
-                        )
-                    
-                    if not nifty_historical or len(nifty_historical) == 0:
-                        print(f"No Nifty50 historical data available for {date_str}")
-                        continue
-                    
-                    # Find current day and previous day candles
-                    nifty_candle = None
-                    prev_day_candle = None
-                    
-                    for candle in nifty_historical:
-                        candle_date_str = candle.get("date", "")
-                        if candle_date_str:
-                            try:
-                                candle_date = datetime.strptime(candle_date_str.split()[0], "%Y-%m-%d").date()
-                                if candle_date == trade_date:
-                                    nifty_candle = candle
-                                elif candle_date == trade_date - timedelta(days=1):
-                                    prev_day_candle = candle
-                            except:
-                                continue
-                    
-                    # If no exact match, use the last candle as current
-                    if not nifty_candle and nifty_historical:
-                        nifty_candle = nifty_historical[-1]
-                    
-                    # Get previous day candle (for gap analysis)
-                    if not prev_day_candle and len(nifty_historical) >= 2:
-                        prev_day_candle = nifty_historical[-2]
-                    
-                    if not nifty_candle:
-                        print(f"Could not find Nifty50 candle for {date_str}")
-                        continue
-                    
-                    nifty_price = nifty_candle.get("close", 0)
-                    if not nifty_price or nifty_price == 0:
-                        print(f"Invalid Nifty50 price for {date_str}: {nifty_price}")
-                        continue
-                    
-                    # Gap Analysis - Skip trades on significant gap days (risk management)
-                    gap_percent = 0
-                    if prev_day_candle:
-                        prev_close = prev_day_candle.get("close", 0)
-                        if prev_close > 0:
-                            gap_percent = ((nifty_price - prev_close) / prev_close) * 100
-                            # Skip if gap > 1% (too volatile/unpredictable for options)
-                            if abs(gap_percent) > 1.0:
-                                print(f"{date_str}: Skipping trade due to large gap ({gap_percent:.2f}%)")
-                                continue
-                    
-                    print(f"{date_str}: Nifty50 price = {nifty_price}, Gap = {gap_percent:.2f}%")
-                    
-                except Exception as e:
-                    print(f"Error getting Nifty50 price for {date_str}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
-                
-                # Calculate current strike
-                current_strike = round(nifty_price / 50) * 50
-                
-                # Get options for this date (nearest expiry)
-                # Filter options that would have been active on this date
-                # Options expire on Thursdays, so we need expiry >= trade_date
-                expiries_raw = [inst.get("expiry") for inst in nifty_options if inst.get("expiry")]
-                
-                # Convert expiries to date objects (they might be strings or date objects)
-                # Kite Connect returns expiry as datetime.date objects
-                expiries_dates = []
-                seen_dates = set()  # Track unique dates to avoid duplicates
-                
-                for expiry in expiries_raw:
-                    try:
-                        # Check if already a date object FIRST (datetime.date has year, month, day attributes)
-                        # This is the most common case from Kite Connect
-                        if hasattr(expiry, 'year') and hasattr(expiry, 'month') and hasattr(expiry, 'day'):
-                            expiry_date = expiry
-                        elif isinstance(expiry, datetime):
-                            expiry_date = expiry.date()
-                        elif isinstance(expiry, str):
-                            expiry_date = datetime.strptime(expiry, "%Y-%m-%d").date()
-                        else:
-                            continue
-                        
-                        # Avoid duplicates
-                        if expiry_date not in seen_dates:
-                            seen_dates.add(expiry_date)
-                            expiries_dates.append((expiry_date, expiry))  # Store both date and original
-                    except Exception as e:
-                        print(f"Error parsing expiry {expiry} (type: {type(expiry)}): {e}")
-                        continue
-                
-                # Sort by date
-                expiries_dates.sort(key=lambda x: x[0])
-                expiries = [exp[1] for exp in expiries_dates]  # Original format
-                expiries_date_objects = [exp[0] for exp in expiries_dates]  # Date objects
-                
-                if not expiries:
-                    print(f"No expiries found for {date_str}")
-                    continue
-                
-                # Find expiry that's >= trade_date (options expire on or after trade date)
-                nearest_expiry = None
-                nearest_expiry_date = None
-                for i, expiry_date_obj in enumerate(expiries_date_objects):
-                    if expiry_date_obj >= trade_date:
-                        nearest_expiry = expiries[i]
-                        nearest_expiry_date = expiry_date_obj
-                        break
-                
-                if not nearest_expiry:
-                    print(f"No valid expiry found for {date_str} (trade_date: {trade_date}, available expiries: {expiries_date_objects[:5]})")
-                    continue
-                
-                print(f"{date_str}: Using expiry {nearest_expiry_date} ({nearest_expiry}), strike: {current_strike}")
-                
-                # Get ATM CE and PE options for this expiry
-                # Compare expiry properly (handle both string and date formats)
-                atm_ce = None
-                atm_pe = None
-                
-                for inst in nifty_options:
-                    inst_expiry = inst.get("expiry")
-                    if not inst_expiry:
-                        continue
-                    
-                    # Normalize expiry for comparison
-                    try:
-                        # Check if already a date object FIRST (most common case from Kite Connect)
-                        if hasattr(inst_expiry, 'year') and hasattr(inst_expiry, 'month') and hasattr(inst_expiry, 'day'):
-                            inst_expiry_date = inst_expiry
-                        elif isinstance(inst_expiry, datetime):
-                            inst_expiry_date = inst_expiry.date()
-                        elif isinstance(inst_expiry, str):
-                            inst_expiry_date = datetime.strptime(inst_expiry, "%Y-%m-%d").date()
-                        else:
-                            continue
-                        
-                        # Check if this instrument matches our criteria
-                        if inst_expiry_date == nearest_expiry_date:
-                            if inst.get("strike") == current_strike:
-                                if inst.get("instrument_type") == "CE" and not atm_ce:
-                                    atm_ce = inst
-                                elif inst.get("instrument_type") == "PE" and not atm_pe:
-                                    atm_pe = inst
-                    except Exception as e:
-                        continue
-                
-                if not atm_ce or not atm_pe:
-                    print(f"No ATM options found for {date_str}, strike: {current_strike}, expiry: {nearest_expiry}")
-                    continue
-                
-                # Get historical data for trend analysis and entry price
-                # Indian Market Strategy: Use 9:15 AM candle + trend confirmation
-                try:
-                    # Get 5min candles for the trading day
-                    option_historical = kite.historical_data(
-                        instrument_token=atm_ce.get("instrument_token"),
-                        from_date=trade_date,
-                        to_date=trade_date + timedelta(days=1),
-                        interval="5minute"
-                    )
-                    
-                    if not option_historical or len(option_historical) < 2:
-                        # Try to get from previous day
-                        option_historical = kite.historical_data(
-                            instrument_token=atm_ce.get("instrument_token"),
-                            from_date=trade_date - timedelta(days=1),
-                            to_date=trade_date + timedelta(days=1),
-                            interval="5minute"
-                        )
-                    
-                    if option_historical and len(option_historical) >= 2:
-                        # Filter candles for trading hours (9:15 AM to 3:30 PM IST)
-                        trading_candles = []
-                        for candle in option_historical:
-                            candle_date = candle.get("date", "")
-                            if candle_date:
-                                try:
-                                    if isinstance(candle_date, str):
-                                        if ' ' in candle_date:
-                                            time_part = candle_date.split(' ')[1][:8] if len(candle_date.split(' ')) > 1 else ""
-                                            if time_part and "09:15" <= time_part <= "15:30":
-                                                trading_candles.append(candle)
-                                    elif isinstance(candle_date, datetime):
-                                        time_str = candle_date.strftime("%H:%M:%S")
-                                        if "09:15" <= time_str <= "15:30":
-                                            trading_candles.append(candle)
-                                except:
-                                    pass
-                        
-                        # If no filtered candles, use all candles
-                        if not trading_candles:
-                            trading_candles = option_historical
-                        
-                        if len(trading_candles) < 2:
-                            print(f"Insufficient trading candles for {date_str}")
-                            continue
-                        
-                        # Get 9:15 AM candle (first candle of the day) - needed for 9:15 strategy
-                        first_candle = None
-                        for candle in trading_candles:
-                            candle_date = candle.get("date", "")
-                            if candle_date:
-                                try:
-                                    time_str = ""
-                                    if isinstance(candle_date, str) and ' ' in candle_date:
-                                        time_str = candle_date.split(' ')[1][:8] if len(candle_date.split(' ')) > 1 else ""
-                                    elif isinstance(candle_date, datetime):
-                                        time_str = candle_date.strftime("%H:%M:%S")
-                                    
-                                    if time_str and "09:15" <= time_str <= "09:20":
-                                        first_candle = candle
-                                        break
-                                except:
-                                    pass
-                        
-                        # If no 9:15 candle found, use first candle
-                        if not first_candle:
-                            first_candle = trading_candles[0]
-                        
-                        # Apply selected strategy
-                        strategy_result = None
-                        
-                        # Debug: Log which strategy is being used
-                        print(f"  [{date_str}] Applying strategy: {strategy_type}")
-                        
-                        # Apply selected strategy
-                        if strategy_type == "915_candle_break":
-                            strategy_result = strategy_915_candle_break(
-                                kite, trading_candles, first_candle, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str
-                            )
-                        elif strategy_type == "mean_reversion":
-                            strategy_result = strategy_mean_reversion_bollinger(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str
-                            )
-                        elif strategy_type == "momentum_breakout":
-                            strategy_result = strategy_momentum_breakout(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str
-                            )
-                        elif strategy_type == "support_resistance":
-                            strategy_result = strategy_support_resistance_breakout(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str
-                            )
-                        # Sensibull-style multi-leg strategies
-                        elif strategy_type == "long_straddle":
-                            strategy_result = strategy_long_straddle(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date
-                            )
-                        elif strategy_type == "long_strangle":
-                            strategy_result = strategy_long_strangle(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date
-                            )
-                        elif strategy_type == "bull_call_spread":
-                            strategy_result = strategy_bull_call_spread(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date
-                            )
-                        elif strategy_type == "bear_put_spread":
-                            strategy_result = strategy_bear_put_spread(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date
-                            )
-                        elif strategy_type == "iron_condor":
-                            strategy_result = strategy_iron_condor(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str, nifty_options, trade_date
-                            )
-                        elif strategy_type == "macd_crossover":
-                            strategy_result = strategy_macd_crossover(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str
-                            )
-                        elif strategy_type == "rsi_reversal":
-                            strategy_result = strategy_rsi_reversal(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str
-                            )
-                        elif strategy_type == "ema_cross":
-                            strategy_result = strategy_ema_cross(
-                                kite, trading_candles, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str
-                            )
-                        else:
-                            # Default to 9:15 candle break
-                            strategy_result = strategy_915_candle_break(
-                                kite, trading_candles, first_candle, nifty_price, 
-                                current_strike, atm_ce, atm_pe, date_str
-                            )
-                        
-                        if not strategy_result:
-                            print(f"No signal from {strategy_type} strategy for {date_str}")
-                            continue
-                        
-                        # Extract strategy results
-                        trend = strategy_result["trend"]
-                        option_to_trade = strategy_result["option_to_trade"]
-                        option_type = strategy_result["option_type"]
-                        entry_price = strategy_result["entry_price"]
-                        entry_time = strategy_result["entry_time"]
-                        strategy_reason = strategy_result["reason"]
-                        is_multi_leg = strategy_result.get("multi_leg", False)
-                        strategy_legs = strategy_result.get("legs", [])
-                        
-                        if entry_price <= 0:
-                            continue
-                        
-                        # PROFESSIONAL RISK MANAGEMENT & POSITION SIZING:
-                        # 1. Calculate Risk and Reward absolute amounts from Fund
-                        risk_amount = fund * risk_pct      # e.g., 200,000 * 0.01 = 2,000
-                        reward_amount = fund * reward_pct  # e.g., 200,000 * 0.03 = 6,000
-                        
-                        # 2. Determine Quantity based on User's Risk Formula:
-                        # Filter: Ignore trades where the combined gap % is less than 10%
-                        # This prevents unrealistic quantity sizes and "noise" trades.
-                        total_gap_pct = (reward_pct + risk_pct) * 100
-                        if total_gap_pct < 10:
-                            print(f"Skipping trade: Gap % too small ({total_gap_pct:.1f}%)")
-                            continue
-                            
-                        # qty = (Fund * Risk%) / (TargetPrice - StoplossPrice)
-                        price_diff = entry_price * (reward_pct + risk_pct)
-                        
-                        if price_diff > 0:
-                            target_qty = risk_amount / price_diff
-                            lots = round(target_qty / 75)
-                            if lots < 1: lots = 1
-                        else:
-                            lots = 1
-                            
-                        # Final check: Ensure total trade value doesn't exceed fund
-                        if (lots * 75 * entry_price) > fund:
-                            lots = int(fund / (entry_price * 75))
-                            if lots < 1: lots = 1
-                            
-                        quantity = lots * 75
-                        
-                        # 3. Calculate Stoploss and Target points PER UNIT based on the configured percentages
-                        sl_points = entry_price * risk_pct
-                        target_points = entry_price * reward_pct
-                        
-                        if trend == "BULLISH" or trend == "NEUTRAL":
-                            target_price = entry_price + target_points
-                            stoploss_price = entry_price - sl_points
-                        else: # BEARISH
-                            target_price = entry_price - target_points
-                            stoploss_price = entry_price + sl_points
-                        
-                        # 4. Check if target/stoploss was hit during the day
-                        target_hit = False
-                        stoploss_hit = False
-                        intraday_exit_price = None
-                        intraday_exit_time = None
-                        
-                        # Check intraday candles for target/stoploss - ONLY AFTER ENTRY TIME
-                        entry_time_obj = datetime.strptime(entry_time, "%H:%M:%S").time()
-                        
-                        for candle in trading_candles:
-                            candle_date = candle.get("date", "")
-                            if not candle_date: continue
-                                
-                            try:
-                                if isinstance(candle_date, str):
-                                    time_str = candle_date.split(' ')[1][:8] if ' ' in candle_date else ""
-                                else:
-                                    time_str = candle_date.strftime("%H:%M:%S")
-                                    
-                                if not time_str: continue
-                                    
-                                candle_time_obj = datetime.strptime(time_str, "%H:%M:%S").time()
-                                if candle_time_obj <= entry_time_obj: continue
-                                    
-                                candle_high = candle.get("high", 0)
-                                candle_low = candle.get("low", 0)
-                                candle_close = candle.get("close", 0)
-                                
-                                # Check for target/stoploss (Only for single-leg trades)
-                                # For multi-leg, we exit at EOD (2:30 PM) for accuracy
-                                if not is_multi_leg:
-                                    if trend == "BULLISH" or trend == "NEUTRAL":
-                                        if candle_high >= target_price:
-                                            target_hit, intraday_exit_price, intraday_exit_time = True, target_price, time_str
-                                            break
-                                        elif candle_low <= stoploss_price:
-                                            stoploss_hit, intraday_exit_price, intraday_exit_time = True, stoploss_price, time_str
-                                            break
-                                    else: # BEARISH
-                                        if candle_low <= target_price:
-                                            target_hit, intraday_exit_price, intraday_exit_time = True, target_price, time_str
-                                            break
-                                        elif candle_high >= stoploss_price:
-                                            stoploss_hit, intraday_exit_price, intraday_exit_time = True, stoploss_price, time_str
-                                            break
-                                        
-                                # Time-based exit: 2:30 PM (14:30) for all trades
-                                if time_str >= "14:30:00":
-                                    intraday_exit_price, intraday_exit_time = candle_close, time_str
-                                    break
-                            except: continue
-                        
-                        # Determine final exit details
-                        if intraday_exit_price is not None:
-                            exit_price, exit_time = intraday_exit_price, intraday_exit_time
-                        else:
-                            last_candle = trading_candles[-1]
-                            exit_price = last_candle.get("close", entry_price)
-                            exit_time = last_candle.get("date").split(' ')[1][:8] if isinstance(last_candle.get("date"), str) else last_candle.get("date").strftime("%H:%M:%S")
-
-                        # For multi-leg trades, fetch individual leg exit prices at exit_time
-                        final_legs = []
-                        if is_multi_leg and strategy_legs:
-                            for leg in strategy_legs:
-                                leg_inst = find_option(nifty_options, leg['strike'], leg['type'])
-                                if leg_inst:
-                                    # Fetch price at exit_time
-                                    try:
-                                        # Use a small window around exit_time to find the candle
-                                        exit_dt = datetime.combine(trade_date, datetime.strptime(exit_time, "%H:%M:%S").time())
-                                        leg_hist = kite.historical_data(leg_inst["instrument_token"], exit_dt - timedelta(minutes=5), exit_dt + timedelta(minutes=5), "5minute")
-                                        leg_exit_price = leg_hist[-1]["close"] if leg_hist else leg['price']
-                                    except:
-                                        leg_exit_price = leg['price'] # Fallback
-                                    
-                                    # Calculate individual leg P&L
-                                    leg_pnl = (leg_exit_price - leg['price']) * quantity
-                                    if leg['action'] == "SELL":
-                                        leg_pnl = -leg_pnl
-                                    
-                                    final_legs.append({
-                                        **leg,
-                                        "exit_price": round(leg_exit_price, 2),
-                                        "pnl": round(leg_pnl, 2)
-                                    })
-                        
-                        # Calculate P&L
-                        if is_multi_leg and final_legs:
-                            # Accurate P&L for multi-leg is the sum of leg P&Ls
-                            gross_pnl = sum([leg['pnl'] for leg in final_legs])
-                            # Re-calculate exit_price as net price for reporting
-                            exit_price = sum([leg['exit_price'] if leg['action'] == "BUY" else -leg['exit_price'] for leg in final_legs])
-                        else:
-                            gross_pnl = (exit_price - entry_price) * quantity if trend != "BEARISH" else (entry_price - exit_price) * quantity
-                        
-                        brokerage = 40 if not is_multi_leg else (40 * len(strategy_legs))
-                        pnl = gross_pnl - brokerage
-                        
-                        # Skip trades with very small profit potential (less than costs)
-                        # This prevents taking trades that can't be profitable
-                        min_profit_needed = 60 # approx total costs for a lot
-                        if gross_pnl < min_profit_needed and gross_pnl > 0:
-                            print(f"{date_str}: Skipping trade - profit ({gross_pnl:.2f}) too close to costs")
-                            continue
-                        
-                        # Build reason for entry and exit
-                        reason_parts = []
-                        
-                        # Entry reason with strategy details
-                        if is_multi_leg and strategy_legs:
-                            legs_desc = ", ".join([f"{leg['action']} {leg['type']} @ {leg['strike']}" for leg in strategy_legs])
-                            entry_reason = f"Entry: {option_type} (Multi-leg: {legs_desc}) @ Net ₹{round(entry_price, 2)}"
-                        else:
-                            entry_reason = f"Entry: {option_type} @ ₹{round(entry_price, 2)}"
-                        entry_reason += f" | Strategy: {strategy_type.replace('_', ' ').title()}"
-                        entry_reason += f" | {strategy_reason}"
-                        entry_reason += f" | Strike: {current_strike}, Nifty: ₹{round(nifty_price, 2)}"
-                        reason_parts.append(entry_reason)
-                        
-                        # Calculate actual stoploss percentage for reporting
-                        stoploss_pct_actual = (sl_points / entry_price * 100) if entry_price > 0 else 0
-                        target_pct_actual = (target_points / entry_price * 100) if entry_price > 0 else 0
-                        
-                        # Exit reason
-                        exit_reason = ""
-                        if target_hit:
-                            exit_reason = f"Exit: Target hit @ ₹{round(exit_price, 2)} at {exit_time} (Target Profit ₹{reward_amount} achieved)"
-                        elif stoploss_hit:
-                            exit_reason = f"Exit: Stoploss hit @ ₹{round(exit_price, 2)} at {exit_time} (Risk Limit ₹{risk_amount} triggered)"
-                        else:
-                            exit_reason = f"Exit: EOD @ ₹{round(exit_price, 2)} at {exit_time}"
-                        
-                        reason_parts.append(exit_reason)
-                        
-                        # Add P&L explanation
-                        if pnl > 0:
-                            reason_parts.append(f"P&L: +₹{round(pnl, 2)} (Goal was ₹{reward_amount})")
-                        elif pnl < 0:
-                            reason_parts.append(f"P&L: -₹{round(abs(pnl), 2)} (Risk Limit was ₹{risk_amount})")
-                        else:
-                            reason_parts.append(f"P&L: ₹0 (Breakeven)")
-                        
-                        reason = " | ".join(reason_parts)
-                        
-                        trade_result = {
-                            "date": date_str,
-                            "nifty_price": round(nifty_price, 2),
-                            "strike": current_strike,
-                            "option_type": option_type,
-                            "tradingsymbol": option_to_trade.get("tradingsymbol"),
-                            "quantity": quantity,
-                            "entry_price": round(entry_price, 2),
-                            "entry_time": entry_time,
-                            "exit_price": round(exit_price, 2),
-                            "exit_time": exit_time,
-                            "pnl": round(pnl, 2),
-                            "trend": trend,
-                            "status": "WIN" if pnl > 0 else "LOSS",
-                            "reason": reason,
-                            "legs": final_legs
-                        }
-                        
-                        backtest_results["trades"].append(trade_result)
-                        print(f"Trade added for {date_str}: {option_type} @ ₹{entry_price}, Entry: {entry_time}, Exit: {exit_time}, Qty: {quantity}, P&L: ₹{pnl}")
-                    else:
-                        print(f"No historical data for option on {date_str}")
-                            
-                except Exception as e:
-                    print(f"Error processing trade for {date_str}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
-                    
-            except Exception as e:
-                print(f"Error processing date {trade_date}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-        
-        # Calculate statistics with advanced metrics
-        trades = backtest_results["trades"]
-        if trades:
-            total_trades = len(trades)
-            winning_trades = len([t for t in trades if t["pnl"] > 0])
-            losing_trades = total_trades - winning_trades
-            total_pnl = sum([t["pnl"] for t in trades])
-            
-            profits = [t["pnl"] for t in trades if t["pnl"] > 0]
-            losses = [t["pnl"] for t in trades if t["pnl"] < 0]
-            
-            # Calculate advanced metrics
-            avg_profit = sum(profits) / len(profits) if profits else 0
-            avg_loss = sum(losses) / len(losses) if losses else 0
-            profit_factor = abs(sum(profits) / sum(losses)) if losses and sum(losses) != 0 else 0
-            
-            # Calculate drawdown
-            cumulative_pnl = 0
-            peak = 0
-            max_drawdown = 0
-            for trade in trades:
-                cumulative_pnl += trade["pnl"]
-                if cumulative_pnl > peak:
-                    peak = cumulative_pnl
-                drawdown = peak - cumulative_pnl
-                if drawdown > max_drawdown:
-                    max_drawdown = drawdown
-            
-            # Calculate average holding time (in minutes)
-            holding_times = []
-            for trade in trades:
-                try:
-                    entry_time_obj = datetime.strptime(trade.get("entry_time", "09:20:00"), "%H:%M:%S")
-                    exit_time_obj = datetime.strptime(trade.get("exit_time", "15:30:00"), "%H:%M:%S")
-                    # If exit is next day, add 6.25 hours (market hours)
-                    if exit_time_obj < entry_time_obj:
-                        exit_time_obj = datetime.strptime("15:30:00", "%H:%M:%S")
-                    time_diff = (exit_time_obj.hour * 60 + exit_time_obj.minute) - (entry_time_obj.hour * 60 + entry_time_obj.minute)
-                    if time_diff < 0:
-                        time_diff += 375  # Add market hours (6.25 hours = 375 minutes)
-                    holding_times.append(time_diff)
-                except:
-                    holding_times.append(375)  # Default to full day
-            
-            avg_holding_time = sum(holding_times) / len(holding_times) if holding_times else 0
-            
-            # Risk-reward ratio
-            risk_reward_ratio = abs(avg_profit / avg_loss) if avg_loss != 0 else 0
-            
-            backtest_results["statistics"] = {
-                "total_trades": total_trades,
-                "winning_trades": winning_trades,
-                "losing_trades": losing_trades,
-                "total_pnl": round(total_pnl, 2),
-                "win_rate": round((winning_trades / total_trades * 100) if total_trades > 0 else 0, 2),
-                "average_profit": round(avg_profit, 2),
-                "average_loss": round(avg_loss, 2),
-                "max_profit": round(max(profits) if profits else 0, 2),
-                "max_loss": round(min(losses) if losses else 0, 2),
-                "profit_factor": round(profit_factor, 2),
-                "max_drawdown": round(max_drawdown, 2),
-                "avg_holding_time_minutes": round(avg_holding_time, 0),
-                "risk_reward_ratio": round(risk_reward_ratio, 2)
-            }
-        
-        return {"data": backtest_results}
-        
-    except HTTPException:
-        raise
-    except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error backtesting strategy: {str(e)}")
+# TODO: Move to api/v1/routes/strategies.py
+# @app.post("/backtest-nifty50-options")
+# async def backtest_nifty50_options(req: Request):
+#     """Backtest Nifty50 options strategy for given date range with multiple strategy options"""
+#     ... (function body to be moved to api/v1/routes/strategies.py - ~700 lines removed)
+#     pass  # Function body moved to api/v1/routes/strategies.py
 
 # ============================================================================
 # AI Agent Endpoints
