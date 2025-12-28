@@ -4,7 +4,7 @@ Enhanced configuration management with validation
 import os
 import json
 from pathlib import Path
-from typing import Optional, Any, List
+from typing import Optional, Any, List, Union
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 from enum import Enum
@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        case_sensitive=False,  # Allows CORS_ORIGINS to match cors_origins
-        extra="ignore",        # Tells Pydantic to ignore any extra env vars
+        case_sensitive=False,
+        extra="ignore",
         populate_by_name=True
     )
     
@@ -44,8 +44,9 @@ class Settings(BaseSettings):
     
     # Security
     secret_key: str = "change-me-in-production"
-    allowed_hosts: List[str] = ["*"]
-    cors_origins: List[str] = ["http://localhost:4200", "https://algofeast.com", "https://www.algofeast.com"]
+    # Using Any to prevent pydantic-settings from trying to parse the list itself
+    allowed_hosts: Any = ["*"]
+    cors_origins: Any = ["http://localhost:4200", "https://algofeast.com", "https://www.algofeast.com"]
     
     # Database
     database_path: str = "data/algofeast.db"
@@ -74,6 +75,7 @@ class Settings(BaseSettings):
     @classmethod
     def parse_comma_separated_list(cls, v: Any) -> List[str]:
         if isinstance(v, str):
+            v = v.strip()
             # Handle JSON list format
             if v.startswith("[") and v.endswith("]"):
                 try:
@@ -91,7 +93,12 @@ def get_settings() -> Settings:
     """Get application settings (singleton)"""
     global _settings
     if _settings is None:
-        _settings = Settings()
+        try:
+            _settings = Settings()
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+            # Fallback to default settings without .env if parsing fails
+            _settings = Settings(_env_file=None)
     return _settings
 
 def get_agent_config() -> AgentConfig:
