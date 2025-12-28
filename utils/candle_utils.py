@@ -73,3 +73,4 @@ def analyze_trend(candles):
         return "BEARISH"
     return "SIDEWAYS"
 
+

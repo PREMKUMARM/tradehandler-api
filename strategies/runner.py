@@ -51,3 +51,4 @@ async def run_strategy_on_candles(kite, strategy_type, trading_candles, first_ca
         return strategy_ema_cross(kite, trading_candles, nifty_price, current_strike, atm_ce, atm_pe, date_str)
     return None
 
+

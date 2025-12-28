@@ -288,3 +288,4 @@ def exit_all_positions(req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error exiting positions: {str(e)}")
 
+
