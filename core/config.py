@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Optional, Any, List, Union
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator, AliasChoices
+from pydantic import field_validator
 from enum import Enum
 
 # Import existing agent config
@@ -21,75 +21,65 @@ class Environment(str, Enum):
 class Settings(BaseSettings):
     """
     Enterprise-level application settings.
-    Highly resilient to Pydantic V2 parsing strictness.
+    Simplest possible configuration to ensure Pydantic V2 compatibility.
     """
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",         # Strictly ignore any extra variables
-        populate_by_name=True
+        case_sensitive=False,  # This allows CORS_ORIGINS to match cors_origins field
+        extra="ignore"         # This should prevent the 'extra inputs' error
     )
     
     # Application Settings
-    app_name: str = Field(default="AlgoFeast API", validation_alias=AliasChoices("APP_NAME", "app_name"))
-    app_version: str = Field(default="1.0.0", validation_alias=AliasChoices("APP_VERSION", "app_version"))
-    environment: Environment = Field(default=Environment.DEVELOPMENT, validation_alias=AliasChoices("ENVIRONMENT", "environment"))
-    debug: bool = Field(default=False, validation_alias=AliasChoices("DEBUG", "debug"))
-    api_prefix: str = Field(default="/api/v1", validation_alias=AliasChoices("API_PREFIX", "api_prefix"))
+    app_name: str = "AlgoFeast API"
+    app_version: str = "1.0.0"
+    environment: Environment = Environment.DEVELOPMENT
+    debug: bool = False
+    api_prefix: str = "/api/v1"
     
     # Server Settings
-    host: str = Field(default="0.0.0.0", validation_alias=AliasChoices("HOST", "host"))
-    port: int = Field(default=8000, validation_alias=AliasChoices("PORT", "port"))
-    reload: bool = Field(default=False, validation_alias=AliasChoices("RELOAD", "reload"))
+    host: str = "0.0.0.0"
+    port: int = 8000
+    reload: bool = False
     
     # Security & CORS
-    secret_key: str = Field(default="change-me-in-production", validation_alias=AliasChoices("SECRET_KEY", "secret_key"))
-    # Use Any to bypass Pydantic's internal list-parsing which causes the crash
-    allowed_hosts: Any = Field(default=["*"], validation_alias=AliasChoices("ALLOWED_HOSTS", "allowed_hosts"))
-    cors_origins: Any = Field(
-        default=["http://localhost:4200", "https://algofeast.com", "https://www.algofeast.com"],
-        validation_alias=AliasChoices("CORS_ORIGINS", "cors_origins")
-    )
+    secret_key: str = "change-me-in-production"
+    allowed_hosts: Any = ["*"]
+    cors_origins: Any = ["http://localhost:4200", "https://algofeast.com", "https://www.algofeast.com"]
     
     # Database Settings
-    database_path: str = Field(default="data/algofeast.db", validation_alias=AliasChoices("DATABASE_PATH", "database_path"))
-    database_pool_size: int = Field(default=10, validation_alias=AliasChoices("DATABASE_POOL_SIZE", "database_pool_size"))
+    database_path: str = "data/algofeast.db"
+    database_pool_size: int = 10
     
     # Logging Settings
-    log_level: str = Field(default="INFO", validation_alias=AliasChoices("LOG_LEVEL", "log_level"))
-    log_file: str = Field(default="logs/app.log", validation_alias=AliasChoices("LOG_FILE", "log_file"))
-    log_max_bytes: int = Field(default=10485760, validation_alias=AliasChoices("LOG_MAX_BYTES", "log_max_bytes"))
-    log_backup_count: int = Field(default=5, validation_alias=AliasChoices("LOG_BACKUP_COUNT", "log_backup_count"))
+    log_level: str = "INFO"
+    log_file: str = "logs/app.log"
+    log_max_bytes: int = 10485760
+    log_backup_count: int = 5
     
     # Rate Limiting
-    rate_limit_enabled: bool = Field(default=True, validation_alias=AliasChoices("RATE_LIMIT_ENABLED", "rate_limit_enabled"))
-    rate_limit_per_minute: int = Field(default=60, validation_alias=AliasChoices("RATE_LIMIT_PER_MINUTE", "rate_limit_per_minute"))
+    rate_limit_enabled: bool = True
+    rate_limit_per_minute: int = 60
     
     # Monitoring
-    enable_metrics: bool = Field(default=True, validation_alias=AliasChoices("ENABLE_METRICS", "enable_metrics"))
-    metrics_port: int = Field(default=9090, validation_alias=AliasChoices("METRICS_PORT", "metrics_port"))
+    enable_metrics: bool = True
+    metrics_port: int = 9090
     
     # Kite Connect Settings
-    kite_api_key: Optional[str] = Field(default=None, validation_alias=AliasChoices("KITE_API_KEY", "kite_api_key"))
-    kite_api_secret: Optional[str] = Field(default=None, validation_alias=AliasChoices("KITE_API_SECRET", "kite_api_secret"))
-    kite_redirect_uri: str = Field(
-        default="https://algofeast.com/auth-token",
-        validation_alias=AliasChoices("KITE_REDIRECT_URI", "kite_redirect_uri")
-    )
+    kite_api_key: Optional[str] = None
+    kite_api_secret: Optional[str] = None
+    kite_redirect_uri: str = "https://algofeast.com/auth-token"
     
     @field_validator("cors_origins", "allowed_hosts", mode="before")
     @classmethod
     def handle_list_strings(cls, v: Any) -> List[str]:
         if isinstance(v, str):
             v = v.strip()
-            # Handle JSON list format
             if v.startswith("[") and v.endswith("]"):
                 try:
                     return json.loads(v)
                 except:
                     pass
-            # Handle comma-separated string
             return [item.strip() for item in v.split(",") if item.strip()]
         return v
 
@@ -101,11 +91,12 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         try:
+            # By not passing any arguments, pydantic-settings will automatically
+            # look for the .env file and environment variables.
             _settings = Settings()
         except Exception as e:
-            # Fallback to hardcoded defaults if .env is fundamentally broken
-            # This prevents the whole app from being unable to start
-            print(f"CRITICAL: Failed to load settings from environment: {e}")
+            print(f"CRITICAL: Failed to load settings: {e}")
+            # Absolute fallback
             _settings = Settings(_env_file=None)
     return _settings
 
