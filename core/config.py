@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # Security & CORS
     secret_key: str = "change-me-in-production"
     allowed_hosts: Any = ["*"]
-    cors_origins: Any = ["http://localhost:4200", "https://algofeast.com", "https://www.algofeast.com"]
+    cors_origins: Any = ["http://localhost:4200", "http://13.233.151.3", "https://algofeast.com"]
     
     # Database Settings
     database_path: str = "data/algofeast.db"
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     # Kite Connect Settings
     kite_api_key: Optional[str] = None
     kite_api_secret: Optional[str] = None
-    kite_redirect_uri: str = "https://algofeast.com/auth-token"
+    kite_redirect_uri: str = "http://13.233.151.3/auth-token"
     
     @field_validator("cors_origins", "allowed_hosts", mode="before")
     @classmethod

@@ -11,7 +11,7 @@ PEM_FILE="~/Downloads/algofeast-pkapps1993.pem"
 
 # EC2 Connection Details
 EC2_USER="ubuntu"
-EC2_IP="13.201.222.26"
+EC2_IP="13.233.151.3"
 
 # Local Paths
 LOCAL_PROJECT_ROOT="/Users/premkumar/Documents/tradehandler-ai-workspace/tradehandler"
