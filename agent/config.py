@@ -3,7 +3,7 @@ Agent configuration and settings
 """
 import os
 from typing import Optional
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from enum import Enum
 
 
@@ -16,6 +16,14 @@ class LLMProvider(str, Enum):
 
 class AgentConfig(BaseSettings):
     """Agent configuration settings"""
+    
+    # Pydantic V2 configuration
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore"         # Strictly ignore any unknown variables
+    )
     
     # LLM Configuration
     llm_provider: LLMProvider = LLMProvider.OPENAI
@@ -73,11 +81,6 @@ class AgentConfig(BaseSettings):
     kite_api_key: Optional[str] = None  # Zerodha Kite Connect API Key
     kite_api_secret: Optional[str] = None  # Zerodha Kite Connect API Secret
     kite_redirect_uri: str = "http://localhost:4200/auth-token"  # OAuth redirect URI
-    
-    class Config:
-        env_file = ".env"
-        env_prefix = ""
-        case_sensitive = False
 
 
 # Global config instance
@@ -88,6 +91,9 @@ def get_agent_config() -> AgentConfig:
     """Get or create agent configuration instance"""
     global _agent_config
     if _agent_config is None:
-        _agent_config = AgentConfig()
+        try:
+            _agent_config = AgentConfig()
+        except Exception as e:
+            print(f"CRITICAL: Failed to load agent settings: {e}")
+            _agent_config = AgentConfig(_env_file=None)
     return _agent_config
-
