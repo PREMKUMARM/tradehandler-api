@@ -2,7 +2,7 @@
 Agent-related API endpoints
 """
 from fastapi import APIRouter, Request, HTTPException, Depends
-from typing import Optional
+from typing import Optional, Dict, Any
 import asyncio
 import uuid
 from datetime import datetime
@@ -15,6 +15,7 @@ from agent.config import get_agent_config
 from agent.user_config import get_user_config, save_user_config
 from agent.graph import run_agent
 from agent.ws_manager import broadcast_agent_update, add_agent_log
+from agent.task_tracker import get_tasks, get_task, get_active_task_count
 from agent.tools.kite_tools import place_order_tool, cancel_order_tool, place_gtt_tool
 from database.repositories import get_chat_repository
 from database.models import ChatMessage
@@ -572,4 +573,299 @@ async def reject_action(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error rejecting action: {str(e)}")
+
+
+@router.get("/agents")
+async def list_agents(request: Request):
+    """Get list of all AI agents in the system"""
+    request_id = get_request_id(request)
+    
+    try:
+        from agent.graph import get_agent_instance
+        from agent.config import get_agent_config
+        from agent.tools import ALL_TOOLS
+        from agent.agent_registry import get_all_agents, get_agent_registry
+        
+        main_agent = get_agent_instance()
+        config = get_agent_config()
+        
+        # Get health status for main agent
+        main_health_status = "healthy"
+        try:
+            if main_agent is None:
+                main_health_status = "uninitialized"
+            else:
+                main_health_status = "healthy"
+        except Exception:
+            main_health_status = "unhealthy"
+        
+        # Get active task count for main agent
+        main_active_task_count = get_active_task_count(agent_id="main_trading_agent")
+        
+        # Get all tools info
+        all_tools_info = []
+        for tool in ALL_TOOLS:
+            all_tools_info.append({
+                "name": tool.name,
+                "description": tool.description or "No description",
+                "category": _categorize_tool(tool.name)
+            })
+        
+        agents = []
+        
+        # Add main trading agent (backward compatibility - has all tools)
+        agents.append({
+            "agent_id": "main_trading_agent",
+            "name": "Main Trading Agent",
+            "type": "langgraph",
+            "category": "Coordinator",
+            "status": main_health_status,
+            "initialized": main_agent is not None,
+            "model": config.agent_model,
+            "llm_provider": config.llm_provider.value,
+            "autonomous_mode": config.autonomous_mode,
+            "auto_trade_enabled": config.is_auto_trade_enabled,
+            "active_tasks": main_active_task_count,
+            "tools_count": len(ALL_TOOLS),
+            "tools": all_tools_info,
+            "description": "Main coordinator agent with access to all tools. Can delegate to specialized agents.",
+            "created_at": datetime.now().isoformat()
+        })
+        
+        # Add specialized agents
+        specialized_agents = get_all_agents()
+        for spec_agent in specialized_agents:
+            # Get tools for this agent
+            agent_tools_info = []
+            for tool in spec_agent.tools:
+                agent_tools_info.append({
+                    "name": tool.name,
+                    "description": tool.description or "No description",
+                    "category": spec_agent.category
+                })
+            
+            # Get active task count for this agent
+            agent_active_tasks = get_active_task_count(agent_id=spec_agent.agent_id)
+            
+            # Check health (same as main agent for now)
+            agent_health = main_health_status
+            
+            agents.append({
+                "agent_id": spec_agent.agent_id,
+                "name": spec_agent.name,
+                "type": "langgraph",
+                "category": spec_agent.category,
+                "status": agent_health,
+                "initialized": True,  # Specialized agents are always initialized
+                "model": config.agent_model,
+                "llm_provider": config.llm_provider.value,
+                "autonomous_mode": False,  # Specialized agents don't run autonomously
+                "auto_trade_enabled": False,
+                "active_tasks": agent_active_tasks,
+                "tools_count": len(spec_agent.tools),
+                "tools": agent_tools_info,
+                "description": spec_agent.description,
+                "created_at": datetime.now().isoformat()
+            })
+        
+        return SuccessResponse(
+            data={"agents": agents},
+            request_id=request_id
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing agents: {str(e)}")
+
+
+def _categorize_tool(tool_name: str) -> str:
+    """Categorize tool by name"""
+    if "order" in tool_name.lower() or "gtt" in tool_name.lower():
+        return "Trading"
+    elif "quote" in tool_name.lower() or "historical" in tool_name.lower() or "market" in tool_name.lower():
+        return "Market Data"
+    elif "strategy" in tool_name.lower() or "backtest" in tool_name.lower() or "signal" in tool_name.lower():
+        return "Strategy"
+    elif "risk" in tool_name.lower() or "portfolio" in tool_name.lower():
+        return "Risk Management"
+    elif "indicator" in tool_name.lower() or "trend" in tool_name.lower() or "gap" in tool_name.lower():
+        return "Analysis"
+    elif "simulation" in tool_name.lower():
+        return "Simulation"
+    else:
+        return "Other"
+
+
+@router.get("/agents/{agent_id}/health")
+async def get_agent_health(agent_id: str, request: Request):
+    """Get health status of a specific agent"""
+    request_id = get_request_id(request)
+    
+    try:
+        from agent.graph import get_agent_instance
+        from agent.config import get_agent_config
+        from agent.agent_registry import get_agent
+        
+        config = get_agent_config()
+        
+        # Check if it's main agent or specialized agent
+        if agent_id == "main_trading_agent":
+            agent = get_agent_instance()
+            agent_obj = None
+        else:
+            # Specialized agent
+            agent_obj = get_agent(agent_id)
+            if not agent_obj:
+                raise NotFoundError("Agent", agent_id)
+            agent = agent_obj.get_graph() if agent_obj else None
+        
+        # Health checks
+        checks = {
+            "agent_initialized": agent is not None,
+            "llm_configured": bool(config.agent_model),
+            "kite_configured": bool(config.kite_api_key),
+            "memory_available": True,  # Can add actual memory check
+        }
+        
+        # For specialized agents, add tool availability check
+        if agent_obj:
+            checks["tools_available"] = len(agent_obj.tools) > 0
+        
+        all_healthy = all(checks.values())
+        health_status = "healthy" if all_healthy else "degraded"
+        
+        # Get recent errors if any
+        recent_errors = []
+        try:
+            from database.repositories import get_log_repository
+            log_repo = get_log_repository()
+            recent_logs = log_repo.get_recent(limit=10)
+            recent_errors = [
+                {"message": log.message, "timestamp": log.timestamp.isoformat()}
+                for log in recent_logs if log.level == "error"
+            ][:5]
+        except Exception:
+            pass
+        
+        return SuccessResponse(
+            data={
+                "agent_id": agent_id,
+                "status": health_status,
+                "checks": checks,
+                "recent_errors": recent_errors,
+                "uptime_seconds": None,  # Can track this if needed
+                "last_activity": datetime.now().isoformat()
+            },
+            request_id=request_id
+        )
+    except NotFoundError:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting agent health: {str(e)}")
+
+
+@router.get("/agents/{agent_id}/tasks")
+async def get_agent_tasks(agent_id: str, request: Request, status: Optional[str] = None):
+    """Get active and recent tasks for an agent"""
+    request_id = get_request_id(request)
+    
+    try:
+        from agent.agent_registry import get_agent
+        
+        # Validate agent exists
+        if agent_id != "main_trading_agent":
+            agent_obj = get_agent(agent_id)
+            if not agent_obj:
+                raise NotFoundError("Agent", agent_id)
+        
+        # Get tasks
+        tasks = get_tasks(agent_id=agent_id, status=status, limit=50)
+        
+        return SuccessResponse(
+            data={"tasks": tasks, "total": len(tasks)},
+            request_id=request_id
+        )
+    except NotFoundError:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting agent tasks: {str(e)}")
+
+
+@router.get("/agents/{agent_id}/tasks/{task_id}")
+async def get_task_details(agent_id: str, task_id: str, request: Request):
+    """Get detailed information about a specific task"""
+    request_id = get_request_id(request)
+    
+    try:
+        from agent.agent_registry import get_agent
+        
+        # Validate agent exists
+        if agent_id != "main_trading_agent":
+            agent_obj = get_agent(agent_id)
+            if not agent_obj:
+                raise NotFoundError("Agent", agent_id)
+        
+        task = get_task(task_id)
+        if not task:
+            raise NotFoundError("Task", task_id)
+        
+        # Verify task belongs to this agent
+        if task.get("agent_id") != agent_id:
+            raise NotFoundError("Task", task_id)
+        
+        return SuccessResponse(
+            data={"task": task},
+            request_id=request_id
+        )
+    except NotFoundError:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting task details: {str(e)}")
+
+
+@router.get("/agents/{agent_id}/communications")
+async def get_agent_communications(agent_id: str, request: Request, limit: int = 50):
+    """Get communication logs between agents (or internal agent communications)"""
+    request_id = get_request_id(request)
+    
+    try:
+        from agent.agent_registry import get_agent
+        
+        # Validate agent exists
+        if agent_id != "main_trading_agent":
+            agent_obj = get_agent(agent_id)
+            if not agent_obj:
+                raise NotFoundError("Agent", agent_id)
+        
+        # Get recent chat messages as communications
+        from database.repositories import get_chat_repository
+        chat_repo = get_chat_repository()
+        
+        # Get recent messages
+        recent_messages = chat_repo.get_recent_messages(limit=limit)
+        
+        communications = []
+        for msg in recent_messages:
+            # Determine which agent handled this message (for now, all go through main agent)
+            # In future, we can track which specialized agent handled each message
+            target_agent = agent_id if msg.role == "user" else "user"
+            
+            communications.append({
+                "communication_id": msg.message_id,
+                "from": msg.role,  # "user" or "assistant"
+                "to": target_agent,
+                "message": msg.content,
+                "timestamp": msg.timestamp.isoformat(),
+                "metadata": msg.metadata or {}
+            })
+        
+        return SuccessResponse(
+            data={
+                "communications": communications,
+                "total": len(communications)
+            },
+            request_id=request_id
+        )
+    except NotFoundError:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting communications: {str(e)}")
 

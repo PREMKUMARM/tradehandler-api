@@ -97,8 +97,22 @@ async def run_agent(user_query: str, context: Optional[Dict[str, Any]] = None) -
     Returns:
         Agent response and state
     """
+    from datetime import datetime
+    from agent.ws_manager import add_agent_log
+    from agent.task_tracker import create_task, update_task
+    
     agent = get_agent_instance()
     memory = get_agent_memory()
+    
+    # Create task tracking
+    task_id = create_task(
+        agent_id="main_trading_agent",
+        input_data={
+            "query": user_query,
+            "context": context or {}
+        }
+    )
+    task_start_time = datetime.now()
     
     # Initialize state
     initial_state: AgentState = {
@@ -131,17 +145,44 @@ async def run_agent(user_query: str, context: Optional[Dict[str, Any]] = None) -
         if final_state.get("agent_response"):
             memory.add_message("assistant", final_state["agent_response"])
         
+        # Update task tracking
+        task_end_time = datetime.now()
+        update_task(
+            task_id=task_id,
+            status="completed",
+            output={
+                "response": final_state.get("agent_response", ""),
+                "requires_approval": final_state.get("requires_approval", False),
+                "approval_id": final_state.get("approval_id")
+            },
+            tool_calls=final_state.get("tool_calls", []),
+            completed_at=task_end_time.isoformat()
+        )
+        
         return {
             "status": "success",
             "response": final_state.get("agent_response", "No response generated"),
             "state": final_state,
             "requires_approval": final_state.get("requires_approval", False),
             "approval_id": final_state.get("approval_id"),
+            "task_id": task_id
         }
     except Exception as e:
+        # Update task tracking with error
+        task_end_time = datetime.now()
+        update_task(
+            task_id=task_id,
+            status="failed",
+            error=str(e),
+            completed_at=task_end_time.isoformat()
+        )
+        
+        add_agent_log(f"Agent task {task_id} failed: {str(e)}", "error")
+        
         return {
             "status": "error",
             "error": str(e),
-            "response": f"Error processing request: {str(e)}"
+            "response": f"Error processing request: {str(e)}",
+            "task_id": task_id
         }
 
