@@ -39,14 +39,14 @@ deactivate nondestructive
 if [ "${OSTYPE:-}" = "cygwin" ] || [ "${OSTYPE:-}" = "msys" ] ; then
     # transform D:\path\to\venv to /d/path/to/venv on MSYS
     # and to /cygdrive/d/path/to/venv on Cygwin
-    export VIRTUAL_ENV=$(cygpath "/Users/premkumar/Documents/tradehandler-ai-workspace/tradehandler-api/algo-env")
+    export VIRTUAL_ENV=$(cygpath /home/ubuntu/algofeast-workspace/algofeast-api/algo-env)
 else
     # use the path as-is
-    export VIRTUAL_ENV="/Users/premkumar/Documents/tradehandler-ai-workspace/tradehandler-api/algo-env"
+    export VIRTUAL_ENV=/home/ubuntu/algofeast-workspace/algofeast-api/algo-env
 fi
 
 _OLD_VIRTUAL_PATH="$PATH"
-PATH="$VIRTUAL_ENV/bin:$PATH"
+PATH="$VIRTUAL_ENV/"bin":$PATH"
 export PATH
 
 # unset PYTHONHOME if set
@@ -59,9 +59,9 @@ fi
 
 if [ -z "${VIRTUAL_ENV_DISABLE_PROMPT:-}" ] ; then
     _OLD_VIRTUAL_PS1="${PS1:-}"
-    PS1="(algo-env) ${PS1:-}"
+    PS1='(algo-env) '"${PS1:-}"
     export PS1
-    VIRTUAL_ENV_PROMPT="(algo-env) "
+    VIRTUAL_ENV_PROMPT='(algo-env) '
     export VIRTUAL_ENV_PROMPT
 fi
 
