@@ -146,43 +146,66 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
         except:
             pass
         
+        # Get instruments list from request, or use selected stocks, or fallback to default
+        instruments = params.get("instruments")
+        
+        if not instruments:
+            # Try to get from selected stocks database
+            try:
+                from database.stocks_repository import get_stocks_repository
+                repo = get_stocks_repository()
+                selected_stocks = repo.get_all(active_only=True)
+                if selected_stocks:
+                    instruments = [
+                        {"name": stock.tradingsymbol, "token": str(stock.instrument_token)}
+                        for stock in selected_stocks
+                    ]
+            except Exception as e:
+                print(f"[Backtest] Error loading selected stocks: {e}")
+        
+        # Fallback to default list if no instruments provided
+        if not instruments:
+            instruments = [
+                {"name": "RELIANCE", "token": "738561"},
+                {"name": "TCS", "token": "2953217"},
+                {"name": "HDFCBANK", "token": "341249"},
+                {"name": "INFY", "token": "408065"},
+                {"name": "ICICIBANK", "token": "1270529"},
+                {"name": "SBIN", "token": "779521"},
+                {"name": "KOTAKBANK", "token": "492033"},
+                {"name": "AXISBANK", "token": "1510401"},
+                {"name": "INDUSINDBK", "token": "1346049"},
+                {"name": "FEDERALBNK", "token": "261889"},
+                {"name": "WIPRO", "token": "969473"},
+                {"name": "HCLTECH", "token": "1850625"},
+                {"name": "TECHM", "token": "3465729"},
+                {"name": "LTIM", "token": "4561409"},
+                {"name": "PERSISTENT", "token": "4701441"},
+                {"name": "SUNPHARMA", "token": "857857"},
+                {"name": "DRREDDY", "token": "225537"},
+                {"name": "CIPLA", "token": "177665"},
+                {"name": "LUPIN", "token": "2672641"},
+                {"name": "DIVISLAB", "token": "2800641"},
+                {"name": "BHARTIARTL", "token": "2714625"},
+                {"name": "BAJFINANCE", "token": "81153"},
+                {"name": "ITC", "token": "424961"},
+                {"name": "HINDUNILVR", "token": "356865"},
+                {"name": "MARUTI", "token": "2815745"},
+            ]
+        
         # Send start message
         await websocket.send_json({
             "type": "start",
             "message": "Backtest started",
-            "params": {"start_date": start_date, "end_date": end_date, "timeframe": timeframe}
+            "params": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "timeframe": timeframe,
+                "total_instruments": len(instruments)
+            }
         })
         # Yield control to event loop to ensure message is sent
         await asyncio.sleep(0.01)
-        
-        # All 25 stocks with validated tokens
-        instruments = [
-            {"name": "RELIANCE", "token": "738561"},
-            {"name": "TCS", "token": "2953217"},
-            {"name": "HDFCBANK", "token": "341249"},
-            {"name": "INFY", "token": "408065"},
-            {"name": "ICICIBANK", "token": "1270529"},
-            {"name": "SBIN", "token": "779521"},
-            {"name": "KOTAKBANK", "token": "492033"},
-            {"name": "AXISBANK", "token": "1510401"},
-            {"name": "INDUSINDBK", "token": "1346049"},
-            {"name": "FEDERALBNK", "token": "261889"},
-            {"name": "WIPRO", "token": "969473"},
-            {"name": "HCLTECH", "token": "1850625"},
-            {"name": "TECHM", "token": "3465729"},
-            {"name": "LTIM", "token": "4561409"},
-            {"name": "PERSISTENT", "token": "4701441"},
-            {"name": "SUNPHARMA", "token": "857857"},
-            {"name": "DRREDDY", "token": "225537"},
-            {"name": "CIPLA", "token": "177665"},
-            {"name": "LUPIN", "token": "2672641"},
-            {"name": "DIVISLAB", "token": "2800641"},
-            {"name": "BHARTIARTL", "token": "2714625"},
-            {"name": "BAJFINANCE", "token": "81153"},
-            {"name": "ITC", "token": "424961"},
-            {"name": "HINDUNILVR", "token": "356865"},
-            {"name": "MARUTI", "token": "2815745"},
-        ]
         
         kite = get_kite_instance(user_id=user_id)
         
@@ -213,11 +236,17 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
         results = []
         total_signals = 0
         total_profit = 0
+        cancelled = False
         
         # Process each instrument and stream results
         for inst_idx, inst in enumerate(instruments):
+            # Check if WebSocket is still open before processing
+            if cancelled:
+                print(f"[Backtest] Cancelled, stopping at instrument {inst_idx + 1}/{len(instruments)}")
+                break
+                
             try:
-                # Send progress update
+                # Send progress update - this will raise exception if WebSocket is closed
                 await websocket.send_json({
                     "type": "progress",
                     "instrument": inst["name"],
@@ -226,7 +255,17 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                 })
                 # Yield control to event loop to ensure message is sent immediately
                 await asyncio.sleep(0.05)
+            except Exception as ws_error:
+                # WebSocket closed by client (cancelled)
+                print(f"[Backtest] WebSocket closed, cancelling backtest: {ws_error}")
+                cancelled = True
+                break
+            
+            # Check again after progress update
+            if cancelled:
+                break
                 
+            try:
                 instrument_signals = []
                 instrument_profit = 0
                 instrument_profitable = 0
@@ -234,6 +273,9 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                 
                 # Process each trading date
                 for date_str in trading_dates:
+                    # Check if cancelled before processing each date
+                    if cancelled:
+                        break
                     try:
                         from_date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
                         to_date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -350,35 +392,95 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                         # Apply pattern detection
                         df['candle_type'] = df.index.map(lambda i: detect_candlestick_pattern_bk(i, df))
                         
-                        # Generate trading signals (reuse logic from getCandle)
+                        # Generate trading signals (enhanced with AI recommendations)
                         def generate_trading_signal_bk(current_idx, df, instrument_token=None):
-                            """Generate trading signal - same as getCandle"""
+                            """
+                            Generate trading signal with enhanced filters based on AI analysis:
+                            1. VWAP proximity check (entry should be within 2% of VWAP)
+                            2. Confirmation requirement (next candle should confirm reversal)
+                            3. Pattern strength validation (stronger confirmation for weaker patterns)
+                            4. Entry timing (avoid very early entries without confirmation)
+                            """
                             instrument_blacklist = ['4701441']  # PERSISTENT
                             if instrument_token and str(instrument_token) in instrument_blacklist:
                                 return (None, None, None)
+                            
+                            # Need at least 2 previous candles for pattern detection
+                            if current_idx < 2:
+                                return (None, None, None)
+                            
                             row = df.loc[current_idx]
                             candle_type = row.get('candle_type', '')
                             close = row.get('close', 0)
                             open_price = row.get('open', 0)
                             high = row.get('high', 0)
+                            low = row.get('low', 0)
                             vwap = row.get('vwap', 0)
-                            if current_idx > 0:
-                                prev_row = df.loc[current_idx - 1]
-                                prev_candle_type = prev_row.get('candle_type', '')
-                                is_green_candle = close > open_price
-                                close_above_vwap = close > vwap
-                                high_above_vwap = high > vwap
-                                high_performance_candle_types = [
-                                    'Dragonfly Doji', 'Piercing Pattern',
-                                    'Inverted Hammer', 'Long White Candle'
-                                ]
-                                current_candle_matches = any(pattern in candle_type for pattern in high_performance_candle_types)
-                                if (prev_candle_type == 'Three Black Crows' and is_green_candle and 
-                                    (close_above_vwap or high_above_vwap) and current_candle_matches):
-                                    matched_pattern = next((p for p in high_performance_candle_types if p in candle_type), candle_type)
-                                    reason = f"Priority 1: {matched_pattern} candle {'closing' if close_above_vwap else 'high'} above VWAP after Three Black Crows"
-                                    return ('BUY', 1, reason)
-                            return (None, None, None)
+                            
+                            if vwap == 0 or close == 0:
+                                return (None, None, None)
+                            
+                            prev_row = df.loc[current_idx - 1]
+                            prev_candle_type = prev_row.get('candle_type', '')
+                            
+                            # Check for Three Black Crows pattern
+                            if prev_candle_type != 'Three Black Crows':
+                                return (None, None, None)
+                            
+                            is_green_candle = close > open_price
+                            close_above_vwap = close > vwap
+                            high_above_vwap = high > vwap
+                            
+                            # VWAP proximity check: entry should be within 2% of VWAP
+                            vwap_diff_percent = abs(close - vwap) / vwap * 100
+                            MAX_VWAP_DISTANCE_PCT = 2.0  # Maximum 2% distance from VWAP
+                            
+                            if vwap_diff_percent > MAX_VWAP_DISTANCE_PCT:
+                                return (None, None, None)  # Entry too far from VWAP
+                            
+                            high_performance_candle_types = [
+                                'Dragonfly Doji', 'Piercing Pattern',
+                                'Inverted Hammer', 'Long White Candle'
+                            ]
+                            current_candle_matches = any(pattern in candle_type for pattern in high_performance_candle_types)
+                            
+                            if not (is_green_candle and (close_above_vwap or high_above_vwap) and current_candle_matches):
+                                return (None, None, None)
+                            
+                            # Pattern strength validation: Inverted Hammer needs stronger confirmation
+                            if 'Inverted Hammer' in candle_type:
+                                # For Inverted Hammer, require next candle confirmation
+                                if current_idx < len(df) - 1:
+                                    next_row = df.loc[current_idx + 1]
+                                    next_close = next_row.get('close', 0)
+                                    next_open = next_row.get('open', 0)
+                                    # Next candle should be bullish and close higher than entry
+                                    if not (next_close > next_open and next_close > close):
+                                        return (None, None, None)  # Inverted Hammer not confirmed
+                                else:
+                                    # Can't confirm if it's the last candle
+                                    return (None, None, None)
+                            
+                            # Entry timing check: Avoid entries in first 15 minutes (volatile period)
+                            # This is a simplified check - in real trading, you'd check actual time
+                            # For backtest, we'll use index position as proxy
+                            # Skip if it's one of the first 3 candles (assuming 5min candles = first 15 mins)
+                            if current_idx < 3:
+                                return (None, None, None)
+                            
+                            # Confirmation requirement: Check if previous reversal pattern is strong
+                            # Look at the candle before Three Black Crows to ensure proper context
+                            if current_idx >= 3:
+                                prev_prev_row = df.loc[current_idx - 2]
+                                # Ensure we're not entering during a strong downtrend
+                                if prev_prev_row.get('close', 0) < prev_row.get('close', 0):
+                                    # Still in downtrend, need stronger confirmation
+                                    if 'Inverted Hammer' in candle_type:
+                                        return (None, None, None)  # Inverted Hammer too weak in strong downtrend
+            
+                            matched_pattern = next((p for p in high_performance_candle_types if p in candle_type), candle_type)
+                            reason = f"Priority 1: {matched_pattern} candle {'closing' if close_above_vwap else 'high'} above VWAP after Three Black Crows (VWAP distance: {vwap_diff_percent:.2f}%)"
+                            return ('BUY', 1, reason)
                         
                         # Apply signal generation
                         df['trading_signal'] = None
@@ -405,12 +507,62 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                                 print(f"Error converting entry_price: {e}, value: {signal_row['close']}, type: {type(signal_row['close'])}")
                                 entry_price = float(str(signal_row['close']))
                             
-                            try:
-                                current_price_float = float(current_price)
-                            except (ValueError, TypeError):
-                                current_price_float = float(str(current_price))
+                            # Dynamic exit strategy: Track price action after entry
+                            entry_idx = idx
+                            exit_price = current_price
+                            exit_idx = len(df) - 1
                             
-                            profit = current_price_float - entry_price
+                            # Stop-loss: 2% below entry price
+                            STOP_LOSS_PCT = 2.0
+                            stop_loss_price = entry_price * (1 - STOP_LOSS_PCT / 100.0)
+                            
+                            # Trailing stop: Exit if price drops 1% from highest point after entry
+                            TRAILING_STOP_PCT = 1.0
+                            
+                            # Track highest price after entry for trailing stop
+                            highest_after_entry = entry_price
+                            exit_reason = "End of day"
+                            
+                            # Check price action after entry for early exit
+                            for check_idx in range(entry_idx + 1, len(df)):
+                                check_row = df.loc[check_idx]
+                                check_close = float(check_row.get('close', entry_price))
+                                check_low = float(check_row.get('low', entry_price))
+                                
+                                # Update highest price after entry
+                                if check_close > highest_after_entry:
+                                    highest_after_entry = check_close
+                                
+                                # Check stop-loss (price hit stop-loss level)
+                                if check_low <= stop_loss_price:
+                                    exit_price = stop_loss_price
+                                    exit_idx = check_idx
+                                    exit_reason = f"Stop-loss triggered ({STOP_LOSS_PCT}%)"
+                                    break
+                                
+                                # Check trailing stop (price dropped from high)
+                                if highest_after_entry > entry_price:
+                                    trailing_stop_price = highest_after_entry * (1 - TRAILING_STOP_PCT / 100.0)
+                                    if check_close <= trailing_stop_price:
+                                        exit_price = check_close
+                                        exit_idx = check_idx
+                                        exit_reason = f"Trailing stop triggered ({TRAILING_STOP_PCT}% from high)"
+                                        break
+                                
+                                # Early exit if price doesn't confirm (price drops below entry after 2+ candles)
+                                if check_idx >= entry_idx + 2:
+                                    if check_close < entry_price * 0.995:  # 0.5% below entry
+                                        exit_price = check_close
+                                        exit_idx = check_idx
+                                        exit_reason = "Early exit: Price not confirming trade"
+                                        break
+                            
+                            try:
+                                exit_price_float = float(exit_price)
+                            except (ValueError, TypeError):
+                                exit_price_float = float(str(exit_price))
+                            
+                            profit = exit_price_float - entry_price
                             
                             # Format entry time (from signal timestamp)
                             entry_timestamp = signal_row['timestamp']
@@ -434,8 +586,8 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                                 print(f"Error formatting entry_time: {e}, timestamp: {entry_timestamp}")
                                 entry_time = '-'
                             
-                            # Format exit time (last candle timestamp)
-                            exit_timestamp = df.iloc[-1]['timestamp']
+                            # Format exit time (use actual exit candle timestamp)
+                            exit_timestamp = df.iloc[exit_idx]['timestamp']
                             try:
                                 if pd.api.types.is_datetime64_any_dtype(exit_timestamp):
                                     exit_time = exit_timestamp.strftime('%Y-%m-%d %H:%M:%S')
@@ -475,12 +627,13 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                                 "entry_time": entry_time,
                                 "exit_time": exit_time,
                                 "entry_price": float(round(float(entry_price), 2)),
-                                "exit_price": float(round(float(current_price), 2)),
+                                "exit_price": float(round(float(exit_price_float), 2)),
                                 "qty": 1,
                                 "profit": float(round(float(profit), 2)),
                                 "profit_percent": float(round((float(profit) / float(entry_price) * 100) if entry_price > 0 else 0, 2)),
                                 "candle_type": str(signal_row.get('candle_type', '')) if signal_row.get('candle_type') is not None else '',
-                                "signal_reason": str(signal_row.get('signal_reason', '')) if signal_row.get('signal_reason') is not None else ''
+                                "signal_reason": str(signal_row.get('signal_reason', '')) if signal_row.get('signal_reason') is not None else '',
+                                "exit_reason": exit_reason  # Add exit reason for analysis
                             })
                             
                             instrument_profit += float(profit)
@@ -517,28 +670,56 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                 total_signals += int(len(instrument_signals))
                 total_profit += float(instrument_profit)
                 
+                # Check if cancelled before sending result
+                if cancelled:
+                    print(f"[Backtest] Cancelled, skipping result for {inst['name']}")
+                    break
+                
                 # Stream result immediately (only if has signals)
                 if len(instrument_signals) > 0:
-                    print(f"[WS] Sending result for {inst['name']}: {len(instrument_signals)} signals, profit: {instrument_profit}")
-                    await websocket.send_json({
-                        "type": "result",
-                        "data": result
-                    })
-                    # Yield control to event loop to ensure message is sent immediately
-                    # This allows the WebSocket to flush the message before continuing
-                    await asyncio.sleep(0.05)
-                    print(f"[WS] Result sent for {inst['name']}")
+                    try:
+                        print(f"[WS] Sending result for {inst['name']}: {len(instrument_signals)} signals, profit: {instrument_profit}")
+                        await websocket.send_json({
+                            "type": "result",
+                            "data": result
+                        })
+                        # Yield control to event loop to ensure message is sent immediately
+                        # This allows the WebSocket to flush the message before continuing
+                        await asyncio.sleep(0.05)
+                        print(f"[WS] Result sent for {inst['name']}")
+                    except Exception as ws_error:
+                        print(f"[Backtest] WebSocket closed while sending result, cancelling: {ws_error}")
+                        cancelled = True
+                        break
                 else:
                     print(f"[WS] Skipping {inst['name']} - no signals")
                     
             except Exception as e:
                 print(f"Error processing instrument {inst['name']}: {str(e)}")
-                await websocket.send_json({
-                    "type": "error",
-                    "instrument": inst["name"],
-                    "message": f"Error processing {inst['name']}: {str(e)}"
-                })
+                if not cancelled:
+                    try:
+                        await websocket.send_json({
+                            "type": "error",
+                            "instrument": inst["name"],
+                            "message": f"Error processing {inst['name']}: {str(e)}"
+                        })
+                    except Exception as ws_error:
+                        print(f"[Backtest] WebSocket closed while sending error, cancelling: {ws_error}")
+                        cancelled = True
+                        break
                 continue
+        
+        # Send final summary only if not cancelled
+        if cancelled:
+            print("[Backtest] Backtest cancelled by user, not sending summary")
+            try:
+                await websocket.send_json({
+                    "type": "cancelled",
+                    "message": "Backtest cancelled by user"
+                })
+            except:
+                pass  # WebSocket already closed
+            return
         
         # Send final summary
         summary = {

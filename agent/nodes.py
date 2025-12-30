@@ -287,7 +287,11 @@ STRICT TOOL SELECTION RULES:
 6. If Intent is SIMULATION and user asks to "download", use 'download_historical_data_to_local_tool'.
 7. If the user asks to "run simulation", "simulate", or "what trades on local data", you MUST call 'run_simulation_on_local_data_tool' and LEAVE 'file_path' EMPTY.
 
-Extract instrument names or groups (e.g., "top 10 nifty50 stocks") from the query.
+Extract instrument names or groups from the query. Available groups include:
+- "top 10 nifty50 stocks" or "nifty top 10" - Predefined top 10 Nifty stocks
+- "selected stocks", "my stocks", "watchlist", or "selected" - User's selected stocks from the stock selection page
+If no specific instrument is mentioned and the query is about trading opportunities or analysis, use "selected stocks" as the default.
+
 Call the tools with proper parameters. You can call multiple tools if needed.
 
 CRITICAL: If the intent is CONVERSATION or the query is just a greeting (hi, hello, etc.), DO NOT CALL ANY TOOLS. Just return without any tool calls.
@@ -431,7 +435,12 @@ def execute_tools_node(state: AgentState) -> AgentState:
                 if inst_val:
                     inst_lower = str(inst_val).lower().strip()
                     if inst_lower in INSTRUMENT_GROUPS:
-                        tool_args["instrument_name"] = INSTRUMENT_GROUPS[inst_lower]
+                        group_value = INSTRUMENT_GROUPS[inst_lower]
+                        # Handle lambda functions for dynamic groups (selected stocks)
+                        if callable(group_value):
+                            tool_args["instrument_name"] = group_value()
+                        else:
+                            tool_args["instrument_name"] = group_value
                     elif not tool_args.get("instrument_name") and entities.get("instrument"):
                         inst = entities.get("instrument")
                         if isinstance(inst, list):
@@ -441,6 +450,18 @@ def execute_tools_node(state: AgentState) -> AgentState:
                             tool_args["instrument_name"] = [i.strip() for i in re.split(r'\s+and\s+|,', inst, flags=re.IGNORECASE)]
                         else:
                             tool_args["instrument_name"] = inst
+                
+                # 2.5. DEFAULT TO SELECTED STOCKS if no instrument specified
+                if not tool_args.get("instrument_name") and not entities.get("instrument"):
+                    # For trading opportunities, analysis, and simulation tools, default to selected stocks
+                    if tool_name in ["find_indicator_based_trading_opportunities", "analyze_gap_probability", 
+                                   "calculate_indicators_tool", "analyze_trend_tool", "find_indicator_threshold_crossings",
+                                   "find_candlestick_patterns", "download_historical_data_to_local_tool"]:
+                        from agent.tools.instrument_resolver import get_selected_stocks_cached
+                        selected_stocks = get_selected_stocks_cached()
+                        if selected_stocks:
+                            tool_args["instrument_name"] = selected_stocks
+                            print(f"[DEBUG] execute_tools_node | No instrument specified, using selected stocks: {selected_stocks}")
                 
                 # 3. TOOL-SPECIFIC OVERRIDES
                 if tool_name == "find_indicator_based_trading_opportunities":

@@ -85,6 +85,43 @@ from simulation import (
     find_option
 )
 from tasks import live_market_scanner, monitor_order_execution
+
+
+async def refresh_instruments_cache_daily():
+    """Background task to refresh instruments cache daily at 8:30 AM"""
+    from utils.instruments_cache import refresh_cache
+    from datetime import datetime, time
+    
+    while True:
+        try:
+            now = datetime.now()
+            # Calculate next 8:30 AM
+            target_time = time(8, 30)
+            next_refresh = datetime.combine(now.date(), target_time)
+            
+            # If 8:30 AM has passed today, schedule for tomorrow
+            if now.time() > target_time:
+                next_refresh += timedelta(days=1)
+            
+            # Wait until 8:30 AM
+            wait_seconds = (next_refresh - now).total_seconds()
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+            
+            # Refresh cache
+            add_agent_log("Refreshing instruments cache (scheduled daily refresh)", "info", "system")
+            result = refresh_cache()
+            if result.get("success"):
+                add_agent_log(f"Instruments cache refreshed successfully. Total instruments: {result.get('total_instruments', 'unknown')}", "info", "system")
+            else:
+                add_agent_log("Failed to refresh instruments cache", "warning", "system")
+            
+            # Wait 24 hours before next refresh
+            await asyncio.sleep(24 * 60 * 60)
+        except Exception as e:
+            add_agent_log(f"Error in instruments cache refresh task: {str(e)}", "error", "system")
+            # Retry after 1 hour on error
+            await asyncio.sleep(60 * 60)
 from strategies.runner import run_strategy_on_candles
 
 # Legacy endpoints (maintained for backward compatibility)
@@ -191,6 +228,14 @@ async def startup_event():
     init_database()
     add_agent_log("Database initialized successfully", "info", "system")
 
+    # Initialize instruments cache
+    try:
+        from utils.instruments_cache import ensure_cache_valid
+        ensure_cache_valid()
+        add_agent_log("Instruments cache initialized successfully", "info", "system")
+    except Exception as e:
+        add_agent_log(f"Instruments cache initialization failed: {str(e)}", "warning", "system")
+
     # Set approval queue callback for WebSocket broadcasting
     approval_queue = get_approval_queue()
     def broadcast_new_approval(approval):
@@ -204,6 +249,9 @@ async def startup_event():
     start_autonomous_agent()
     # Start order monitoring task for auto-cancellation
     asyncio.create_task(monitor_order_execution())
+    
+    # Start instruments cache refresh task (daily at 8:30 AM)
+    asyncio.create_task(refresh_instruments_cache_daily())
 
 # Simulation state and helpers moved to simulation/ module
 

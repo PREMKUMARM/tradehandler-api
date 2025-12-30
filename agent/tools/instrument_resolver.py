@@ -16,6 +16,36 @@ TOP_10_NIFTY50 = [
     "LT", "TCS", "AXISBANK", "KOTAKBANK", "BHARTIARTL"
 ]
 
+def get_selected_stocks_group() -> List[str]:
+    """Get list of selected stocks from database"""
+    try:
+        from database.stocks_repository import get_stocks_repository
+        repo = get_stocks_repository()
+        stocks = repo.get_all(active_only=True)
+        return [stock.tradingsymbol for stock in stocks]
+    except Exception as e:
+        print(f"[Instrument Resolver] Error loading selected stocks: {e}")
+        return []
+
+
+# Initialize instrument groups with selected stocks
+_selected_stocks_cache: Optional[List[str]] = None
+_selected_stocks_cache_time: Optional[float] = None
+CACHE_TTL = 300  # 5 minutes cache
+
+def get_selected_stocks_cached() -> List[str]:
+    """Get selected stocks with caching"""
+    global _selected_stocks_cache, _selected_stocks_cache_time
+    import time
+    
+    current_time = time.time()
+    if _selected_stocks_cache is None or _selected_stocks_cache_time is None or (current_time - _selected_stocks_cache_time) > CACHE_TTL:
+        _selected_stocks_cache = get_selected_stocks_group()
+        _selected_stocks_cache_time = current_time
+    
+    return _selected_stocks_cache
+
+
 INSTRUMENT_GROUPS = {
     "top 10 nifty50 stocks": TOP_10_NIFTY50,
     "top 10 nifty50": TOP_10_NIFTY50,
@@ -23,6 +53,11 @@ INSTRUMENT_GROUPS = {
     "nifty 10": TOP_10_NIFTY50,
     "nifty top 10": TOP_10_NIFTY50,
     "nifty top 10 stocks": TOP_10_NIFTY50,
+    # Dynamic groups from selected stocks
+    "selected stocks": lambda: get_selected_stocks_cached(),
+    "my stocks": lambda: get_selected_stocks_cached(),
+    "watchlist": lambda: get_selected_stocks_cached(),
+    "selected": lambda: get_selected_stocks_cached(),
 }
 
 # Common instrument name mappings

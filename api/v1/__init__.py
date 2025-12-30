@@ -7,7 +7,7 @@ from fastapi import APIRouter
 api_router = APIRouter(prefix="/api/v1", tags=["v1"])
 
 # Import and register route modules
-from .routes import agent, users, auth, strategies, market, orders, portfolio, simulation
+from .routes import agent, users, auth, strategies, market, orders, portfolio, simulation, stocks
 from . import health
 
 # Register routers
@@ -19,5 +19,6 @@ api_router.include_router(market.router)
 api_router.include_router(orders.router)
 api_router.include_router(portfolio.router)
 api_router.include_router(simulation.router)
+api_router.include_router(stocks.router)
 api_router.include_router(health.router, prefix="/health", tags=["Health"])
 
