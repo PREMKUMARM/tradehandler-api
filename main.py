@@ -245,6 +245,10 @@ async def startup_event():
 
     # Start the background scanner
     asyncio.create_task(live_market_scanner())
+    
+    # Start Binance VWAP data updates
+    from api.v1.routes.market import update_binance_vwap_data
+    asyncio.create_task(update_binance_vwap_data())
     # Start the new AI Agent autonomous scanner
     start_autonomous_agent()
     # Start order monitoring task for auto-cancellation

@@ -1,11 +1,12 @@
 """
 Market data API endpoints (candles, quotes, instruments, etc.)
 """
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import asyncio
 
 from utils.kite_utils import (
     api_key,
@@ -15,8 +16,18 @@ from utils.kite_utils import (
 )
 from kiteconnect.exceptions import KiteException
 from core.user_context import get_user_id_from_request
+from core.responses import SuccessResponse, ErrorResponse
+from core.dependencies import get_request_id
+from utils.binance_client import fetch_klines, fetch_multiple_klines
+from utils.binance_vwap import compute_vwap, compute_vwap_batch
 
 router = APIRouter(prefix="/market", tags=["Market Data"])
+
+# Binance Monitor Configuration
+BINANCE_SYMBOLS = ["1000PEPEUSDT", "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
+BINANCE_TIMEFRAMES = ["1m", "5m", "15m", "30m"]
+# Global storage for latest VWAP data (in-memory cache)
+_latest_binance_vwap_data = {}
 
 
 @router.get("/candles/{instrument_token}/{interval}/{fromDate}/{toDate}")
@@ -676,4 +687,148 @@ def get_nifty50_options_ws():
         raise HTTPException(status_code=500, detail=f"Error getting WebSocket info: {str(e)}")
 
 
+# ============================================================================
+# Binance Monitor Endpoints
+# ============================================================================
+
+async def update_binance_vwap_data():
+    """Background task to update Binance VWAP data periodically"""
+    global _latest_binance_vwap_data
+    import traceback
+    
+    # Initial delay to let server fully start
+    await asyncio.sleep(2)
+    
+    print("[Binance Monitor] Starting background VWAP update task...")
+    
+    while True:
+        try:
+            # Fetch klines for all symbols and timeframes
+            klines_data = await fetch_multiple_klines(BINANCE_SYMBOLS, BINANCE_TIMEFRAMES, limit=100)
+            
+            # Calculate VWAP for all
+            vwap_data = compute_vwap_batch(klines_data)
+            
+            # Update global cache
+            _latest_binance_vwap_data = vwap_data
+            
+            # Log update (first time and periodically)
+            if len(_latest_binance_vwap_data) > 0:
+                sample_symbol = list(_latest_binance_vwap_data.keys())[0]
+                print(f"[Binance Monitor] Updated VWAP data for {len(_latest_binance_vwap_data)} symbols (sample: {sample_symbol})")
+            
+            # Wait 5 seconds before next update
+            await asyncio.sleep(5)
+        except Exception as e:
+            print(f"[Binance Monitor] Error updating VWAP data: {e}")
+            traceback.print_exc()
+            await asyncio.sleep(5)  # Wait even on error to avoid tight loop
+
+
+@router.get("/binance-vwap")
+async def get_binance_vwap(request: Request, symbol: str = None):
+    """
+    Get current VWAP values for Binance symbols
+    
+    Args:
+        symbol: Optional symbol filter (e.g., "BTCUSDT"). If not provided, returns all symbols.
+    
+    Returns:
+        VWAP data for symbol(s) across all timeframes
+    """
+    request_id = get_request_id(request)
+    
+    try:
+        if symbol:
+            symbol = symbol.upper()
+            if symbol in _latest_binance_vwap_data:
+                return SuccessResponse(
+                    data={symbol: _latest_binance_vwap_data[symbol]},
+                    message=f"VWAP data for {symbol}",
+                    request_id=request_id
+                )
+            else:
+                return ErrorResponse(
+                    message=f"Symbol {symbol} not found",
+                    request_id=request_id
+                )
+        else:
+            # Return all symbols
+            return SuccessResponse(
+                data=_latest_binance_vwap_data,
+                message="VWAP data for all Binance symbols",
+                request_id=request_id
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting Binance VWAP: {str(e)}")
+
+
+@router.websocket("/ws/binance-vwap")
+async def binance_vwap_websocket(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time Binance VWAP streaming
+    
+    Server streams VWAP data every 5 seconds:
+    {
+        "BTCUSDT": {
+            "1m": {"vwap": 89650.23, "current_price": 89680.45, "position": "Above"},
+            "5m": {"vwap": 89680.12, "current_price": 89690.34, "position": "Above"},
+            "15m": {"vwap": 89700.67, "current_price": 89650.12, "position": "Below"},
+            "30m": {"vwap": 89720.45, "current_price": 89680.78, "position": "Below"}
+        },
+        "ETHUSDT": {
+            "1m": {"vwap": 2450.90, "current_price": 2455.12, "position": "Above"},
+            ...
+        },
+        ...
+    }
+    """
+    await websocket.accept()
+    print("[Binance WS] Client connected")
+    
+    try:
+        # Wait for initial data to be available (max 10 seconds)
+        wait_count = 0
+        while not _latest_binance_vwap_data and wait_count < 20:
+            await asyncio.sleep(0.5)
+            wait_count += 1
+        
+        if not _latest_binance_vwap_data:
+            print("[Binance WS] Warning: No VWAP data available yet, sending empty object")
+            await websocket.send_json({})
+        else:
+            # Log sample data being sent
+            sample_symbol = list(_latest_binance_vwap_data.keys())[0] if _latest_binance_vwap_data else None
+            if sample_symbol:
+                sample_data = _latest_binance_vwap_data[sample_symbol]
+                print(f"[Binance WS] Sending initial VWAP data for {len(_latest_binance_vwap_data)} symbols")
+                print(f"[Binance WS] Sample {sample_symbol}: {sample_data}")
+            await websocket.send_json(_latest_binance_vwap_data)
+        
+        # Continue streaming updates
+        while True:
+            await asyncio.sleep(5)
+            if _latest_binance_vwap_data:
+                # Log sample data periodically (every 10th update = ~50 seconds)
+                import random
+                if random.randint(1, 10) == 1:
+                    sample_symbol = list(_latest_binance_vwap_data.keys())[0] if _latest_binance_vwap_data else None
+                    if sample_symbol:
+                        sample_data = _latest_binance_vwap_data[sample_symbol]
+                        print(f"[Binance WS] Update - Sample {sample_symbol}: {sample_data}")
+                await websocket.send_json(_latest_binance_vwap_data)
+            else:
+                # Send empty object if data not available
+                await websocket.send_json({})
+                
+    except WebSocketDisconnect:
+        print("[Binance WS] Client disconnected")
+    except Exception as e:
+        print(f"[Binance WS] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.close()
+        except:
+            pass
 
