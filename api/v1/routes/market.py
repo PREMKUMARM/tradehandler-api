@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import asyncio
+import json
 
 from utils.kite_utils import (
     api_key,
@@ -20,6 +21,8 @@ from core.responses import SuccessResponse, ErrorResponse
 from core.dependencies import get_request_id
 from utils.binance_client import fetch_klines, fetch_multiple_klines
 from utils.binance_vwap import compute_vwap, compute_vwap_batch
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
 
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
@@ -28,6 +31,16 @@ BINANCE_SYMBOLS = ["1000PEPEUSDT", "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "
 BINANCE_TIMEFRAMES = ["1m", "5m", "15m", "30m"]
 # Global storage for latest VWAP data (in-memory cache)
 _latest_binance_vwap_data = {}
+
+# Initialize Binance client (no API keys needed for public data)
+_binance_client = None
+
+def get_binance_client():
+    """Get or create Binance client instance"""
+    global _binance_client
+    if _binance_client is None:
+        _binance_client = Client()  # No API keys needed for public data
+    return _binance_client
 
 
 @router.get("/candles/{instrument_token}/{interval}/{fromDate}/{toDate}")
@@ -825,6 +838,177 @@ async def binance_vwap_websocket(websocket: WebSocket):
         print("[Binance WS] Client disconnected")
     except Exception as e:
         print(f"[Binance WS] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+@router.get("/binance-futures/live-prices")
+async def get_binance_futures_live_prices(request: Request, symbols: str = None):
+    """
+    Get live prices for Binance Futures symbols
+    
+    Args:
+        symbols: Comma-separated list of symbols (e.g., "BTCUSDT,ETHUSDT"). 
+                 If not provided, returns prices for default BINANCE_SYMBOLS.
+    
+    Returns:
+        List of ticker data with symbol, price, 24h change, volume, etc.
+    """
+    request_id = get_request_id(request)
+    
+    try:
+        client = get_binance_client()
+        
+        # Determine which symbols to fetch
+        if symbols:
+            symbol_list = [s.strip().upper() for s in symbols.split(",")]
+        else:
+            symbol_list = BINANCE_SYMBOLS
+        
+        # Fetch 24h ticker statistics for all symbols
+        tickers = client.futures_24hr_ticker()
+        
+        # Filter to requested symbols and format response
+        result = []
+        for ticker in tickers:
+            symbol = ticker.get('symbol', '')
+            if symbol in symbol_list:
+                result.append({
+                    "symbol": symbol,
+                    "price": float(ticker.get('lastPrice', 0)),
+                    "price_change_24h": float(ticker.get('priceChange', 0)),
+                    "price_change_percent_24h": float(ticker.get('priceChangePercent', 0)),
+                    "high_24h": float(ticker.get('highPrice', 0)),
+                    "low_24h": float(ticker.get('lowPrice', 0)),
+                    "volume_24h": float(ticker.get('volume', 0)),
+                    "quote_volume_24h": float(ticker.get('quoteVolume', 0)),
+                    "open_price": float(ticker.get('openPrice', 0)),
+                    "prev_close_price": float(ticker.get('prevClosePrice', 0)),
+                    "bid_price": float(ticker.get('bidPrice', 0)),
+                    "ask_price": float(ticker.get('askPrice', 0)),
+                    "count": int(ticker.get('count', 0)),
+                    "timestamp": int(ticker.get('closeTime', 0))
+                })
+        
+        # Sort by symbol
+        result.sort(key=lambda x: x['symbol'])
+        
+        return SuccessResponse(
+            data=result,
+            message=f"Live prices for {len(result)} Binance Futures symbols",
+            request_id=request_id
+        )
+    except BinanceAPIException as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Binance API error: {str(e)}"
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching Binance Futures prices: {str(e)}"
+        )
+
+
+@router.websocket("/ws/binance-futures/live-prices")
+async def binance_futures_live_prices_websocket(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time Binance Futures price streaming
+    
+    Client can optionally send: {"symbols": ["BTCUSDT", "ETHUSDT"]}
+    Server streams price updates every 2 seconds:
+    [
+        {
+            "symbol": "BTCUSDT",
+            "price": 89650.23,
+            "price_change_24h": 1250.45,
+            "price_change_percent_24h": 1.42,
+            "high_24h": 90200.00,
+            "low_24h": 88400.00,
+            "volume_24h": 1234567.89,
+            ...
+        },
+        ...
+    ]
+    """
+    await websocket.accept()
+    print("[Binance Futures WS] Client connected")
+    
+    try:
+        client = get_binance_client()
+        
+        # Receive optional symbols list from client
+        symbols_to_fetch = BINANCE_SYMBOLS
+        try:
+            message = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            params = json.loads(message)
+            if 'symbols' in params and params['symbols']:
+                symbols_to_fetch = [s.upper() for s in params['symbols']]
+        except (asyncio.TimeoutError, json.JSONDecodeError, KeyError):
+            # Use default symbols if no message received or invalid
+            pass
+        
+        print(f"[Binance Futures WS] Streaming prices for {len(symbols_to_fetch)} symbols: {symbols_to_fetch}")
+        
+        # Stream updates every 2 seconds
+        while True:
+            try:
+                # Fetch 24h ticker statistics
+                tickers = client.futures_24hr_ticker()
+                
+                # Filter to requested symbols and format response
+                result = []
+                for ticker in tickers:
+                    symbol = ticker.get('symbol', '')
+                    if symbol in symbols_to_fetch:
+                        result.append({
+                            "symbol": symbol,
+                            "price": float(ticker.get('lastPrice', 0)),
+                            "price_change_24h": float(ticker.get('priceChange', 0)),
+                            "price_change_percent_24h": float(ticker.get('priceChangePercent', 0)),
+                            "high_24h": float(ticker.get('highPrice', 0)),
+                            "low_24h": float(ticker.get('lowPrice', 0)),
+                            "volume_24h": float(ticker.get('volume', 0)),
+                            "quote_volume_24h": float(ticker.get('quoteVolume', 0)),
+                            "open_price": float(ticker.get('openPrice', 0)),
+                            "prev_close_price": float(ticker.get('prevClosePrice', 0)),
+                            "bid_price": float(ticker.get('bidPrice', 0)),
+                            "ask_price": float(ticker.get('askPrice', 0)),
+                            "count": int(ticker.get('count', 0)),
+                            "timestamp": int(ticker.get('closeTime', 0))
+                        })
+                
+                # Sort by symbol
+                result.sort(key=lambda x: x['symbol'])
+                
+                # Send to client
+                await websocket.send_json(result)
+                
+                # Wait 2 seconds before next update
+                await asyncio.sleep(2)
+                
+            except BinanceAPIException as e:
+                print(f"[Binance Futures WS] Binance API error: {e}")
+                await websocket.send_json({
+                    "error": f"Binance API error: {str(e)}"
+                })
+                await asyncio.sleep(5)  # Wait longer on error
+            except Exception as e:
+                print(f"[Binance Futures WS] Error: {e}")
+                import traceback
+                traceback.print_exc()
+                await asyncio.sleep(5)  # Wait longer on error
+                
+    except WebSocketDisconnect:
+        print("[Binance Futures WS] Client disconnected")
+    except Exception as e:
+        print(f"[Binance Futures WS] Error: {e}")
         import traceback
         traceback.print_exc()
         try:
