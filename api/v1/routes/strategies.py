@@ -304,6 +304,32 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                         df['cumulative_tpv'] = (df['typical_price'] * df['volume']).cumsum()
                         df['vwap'] = df['cumulative_tpv'] / df['cumulative_volume']
                         
+                        # Calculate RSI and MACD for additional confirmation (AI recommendation)
+                        from utils.indicators import calculate_rsi
+                        closes_list = df['close'].tolist()
+                        rsi_values = calculate_rsi(closes_list, period=14)
+                        df['rsi'] = rsi_values
+                        
+                        # Calculate MACD (12, 26, 9)
+                        def calculate_macd_simple(prices, fast=12, slow=26, signal=9):
+                            """Simple MACD calculation"""
+                            import numpy as np
+                            if len(prices) < slow + signal:
+                                return [np.nan] * len(prices), [np.nan] * len(prices), [np.nan] * len(prices)
+                            
+                            prices_arr = np.array(prices, dtype=float)
+                            ema_fast = pd.Series(prices_arr).ewm(span=fast, adjust=False).mean()
+                            ema_slow = pd.Series(prices_arr).ewm(span=slow, adjust=False).mean()
+                            macd_line = ema_fast - ema_slow
+                            signal_line = pd.Series(macd_line).ewm(span=signal, adjust=False).mean()
+                            
+                            return macd_line.tolist(), signal_line.tolist(), (macd_line - signal_line).tolist()
+                        
+                        macd_line, macd_signal, macd_histogram = calculate_macd_simple(closes_list)
+                        df['macd'] = macd_line
+                        df['macd_signal'] = macd_signal
+                        df['macd_histogram'] = macd_histogram
+                        
                         # Get current price (last candle close) for PnL - convert to float
                         current_price = float(df.iloc[-1]['close']) if len(df) > 0 else 0.0
                         
@@ -461,11 +487,12 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                                     # Can't confirm if it's the last candle
                                     return (None, None, None)
                             
-                            # Entry timing check: Avoid entries in first 15 minutes (volatile period)
-                            # This is a simplified check - in real trading, you'd check actual time
+                            # Entry timing check: Avoid entries in first 30 minutes (volatile period)
+                            # AI analysis: Entry at 09:50:00 (shortly after market open) was problematic
                             # For backtest, we'll use index position as proxy
-                            # Skip if it's one of the first 3 candles (assuming 5min candles = first 15 mins)
-                            if current_idx < 3:
+                            # Skip if it's one of the first 6 candles (assuming 5min candles = first 30 mins)
+                            # This gives market time to stabilize after opening volatility
+                            if current_idx < 6:
                                 return (None, None, None)
                             
                             # Confirmation requirement: Check if previous reversal pattern is strong
@@ -477,9 +504,104 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                                     # Still in downtrend, need stronger confirmation
                                     if 'Inverted Hammer' in candle_type:
                                         return (None, None, None)  # Inverted Hammer too weak in strong downtrend
-            
+                            
+                            # AI Recommendation: Additional confirmation from RSI and MACD
+                            # RSI check (needs 14 candles) - run earlier than MACD
+                            if current_idx >= 14:
+                                current_rsi = row.get('rsi', 50)
+                                prev_rsi = prev_row.get('rsi', 50) if current_idx > 0 else 50
+                                
+                                # RSI confirmation: Stricter overbought check (AI analysis showed RSI 79.809)
+                                # For reversal patterns, RSI should be in neutral to slightly oversold range
+                                if pd.notna(current_rsi) and pd.notna(prev_rsi):
+                                    # Reject if RSI is overbought (> 65) - stricter than before (was 70)
+                                    # RSI > 65 indicates strong upward momentum that may reverse
+                                    if current_rsi > 65:  # Overbought - avoid entry (stricter threshold)
+                                        return (None, None, None)
+                                    # Prefer RSI in neutral range (30-60) or recovering from oversold
+                                    if current_rsi < prev_rsi and current_rsi < 40:
+                                        # RSI declining and oversold - wait for confirmation
+                                        return (None, None, None)
+                                    # Additional check: If RSI is very high (> 60), require it to be turning down
+                                    # This prevents entries at the peak of momentum
+                                    if current_rsi > 60 and current_rsi > prev_rsi:
+                                        # RSI high and still rising - likely overbought, avoid entry
+                                        return (None, None, None)
+                                    # AI Recommendation: RSI should be moving out of oversold/overbought territory
+                                    # For reversal patterns, prefer RSI that's recovering from oversold (< 40)
+                                    # If RSI is oversold (< 30), require it to be turning up (recovering)
+                                    if current_rsi < 30:
+                                        # Very oversold - require RSI to be turning up for reversal confirmation
+                                        if current_rsi <= prev_rsi:
+                                            # RSI still declining or flat - wait for recovery
+                                            return (None, None, None)
+                            
+                            # MACD confirmation (needs 26 candles) - additional layer of confirmation
+                            if current_idx >= 26:
+                                current_macd = row.get('macd', 0)
+                                current_macd_signal = row.get('macd_signal', 0)
+                                prev_macd = prev_row.get('macd', 0) if current_idx > 0 else 0
+                                prev_macd_signal = prev_row.get('macd_signal', 0) if current_idx > 0 else 0
+                                
+                                if pd.notna(current_macd) and pd.notna(current_macd_signal):
+                                    # MACD should be above signal (bullish) or crossing above
+                                    macd_bullish = current_macd > current_macd_signal
+                                    macd_crossing = (prev_macd <= prev_macd_signal) and (current_macd > current_macd_signal)
+                                    
+                                    if not (macd_bullish or macd_crossing):
+                                        # MACD not confirming - skip trade
+                                        return (None, None, None)
+                            
+                            # AI Recommendation: Volume confirmation for reversal patterns
+                            # High volume confirms the strength of the reversal signal
+                            if current_idx >= 1:
+                                current_volume = row.get('volume', 0)
+                                # Calculate average volume over last 5 candles (if available)
+                                if current_idx >= 5:
+                                    recent_volumes = [df.loc[current_idx - i].get('volume', current_volume) for i in range(5)]
+                                    avg_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else current_volume
+                                    
+                                    # Require current volume to be at least 80% of average volume
+                                    # Low volume suggests weak conviction in the reversal
+                                    if avg_volume > 0 and current_volume < avg_volume * 0.8:
+                                        # Volume too low - pattern may not be reliable
+                                        # For weaker patterns, be more strict
+                                        if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
+                                            return (None, None, None)  # Weak patterns need volume confirmation
+                                elif current_volume == 0:
+                                    # No volume data - skip trade
+                                    return (None, None, None)
+                            
+                            # Check for significant price movement before entry (AI recommendation)
+                            # If price moved significantly in recent candles, may indicate exhaustion
+                            if current_idx >= 3:
+                                # Check price change in last 3 candles
+                                price_3_candles_ago = df.loc[current_idx - 3].get('close', close) if current_idx >= 3 else close
+                                price_change_pct = abs(close - price_3_candles_ago) / price_3_candles_ago * 100
+                                
+                                # If price moved more than 2% in last 3 candles, be cautious
+                                if price_change_pct > 2.0:
+                                    # Significant movement - require stronger confirmation
+                                    # For weaker patterns, reject if price moved too much
+                                    if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
+                                        return (None, None, None)  # Weaker patterns need more stability
+                                    # For stronger patterns, still allow but with caution
+                                    # (Long White Candle is strong, so we allow it but note the risk)
+                            
+                            # Pattern reliability in context: Check recent price action
+                            # Look at last 5 candles to assess market sentiment
+                            if current_idx >= 5:
+                                recent_closes = [df.loc[current_idx - i].get('close', close) for i in range(6)]
+                                # Check if price is in a strong downtrend (declining closes)
+                                declining_count = sum(1 for i in range(1, len(recent_closes)) if recent_closes[i] < recent_closes[i-1])
+                                if declining_count >= 4:  # 4 out of 5 recent candles declining
+                                    # Strong downtrend - pattern may not be reliable
+                                    if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
+                                        # Weaker patterns need stronger confirmation in downtrend
+                                        return (None, None, None)
+                            
                             matched_pattern = next((p for p in high_performance_candle_types if p in candle_type), candle_type)
-                            reason = f"Priority 1: {matched_pattern} candle {'closing' if close_above_vwap else 'high'} above VWAP after Three Black Crows (VWAP distance: {vwap_diff_percent:.2f}%)"
+                            reason = f"Priority 1: {matched_pattern} candle {'closing' if close_above_vwap else 'high'} above VWAP after Three Black Crows (VWAP: {vwap_diff_percent:.2f}%)"
                             return ('BUY', 1, reason)
                         
                         # Apply signal generation
@@ -512,8 +634,8 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                             exit_price = current_price
                             exit_idx = len(df) - 1
                             
-                            # Stop-loss: 2% below entry price
-                            STOP_LOSS_PCT = 2.0
+                            # Stop-loss: 1.5% below entry price (tighter as per AI recommendation)
+                            STOP_LOSS_PCT = 1.5
                             stop_loss_price = entry_price * (1 - STOP_LOSS_PCT / 100.0)
                             
                             # Trailing stop: Exit if price drops 1% from highest point after entry

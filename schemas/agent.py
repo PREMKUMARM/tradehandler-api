@@ -8,7 +8,7 @@ from datetime import datetime
 
 class ChatRequest(BaseModel):
     """Chat request schema"""
-    message: str = Field(..., min_length=1, max_length=2000, description="User message")
+    message: str = Field(..., min_length=1, max_length=5000, description="User message")
     session_id: str = Field(default="default", description="Session ID for conversation context")
     context: Optional[Dict[str, Any]] = Field(None, description="Additional context")
 
