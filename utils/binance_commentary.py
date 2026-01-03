@@ -49,6 +49,12 @@ class CommentaryGenerator:
         sell_conditions_met = current_data.get('sell_conditions_met', 0)
         sell_conditions_total = current_data.get('sell_conditions_total', 8)
         
+        # Get candle timestamp (use candle's actual timestamp, not current time)
+        candle_timestamp = current_data.get('timestamp', 0)
+        if not candle_timestamp:
+            # Fallback to current time if no timestamp provided
+            candle_timestamp = int(datetime.now().timestamp() * 1000)
+        
         # Extract previous values
         prev_price = prev_state.get('price', current_price)
         prev_pattern = prev_state.get('candle_pattern', '')
@@ -60,14 +66,14 @@ class CommentaryGenerator:
         # 1. New Pattern Detected
         if current_pattern and current_pattern != prev_pattern and prev_pattern:
             pattern_msg = self._format_pattern_message(
-                symbol_upper, current_pattern, current_price, current_vwap
+                symbol_upper, current_pattern, current_price, current_vwap, candle_timestamp
             )
             messages.append(pattern_msg)
         
         # 2. Trading Signal Generated
         if current_signal and current_signal != prev_signal:
             signal_msg = self._format_signal_message(
-                symbol_upper, current_signal, current_data
+                symbol_upper, current_signal, current_data, candle_timestamp
             )
             messages.append(signal_msg)
         
@@ -75,7 +81,7 @@ class CommentaryGenerator:
         if prev_vwap and current_vwap:
             if prev_price <= prev_vwap and current_price > current_vwap:
                 messages.append({
-                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "timestamp": candle_timestamp,
                     "symbol": symbol_upper,
                     "event_type": "vwap_crossover",
                     "priority": "medium",
@@ -88,7 +94,7 @@ class CommentaryGenerator:
                 })
             elif prev_price >= prev_vwap and current_price < current_vwap:
                 messages.append({
-                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "timestamp": candle_timestamp,
                     "symbol": symbol_upper,
                     "event_type": "vwap_crossover",
                     "priority": "medium",
@@ -106,7 +112,7 @@ class CommentaryGenerator:
             if abs(price_change_pct) >= 0.5:
                 direction = "surged" if price_change_pct > 0 else "dropped"
                 messages.append({
-                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "timestamp": candle_timestamp,
                     "symbol": symbol_upper,
                     "event_type": "price_movement",
                     "priority": "medium",
@@ -122,7 +128,7 @@ class CommentaryGenerator:
         if prev_rsi is not None and current_rsi is not None:
             if prev_rsi < 70 and current_rsi >= 70:
                 messages.append({
-                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "timestamp": candle_timestamp,
                     "symbol": symbol_upper,
                     "event_type": "indicator_change",
                     "priority": "low",
@@ -136,7 +142,7 @@ class CommentaryGenerator:
                 })
             elif prev_rsi > 30 and current_rsi <= 30:
                 messages.append({
-                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "timestamp": candle_timestamp,
                     "symbol": symbol_upper,
                     "event_type": "indicator_change",
                     "priority": "low",
@@ -154,7 +160,7 @@ class CommentaryGenerator:
             volume_ratio = current_volume / prev_volume if prev_volume > 0 else 1
             if volume_ratio >= 1.5:
                 messages.append({
-                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "timestamp": candle_timestamp,
                     "symbol": symbol_upper,
                     "event_type": "volume_spike",
                     "priority": "medium",
@@ -171,7 +177,7 @@ class CommentaryGenerator:
             prev_buy_met = prev_state.get('buy_conditions_met', 0)
             if prev_buy_met < buy_conditions_met:
                 messages.append({
-                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "timestamp": candle_timestamp,
                     "symbol": symbol_upper,
                     "event_type": "condition_met",
                     "priority": "high",
@@ -187,7 +193,7 @@ class CommentaryGenerator:
             prev_sell_met = prev_state.get('sell_conditions_met', 0)
             if prev_sell_met < sell_conditions_met:
                 messages.append({
-                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "timestamp": candle_timestamp,
                     "symbol": symbol_upper,
                     "event_type": "condition_met",
                     "priority": "high",
@@ -200,23 +206,25 @@ class CommentaryGenerator:
                 })
         
         # 8. New 5-minute candle formed (when timestamp changes significantly)
-        current_timestamp = current_data.get('timestamp', 0)
-        prev_timestamp = prev_state.get('timestamp', 0)
-        # If timestamp changed by more than 4 minutes (240000ms), new candle formed
-        if prev_timestamp and (current_timestamp - prev_timestamp) >= 240000:
-            messages.append({
-                "timestamp": int(datetime.now().timestamp() * 1000),
-                "symbol": symbol_upper,
-                "event_type": "new_candle",
-                "priority": "low",
-                "message": f"New 5-minute candle formed for {symbol_upper} at ${current_price:.8f}",
-                "details": {
-                    "price": round(current_price, 8),
-                    "high": round(current_high, 8),
-                    "low": round(current_low, 8),
-                    "pattern": current_pattern
-                }
-            })
+        # Removed: We don't need a separate message for new candle formation.
+        # Any commentary message already indicates a new candle was formed.
+        # current_timestamp = current_data.get('timestamp', 0)
+        # prev_timestamp = prev_state.get('timestamp', 0)
+        # # If timestamp changed by more than 4 minutes (240000ms), new candle formed
+        # if prev_timestamp and (current_timestamp - prev_timestamp) >= 240000:
+        #     messages.append({
+        #         "timestamp": candle_timestamp,
+        #         "symbol": symbol_upper,
+        #         "event_type": "new_candle",
+        #         "priority": "low",
+        #         "message": f"New 5-minute candle formed for {symbol_upper} at ${current_price:.8f}",
+        #         "details": {
+        #             "price": round(current_price, 8),
+        #             "high": round(current_high, 8),
+        #             "low": round(current_low, 8),
+        #             "pattern": current_pattern
+        #         }
+        #     })
         
         # Update previous state
         self.previous_states[symbol_upper] = {
@@ -238,14 +246,15 @@ class CommentaryGenerator:
         symbol: str,
         pattern: str,
         price: float,
-        vwap: float
+        vwap: float,
+        candle_timestamp: int
     ) -> Dict:
         """Format pattern detection message"""
         vwap_dist = abs(price - vwap) / vwap * 100 if vwap > 0 else 0
         vwap_pos = "above" if price > vwap else "below"
         
         return {
-            "timestamp": int(datetime.now().timestamp() * 1000),
+            "timestamp": candle_timestamp,
             "symbol": symbol,
             "event_type": "pattern_detected",
             "priority": "medium",
@@ -262,7 +271,8 @@ class CommentaryGenerator:
         self,
         symbol: str,
         signal: str,
-        data: Dict
+        data: Dict,
+        candle_timestamp: int
     ) -> Dict:
         """Format trading signal message"""
         price = data.get('price', 0)
@@ -280,7 +290,7 @@ class CommentaryGenerator:
             message += f" {reason}"
         
         return {
-            "timestamp": int(datetime.now().timestamp() * 1000),
+            "timestamp": candle_timestamp,
             "symbol": symbol,
             "event_type": "signal_generated",
             "priority": "high",

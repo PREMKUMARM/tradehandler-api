@@ -23,6 +23,7 @@ from utils.binance_client import fetch_klines, fetch_multiple_klines
 from utils.binance_vwap import compute_vwap, compute_vwap_batch
 from utils.binance_signals import analyze_symbol_for_signals
 from utils.binance_commentary import get_commentary_generator
+from utils.binance_commentary_service import get_commentary_service
 from core.config import get_settings
 
 def get_binance_symbols() -> list:
@@ -1512,8 +1513,11 @@ async def binance_futures_live_prices_websocket(websocket: WebSocket):
                 # Send to client
                 try:
                     await websocket.send_json(result)
-                except RuntimeError as e:
-                    if 'close message' in str(e).lower():
+                except (RuntimeError, WebSocketDisconnect) as e:
+                    if isinstance(e, WebSocketDisconnect):
+                        print("[Binance Futures WS] WebSocket disconnected during send, breaking loop")
+                        break
+                    elif 'close message' in str(e).lower():
                         print("[Binance Futures WS] WebSocket closed, breaking loop")
                         break
                     raise
@@ -1521,8 +1525,11 @@ async def binance_futures_live_prices_websocket(websocket: WebSocket):
                 # Wait 2 seconds before next update (WebSocket provides real-time updates)
                 await asyncio.sleep(2)
                 
-            except RuntimeError as e:
-                if 'close message' in str(e).lower():
+            except (RuntimeError, WebSocketDisconnect) as e:
+                if isinstance(e, WebSocketDisconnect):
+                    print("[Binance Futures WS] WebSocket disconnected, breaking loop")
+                    break
+                elif 'close message' in str(e).lower():
                     print("[Binance Futures WS] WebSocket closed, breaking loop")
                     break
                 raise
@@ -1535,7 +1542,7 @@ async def binance_futures_live_prices_websocket(websocket: WebSocket):
                         await websocket.send_json({
                             "error": f"Error: {str(e)}"
                         })
-                except RuntimeError:
+                except (RuntimeError, WebSocketDisconnect):
                     print("[Binance Futures WS] WebSocket closed during error send, breaking loop")
                     break
                 await asyncio.sleep(2)  # Wait before retry
@@ -1557,8 +1564,8 @@ async def binance_futures_commentary_websocket(websocket: WebSocket):
     """
     WebSocket endpoint for live trading commentary
     
-    Streams commentary messages when new 5-minute candles are formed or significant events occur.
-    Updates only when new 5-minute candle is available.
+    Sends historical commentary first (from last 100 candles), then streams new commentary
+    when new 5-minute candles are formed.
     
     Client can optionally send: {"symbols": ["ETHUSDT", "SOLUSDT"]}
     Server streams commentary messages:
@@ -1589,18 +1596,32 @@ async def binance_futures_commentary_websocket(websocket: WebSocket):
             # Use default symbols if no message received or invalid
             pass
         
-        print(f"[Binance Commentary WS] Monitoring commentary for {len(symbols_to_monitor)} symbols: {list(symbols_to_monitor)}")
+        print(f"[Binance Commentary WS] Client subscribed to {len(symbols_to_monitor)} symbols: {list(symbols_to_monitor)}")
+        
+        # Get commentary service
+        commentary_service = get_commentary_service()
+        
+        # Send historical commentary first (filtered by symbols if specified)
+        historical = commentary_service.get_recent_commentary(count=100)
+        if symbols_to_monitor and 'all' not in symbols_to_monitor:
+            # Filter by requested symbols
+            historical = [msg for msg in historical if msg.get('symbol') in symbols_to_monitor]
+        
+        if historical:
+            # Sort by timestamp (oldest first)
+            historical.sort(key=lambda x: x.get('timestamp', 0))
+            try:
+                await websocket.send_json(historical)
+                print(f"[Binance Commentary WS] Sent {len(historical)} historical commentary messages")
+            except RuntimeError as e:
+                if 'close message' in str(e).lower():
+                    print("[Binance Commentary WS] WebSocket closed during historical send")
+                    return
+                raise
         
         # Start global ticker listener if not already running
         from utils.binance_websocket_ticker import start_global_ticker_listener, get_all_latest_tickers
         listener = await start_global_ticker_listener(symbols_filter=symbols_to_monitor)
-        
-        # Initialize commentary generator
-        commentary_gen = get_commentary_generator()
-        
-        # Track last candle timestamp for each symbol to detect new candles
-        last_candle_timestamps = {}  # {symbol: last_5min_candle_timestamp}
-        previous_data_cache = {}  # {symbol: previous_data_dict}
         
         # Track last update time for signal analysis
         import time
@@ -1635,11 +1656,9 @@ async def binance_futures_commentary_websocket(websocket: WebSocket):
                     print(f"Error analyzing signals for {symbol}: {e}")
         
         # Initial signal analysis
-        print("[Binance Commentary WS] Analyzing signals for all symbols on initial connection...")
         await analyze_signals_for_symbols(symbols_to_monitor)
-        print("[Binance Commentary WS] Initial signal analysis complete")
         
-        # Stream commentary updates
+        # Stream new commentary updates
         while True:
             try:
                 # Check if WebSocket is still open
@@ -1665,7 +1684,7 @@ async def binance_futures_commentary_websocket(websocket: WebSocket):
                 if symbols_to_update:
                     await analyze_signals_for_symbols(symbols_to_update)
                 
-                # Collect commentary messages
+                # Collect new commentary messages
                 all_messages = []
                 
                 for symbol in symbols_to_monitor:
@@ -1673,59 +1692,20 @@ async def binance_futures_commentary_websocket(websocket: WebSocket):
                     if not ticker_data:
                         continue
                     
-                    # Get current 5-minute candle timestamp (round down to nearest 5 minutes)
-                    current_timestamp_ms = ticker_data.get('timestamp', 0)
-                    # Binance timestamps are in milliseconds, round to nearest 5-minute interval
-                    current_5min_timestamp = (current_timestamp_ms // 300000) * 300000  # 300000ms = 5 minutes
+                    # Get signal data from cache
+                    signal_data = signal_cache.get(symbol, {})
                     
-                    # Check if this is a new 5-minute candle
-                    last_5min_timestamp = last_candle_timestamps.get(symbol, 0)
-                    is_new_candle = (current_5min_timestamp > last_5min_timestamp)
+                    # Process new candle through commentary service
+                    new_messages = await commentary_service.process_new_candle(
+                        symbol,
+                        ticker_data,
+                        signal_data
+                    )
                     
-                    # Only generate commentary when new candle is formed
-                    if is_new_candle:
-                        # Get signal data from cache
-                        signal_data = signal_cache.get(symbol, {})
-                        validation_checks = signal_data.get('validation_checks', {})
-                        indicators = validation_checks.get('indicators', {})
-                        
-                        # Build current data dict for commentary generator
-                        current_data = {
-                            'price': ticker_data.get('price', 0),
-                            'high': ticker_data.get('high_24h', 0),
-                            'low': ticker_data.get('low_24h', 0),
-                            'volume': ticker_data.get('volume_24h', 0),
-                            'timestamp': current_5min_timestamp,
-                            'candle_pattern': signal_data.get('candle_pattern', ''),
-                            'signal': signal_data.get('signal'),
-                            'signal_priority': signal_data.get('signal_priority'),
-                            'signal_reason': signal_data.get('signal_reason'),
-                            'vwap': indicators.get('vwap'),
-                            'rsi': indicators.get('rsi'),
-                            'buy_conditions_met': validation_checks.get('buy_conditions_met', 0),
-                            'buy_conditions_total': validation_checks.get('buy_conditions_total', 8),
-                            'sell_conditions_met': validation_checks.get('sell_conditions_met', 0),
-                            'sell_conditions_total': validation_checks.get('sell_conditions_total', 8)
-                        }
-                        
-                        # Get previous data for comparison
-                        previous_data = previous_data_cache.get(symbol)
-                        
-                        # Generate commentary messages
-                        messages = commentary_gen.generate_commentary(
-                            symbol,
-                            current_data,
-                            previous_data
-                        )
-                        
-                        # Add messages to collection
-                        all_messages.extend(messages)
-                        
-                        # Update caches
-                        last_candle_timestamps[symbol] = current_5min_timestamp
-                        previous_data_cache[symbol] = current_data.copy()
+                    if new_messages:
+                        all_messages.extend(new_messages)
                 
-                # Send commentary messages if any
+                # Send new commentary messages if any
                 if all_messages:
                     # Sort by timestamp (oldest first)
                     all_messages.sort(key=lambda x: x.get('timestamp', 0))
@@ -1737,7 +1717,7 @@ async def binance_futures_commentary_websocket(websocket: WebSocket):
                     
                     try:
                         await websocket.send_json(all_messages)
-                        print(f"[Binance Commentary WS] Sent {len(all_messages)} commentary messages")
+                        print(f"[Binance Commentary WS] Sent {len(all_messages)} new commentary messages")
                     except RuntimeError as e:
                         if 'close message' in str(e).lower():
                             print("[Binance Commentary WS] WebSocket closed, breaking loop")
@@ -1745,7 +1725,6 @@ async def binance_futures_commentary_websocket(websocket: WebSocket):
                         raise
                 
                 # Wait 10 seconds before checking for new candles again
-                # (5-minute candles form every 5 minutes, so checking every 10 seconds is sufficient)
                 await asyncio.sleep(10)
                 
             except RuntimeError as e:

@@ -256,6 +256,10 @@ async def startup_event():
     
     # Start instruments cache refresh task (daily at 8:30 AM)
     asyncio.create_task(refresh_instruments_cache_daily())
+    
+    # Initialize Binance commentary service with historical data
+    from utils.binance_commentary_service import initialize_commentary_service
+    asyncio.create_task(initialize_commentary_service())
 
 # Simulation state and helpers moved to simulation/ module
 

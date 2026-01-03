@@ -33,10 +33,14 @@ async def fetch_klines(symbol: str, interval: str, limit: int = 100) -> List[dic
             )
             resp.raise_for_status()
             data = resp.json()
-            # Binance kline format: [open_time, open, high, low, close, volume, ...]
-            # Extract OHLCV data (indices: 1=open, 2=high, 3=low, 4=close, 5=volume)
+            # Binance kline format: [open_time, open, high, low, close, volume, close_time, ...]
+            # Extract OHLCV data with timestamps
+            # Indices: 0=open_time, 1=open, 2=high, 3=low, 4=close, 5=volume, 6=close_time
             klines = [
                 {
+                    "open_time": int(k[0]),  # Open time in milliseconds
+                    "close_time": int(k[6]),  # Close time in milliseconds
+                    "timestamp": int(k[6]),  # Use close_time as primary timestamp
                     "open": float(k[1]),
                     "high": float(k[2]),
                     "low": float(k[3]),
