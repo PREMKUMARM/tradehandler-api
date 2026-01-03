@@ -14,9 +14,9 @@
   },
   "summary": {
     "total_instruments": 6,
-    "total_signals": 195,
-    "total_profit": -8.34,
-    "avg_profit_per_signal": -0.04,
+    "total_signals": 130,
+    "total_profit": -9.54,
+    "avg_profit_per_signal": -0.07,
     "profitable_instruments": 0,
     "loss_instruments": 4,
     "test_period": {
@@ -29,27 +29,13 @@
     {
       "instrument": "1000PEPEUSDT",
       "instrument_token": "1000PEPEUSDT",
-      "total_signals": 2,
+      "total_signals": 1,
       "total_profit": -0.0,
       "avg_profit": -0.0,
       "win_rate": 0.0,
       "profitable_signals": 0,
-      "loss_signals": 2,
+      "loss_signals": 1,
       "orders": [
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764722100,
-          "entry_time": "2025-12-03 00:35:00",
-          "exit_time": "2025-12-03 01:55:00",
-          "entry_price": 0.0,
-          "exit_price": 0.0,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.25%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
         {
           "date": "2025-12-03",
           "timestamp": 1764723600,
@@ -57,24 +43,25 @@
           "exit_time": "2025-12-03 01:55:00",
           "entry_price": 0.0,
           "exit_price": 0.0,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.66,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.03%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         }
       ]
     },
     {
       "instrument": "XRPUSDT",
       "instrument_token": "XRPUSDT",
-      "total_signals": 29,
-      "total_profit": -0.19,
+      "total_signals": 20,
+      "total_profit": -0.24,
       "avg_profit": -0.01,
-      "win_rate": 31.03,
-      "profitable_signals": 9,
-      "loss_signals": 20,
+      "win_rate": 15.0,
+      "profitable_signals": 3,
+      "loss_signals": 17,
       "orders": [
         {
           "date": "2025-12-03",
@@ -83,12 +70,13 @@
           "exit_time": "2025-12-03 01:45:00",
           "entry_price": 2.17,
           "exit_price": 2.16,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.72,
           "candle_type": "Morning Star",
           "signal_reason": "Scalping BUY: Morning Star above VWAP (VWAP dist: 0.09%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -97,12 +85,13 @@
           "exit_time": "2025-12-03 01:45:00",
           "entry_price": 2.18,
           "exit_price": 2.16,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.23%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -111,12 +100,13 @@
           "exit_time": "2025-12-03 01:45:00",
           "entry_price": 2.18,
           "exit_price": 2.16,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Inverted Hammer",
           "signal_reason": "Scalping BUY: Inverted Hammer above VWAP (VWAP dist: 0.25%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -125,12 +115,13 @@
           "exit_time": "2025-12-03 01:55:00",
           "entry_price": 2.17,
           "exit_price": 2.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.04%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -139,12 +130,13 @@
           "exit_time": "2025-12-03 05:05:00",
           "entry_price": 2.17,
           "exit_price": 2.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.24%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -153,12 +145,13 @@
           "exit_time": "2025-12-03 05:30:00",
           "entry_price": 2.17,
           "exit_price": 2.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.11%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -167,68 +160,13 @@
           "exit_time": "2025-12-03 05:30:00",
           "entry_price": 2.17,
           "exit_price": 2.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Hammer",
           "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 0.11%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764747000,
-          "entry_time": "2025-12-03 07:30:00",
-          "exit_time": "2025-12-03 07:55:00",
-          "entry_price": 2.17,
-          "exit_price": 2.19,
-          "qty": 1,
-          "profit": 0.02,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.39%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764747600,
-          "entry_time": "2025-12-03 07:40:00",
-          "exit_time": "2025-12-03 08:30:00",
-          "entry_price": 2.17,
-          "exit_price": 2.19,
-          "qty": 1,
-          "profit": 0.02,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.52%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764748200,
-          "entry_time": "2025-12-03 07:50:00",
-          "exit_time": "2025-12-03 10:20:00",
-          "entry_price": 2.18,
-          "exit_price": 2.19,
-          "qty": 1,
-          "profit": 0.02,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.69%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764750600,
-          "entry_time": "2025-12-03 08:30:00",
-          "exit_time": "2025-12-03 10:30:00",
-          "entry_price": 2.18,
-          "exit_price": 2.2,
-          "qty": 1,
-          "profit": 0.02,
-          "profit_percent": 0.7,
-          "candle_type": "Inverted Hammer",
-          "signal_reason": "Scalping BUY: Inverted Hammer (Confirmed) above VWAP (VWAP dist: 0.84%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -237,40 +175,13 @@
           "exit_time": "2025-12-03 10:30:00",
           "entry_price": 2.18,
           "exit_price": 2.2,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.02,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.84%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764756900,
-          "entry_time": "2025-12-03 10:15:00",
-          "exit_time": "2025-12-03 10:35:00",
-          "entry_price": 2.19,
-          "exit_price": 2.21,
-          "qty": 1,
-          "profit": 0.02,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.19%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764760500,
-          "entry_time": "2025-12-03 11:15:00",
-          "exit_time": "2025-12-03 12:10:00",
-          "entry_price": 2.21,
-          "exit_price": 2.2,
-          "qty": 1,
-          "profit": -0.01,
-          "profit_percent": -0.4,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.67%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -279,12 +190,13 @@
           "exit_time": "2025-12-03 19:30:00",
           "entry_price": 2.18,
           "exit_price": 2.16,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Morning Star",
           "signal_reason": "Scalping BUY: Morning Star above VWAP (VWAP dist: 0.15%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -293,12 +205,13 @@
           "exit_time": "2025-12-03 20:20:00",
           "entry_price": 2.19,
           "exit_price": 2.17,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.81%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -307,12 +220,13 @@
           "exit_time": "2025-12-03 23:40:00",
           "entry_price": 2.18,
           "exit_price": 2.19,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.02,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.10%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -321,12 +235,13 @@
           "exit_time": "2025-12-04 00:20:00",
           "entry_price": 2.18,
           "exit_price": 2.17,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.01,
           "profit_percent": -0.37,
           "candle_type": "Hammer",
           "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 0.17%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -335,12 +250,13 @@
           "exit_time": "2025-12-04 00:20:00",
           "entry_price": 2.18,
           "exit_price": 2.17,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.01,
           "profit_percent": -0.65,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.45%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -349,12 +265,13 @@
           "exit_time": "2025-12-04 00:20:00",
           "entry_price": 2.18,
           "exit_price": 2.17,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.01,
           "profit_percent": -0.67,
           "candle_type": "Dragonfly Doji",
           "signal_reason": "Scalping BUY: Dragonfly Doji above VWAP (VWAP dist: 0.47%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -363,12 +280,13 @@
           "exit_time": "2025-12-04 00:20:00",
           "entry_price": 2.19,
           "exit_price": 2.17,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.83,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.62%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -377,12 +295,13 @@
           "exit_time": "2025-12-04 00:20:00",
           "entry_price": 2.19,
           "exit_price": 2.17,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.70%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -391,40 +310,13 @@
           "exit_time": "2025-12-04 02:20:00",
           "entry_price": 2.19,
           "exit_price": 2.2,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.02,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.55%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764814800,
-          "entry_time": "2025-12-04 02:20:00",
-          "exit_time": "2025-12-04 03:25:00",
-          "entry_price": 2.19,
-          "exit_price": 2.21,
-          "qty": 1,
-          "profit": 0.02,
-          "profit_percent": 0.7,
-          "candle_type": "Inverted Hammer",
-          "signal_reason": "Scalping BUY: Inverted Hammer (Confirmed) above VWAP (VWAP dist: 0.82%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764817500,
-          "entry_time": "2025-12-04 03:05:00",
-          "exit_time": "2025-12-04 05:40:00",
-          "entry_price": 2.2,
-          "exit_price": 2.19,
-          "qty": 1,
-          "profit": -0.01,
-          "profit_percent": -0.3,
-          "candle_type": "Dragonfly Doji",
-          "signal_reason": "Scalping BUY: Dragonfly Doji above VWAP (VWAP dist: 1.15%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -433,12 +325,13 @@
           "exit_time": "2025-12-04 07:30:00",
           "entry_price": 2.21,
           "exit_price": 2.19,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.02,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.47%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -447,26 +340,13 @@
           "exit_time": "2025-12-04 09:30:00",
           "entry_price": 2.21,
           "exit_price": 2.19,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.01,
           "profit_percent": -0.56,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.21%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764835500,
-          "entry_time": "2025-12-04 08:05:00",
-          "exit_time": "2025-12-04 10:15:00",
-          "entry_price": 2.21,
-          "exit_price": 2.19,
-          "qty": 1,
-          "profit": -0.02,
-          "profit_percent": -0.9,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.26%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -475,24 +355,25 @@
           "exit_time": "2025-12-04 10:05:00",
           "entry_price": 2.2,
           "exit_price": 2.19,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.01,
           "profit_percent": -0.52,
           "candle_type": "Morning Star",
           "signal_reason": "Scalping BUY: Morning Star above VWAP (VWAP dist: 1.06%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         }
       ]
     },
     {
       "instrument": "SOLUSDT",
       "instrument_token": "SOLUSDT",
-      "total_signals": 47,
-      "total_profit": -8.1,
-      "avg_profit": -0.17,
-      "win_rate": 40.43,
-      "profitable_signals": 19,
-      "loss_signals": 28,
+      "total_signals": 36,
+      "total_profit": -9.27,
+      "avg_profit": -0.26,
+      "win_rate": 36.11,
+      "profitable_signals": 13,
+      "loss_signals": 23,
       "orders": [
         {
           "date": "2025-12-03",
@@ -501,12 +382,13 @@
           "exit_time": "2025-12-03 01:45:00",
           "entry_price": 140.05,
           "exit_price": 138.97,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.08,
           "profit_percent": -0.77,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.11%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -515,12 +397,13 @@
           "exit_time": "2025-12-03 01:45:00",
           "entry_price": 140.15,
           "exit_price": 138.97,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.18,
           "profit_percent": -0.84,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.16%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -529,68 +412,13 @@
           "exit_time": "2025-12-03 01:45:00",
           "entry_price": 140.56,
           "exit_price": 139.29,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.27,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.40%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764735900,
-          "entry_time": "2025-12-03 04:25:00",
-          "exit_time": "2025-12-03 05:20:00",
-          "entry_price": 139.9,
-          "exit_price": 138.64,
-          "qty": 1,
-          "profit": -1.26,
-          "profit_percent": -0.9,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.38%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764747000,
-          "entry_time": "2025-12-03 07:30:00",
-          "exit_time": "2025-12-03 08:30:00",
-          "entry_price": 139.48,
-          "exit_price": 140.46,
-          "qty": 1,
-          "profit": 0.98,
-          "profit_percent": 0.7,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.28%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764747600,
-          "entry_time": "2025-12-03 07:40:00",
-          "exit_time": "2025-12-03 09:50:00",
-          "entry_price": 139.75,
-          "exit_price": 140.73,
-          "qty": 1,
-          "profit": 0.98,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.47%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764756000,
-          "entry_time": "2025-12-03 10:00:00",
-          "exit_time": "2025-12-03 10:15:00",
-          "entry_price": 141.2,
-          "exit_price": 142.19,
-          "qty": 1,
-          "profit": 0.99,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.30%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -599,12 +427,13 @@
           "exit_time": "2025-12-03 16:45:00",
           "entry_price": 141.98,
           "exit_price": 140.7,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.28,
           "profit_percent": -0.9,
           "candle_type": "Inverted Hammer",
           "signal_reason": "Scalping BUY: Inverted Hammer above VWAP (VWAP dist: 0.98%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -613,12 +442,13 @@
           "exit_time": "2025-12-03 19:30:00",
           "entry_price": 141.8,
           "exit_price": 140.52,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.28,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.79%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -627,12 +457,13 @@
           "exit_time": "2025-12-03 19:30:00",
           "entry_price": 142.18,
           "exit_price": 140.9,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.28,
           "profit_percent": -0.9,
           "candle_type": "Morning Star",
           "signal_reason": "Scalping BUY: Morning Star above VWAP (VWAP dist: 1.04%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -641,12 +472,13 @@
           "exit_time": "2025-12-03 20:15:00",
           "entry_price": 143.02,
           "exit_price": 141.73,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.29,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.64%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -655,12 +487,13 @@
           "exit_time": "2025-12-04 03:00:00",
           "entry_price": 141.64,
           "exit_price": 142.63,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.99,
           "profit_percent": 0.7,
           "candle_type": "Hammer",
           "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 0.57%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -669,12 +502,13 @@
           "exit_time": "2025-12-04 16:30:00",
           "entry_price": 143.56,
           "exit_price": 143.1,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.46,
           "profit_percent": -0.32,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.13%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -683,12 +517,13 @@
           "exit_time": "2025-12-04 16:30:00",
           "entry_price": 143.87,
           "exit_price": 143.1,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.77,
           "profit_percent": -0.54,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.35%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -697,12 +532,13 @@
           "exit_time": "2025-12-04 16:30:00",
           "entry_price": 143.91,
           "exit_price": 143.1,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.81,
           "profit_percent": -0.56,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.37%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -711,12 +547,13 @@
           "exit_time": "2025-12-04 17:00:00",
           "entry_price": 144.11,
           "exit_price": 142.81,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.3,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.51%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -725,40 +562,13 @@
           "exit_time": "2025-12-04 17:45:00",
           "entry_price": 143.92,
           "exit_price": 142.62,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.3,
           "profit_percent": -0.9,
           "candle_type": "Inverted Hammer",
           "signal_reason": "Scalping BUY: Inverted Hammer above VWAP (VWAP dist: 1.37%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764871800,
-          "entry_time": "2025-12-04 18:10:00",
-          "exit_time": "2025-12-04 20:20:00",
-          "entry_price": 143.02,
-          "exit_price": 141.73,
-          "qty": 1,
-          "profit": -1.29,
-          "profit_percent": -0.9,
-          "candle_type": "Inverted Hammer",
-          "signal_reason": "Scalping BUY: Inverted Hammer above VWAP (VWAP dist: 0.71%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764882300,
-          "entry_time": "2025-12-04 21:05:00",
-          "exit_time": "2025-12-04 21:15:00",
-          "entry_price": 144.07,
-          "exit_price": 142.77,
-          "qty": 1,
-          "profit": -1.3,
-          "profit_percent": -0.9,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.42%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -767,12 +577,13 @@
           "exit_time": "2025-12-04 22:05:00",
           "entry_price": 143.57,
           "exit_price": 142.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.14,
           "profit_percent": -0.79,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.06%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -781,40 +592,13 @@
           "exit_time": "2025-12-04 22:05:00",
           "entry_price": 143.63,
           "exit_price": 142.34,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.29,
           "profit_percent": -0.9,
           "candle_type": "Hammer",
           "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 1.10%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-08",
-          "timestamp": 1765207200,
-          "entry_time": "2025-12-08 15:20:00",
-          "exit_time": "2025-12-08 16:15:00",
-          "entry_price": 138.01,
-          "exit_price": 138.98,
-          "qty": 1,
-          "profit": 0.97,
-          "profit_percent": 0.7,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.36%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-08",
-          "timestamp": 1765220400,
-          "entry_time": "2025-12-08 19:00:00",
-          "exit_time": "2025-12-08 19:55:00",
-          "entry_price": 138.41,
-          "exit_price": 137.9,
-          "qty": 1,
-          "profit": -0.51,
-          "profit_percent": -0.37,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.63%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-08",
@@ -823,12 +607,13 @@
           "exit_time": "2025-12-08 19:55:00",
           "entry_price": 138.64,
           "exit_price": 137.9,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.74,
           "profit_percent": -0.53,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.80%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-08",
@@ -837,12 +622,13 @@
           "exit_time": "2025-12-08 19:55:00",
           "entry_price": 138.76,
           "exit_price": 137.51,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.25,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.88%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -851,12 +637,13 @@
           "exit_time": "2025-12-10 07:30:00",
           "entry_price": 137.62,
           "exit_price": 137.33,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.29,
           "profit_percent": -0.21,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.14%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -865,12 +652,13 @@
           "exit_time": "2025-12-10 09:45:00",
           "entry_price": 137.68,
           "exit_price": 138.64,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.96,
           "profit_percent": 0.7,
           "candle_type": "Morning Star",
           "signal_reason": "Scalping BUY: Morning Star above VWAP (VWAP dist: 0.18%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -879,12 +667,13 @@
           "exit_time": "2025-12-10 10:00:00",
           "entry_price": 138.19,
           "exit_price": 139.16,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.97,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.55%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -893,12 +682,13 @@
           "exit_time": "2025-12-10 10:05:00",
           "entry_price": 138.52,
           "exit_price": 139.49,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.97,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.79%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -907,12 +697,13 @@
           "exit_time": "2025-12-10 10:05:00",
           "entry_price": 138.22,
           "exit_price": 139.19,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.97,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.57%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -921,12 +712,13 @@
           "exit_time": "2025-12-10 12:45:00",
           "entry_price": 139.16,
           "exit_price": 138.36,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.8,
           "profit_percent": -0.57,
           "candle_type": "Hammer",
           "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 1.25%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -935,26 +727,13 @@
           "exit_time": "2025-12-10 15:30:00",
           "entry_price": 138.72,
           "exit_price": 139.69,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.97,
           "profit_percent": 0.7,
           "candle_type": "Bullish Engulfing",
           "signal_reason": "Scalping BUY: Bullish Engulfing above VWAP (VWAP dist: 0.91%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-11",
-          "timestamp": 1765411200,
-          "entry_time": "2025-12-11 00:00:00",
-          "exit_time": "2025-12-11 00:05:00",
-          "entry_price": 137.84,
-          "exit_price": 138.8,
-          "qty": 1,
-          "profit": 0.96,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.29%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-11",
@@ -963,12 +742,13 @@
           "exit_time": "2025-12-11 00:45:00",
           "entry_price": 138.14,
           "exit_price": 139.11,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.97,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.50%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-11",
@@ -977,12 +757,13 @@
           "exit_time": "2025-12-11 01:40:00",
           "entry_price": 139.3,
           "exit_price": 140.28,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.98,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.34%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-12",
@@ -991,12 +772,13 @@
           "exit_time": "2025-12-12 06:15:00",
           "entry_price": 137.05,
           "exit_price": 136.12,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.93,
           "profit_percent": -0.68,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.12%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-12",
@@ -1005,26 +787,13 @@
           "exit_time": "2025-12-12 08:45:00",
           "entry_price": 137.11,
           "exit_price": 136.79,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.32,
           "profit_percent": -0.23,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.16%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-12",
-          "timestamp": 1765522800,
-          "entry_time": "2025-12-12 07:00:00",
-          "exit_time": "2025-12-12 08:45:00",
-          "entry_price": 137.11,
-          "exit_price": 136.79,
-          "qty": 1,
-          "profit": -0.32,
-          "profit_percent": -0.23,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.16%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-12",
@@ -1033,12 +802,13 @@
           "exit_time": "2025-12-12 08:45:00",
           "entry_price": 137.06,
           "exit_price": 136.79,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.27,
           "profit_percent": -0.2,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.13%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-12",
@@ -1047,12 +817,13 @@
           "exit_time": "2025-12-12 11:15:00",
           "entry_price": 137.17,
           "exit_price": 138.13,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.96,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.20%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-12",
@@ -1061,12 +832,13 @@
           "exit_time": "2025-12-12 11:15:00",
           "entry_price": 137.25,
           "exit_price": 138.21,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.96,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.26%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-12",
@@ -1075,26 +847,13 @@
           "exit_time": "2025-12-12 11:15:00",
           "entry_price": 137.6,
           "exit_price": 138.56,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.96,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.52%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-12",
-          "timestamp": 1765559400,
-          "entry_time": "2025-12-12 17:10:00",
-          "exit_time": "2025-12-12 18:20:00",
-          "entry_price": 138.45,
-          "exit_price": 139.42,
-          "qty": 1,
-          "profit": 0.97,
-          "profit_percent": 0.7,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.11%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-12",
@@ -1103,12 +862,13 @@
           "exit_time": "2025-12-12 18:20:00",
           "entry_price": 138.69,
           "exit_price": 139.66,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.97,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.29%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-12",
@@ -1117,12 +877,13 @@
           "exit_time": "2025-12-12 18:20:00",
           "entry_price": 138.57,
           "exit_price": 139.54,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.97,
           "profit_percent": 0.7,
           "candle_type": "Hammer",
           "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 1.20%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-12",
@@ -1131,12 +892,13 @@
           "exit_time": "2025-12-12 20:15:00",
           "entry_price": 139.38,
           "exit_price": 138.37,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -1.01,
           "profit_percent": -0.72,
           "candle_type": "Dragonfly Doji",
           "signal_reason": "Scalping BUY: Dragonfly Doji above VWAP (VWAP dist: 1.78%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2026-01-03",
@@ -1145,53 +907,26 @@
           "exit_time": "2026-01-03 05:15:00",
           "entry_price": 132.63,
           "exit_price": 132.08,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.55,
           "profit_percent": -0.41,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 2.23%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         }
       ]
     },
     {
       "instrument": "ADAUSDT",
       "instrument_token": "ADAUSDT",
-      "total_signals": 64,
-      "total_profit": -0.04,
+      "total_signals": 37,
+      "total_profit": -0.02,
       "avg_profit": -0.0,
-      "win_rate": 39.06,
-      "profitable_signals": 25,
-      "loss_signals": 39,
+      "win_rate": 40.54,
+      "profitable_signals": 15,
+      "loss_signals": 22,
       "orders": [
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764721500,
-          "entry_time": "2025-12-03 00:25:00",
-          "exit_time": "2025-12-03 00:55:00",
-          "entry_price": 0.43,
-          "exit_price": 0.43,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Hammer",
-          "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 0.13%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764723000,
-          "entry_time": "2025-12-03 00:50:00",
-          "exit_time": "2025-12-03 01:05:00",
-          "entry_price": 0.43,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Hammer",
-          "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 0.43%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
         {
           "date": "2025-12-03",
           "timestamp": 1764723600,
@@ -1199,12 +934,13 @@
           "exit_time": "2025-12-03 02:05:00",
           "entry_price": 0.43,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.37,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.78%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1213,26 +949,13 @@
           "exit_time": "2025-12-03 02:05:00",
           "entry_price": 0.44,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.05%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764726600,
-          "entry_time": "2025-12-03 01:50:00",
-          "exit_time": "2025-12-03 02:05:00",
-          "entry_price": 0.44,
-          "exit_price": 0.43,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.56%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1241,12 +964,13 @@
           "exit_time": "2025-12-03 03:35:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.37,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.66%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1255,12 +979,13 @@
           "exit_time": "2025-12-03 05:10:00",
           "entry_price": 0.44,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.82%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1269,26 +994,13 @@
           "exit_time": "2025-12-03 05:10:00",
           "entry_price": 0.44,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.72%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764737100,
-          "entry_time": "2025-12-03 04:45:00",
-          "exit_time": "2025-12-03 05:20:00",
-          "entry_price": 0.44,
-          "exit_price": 0.43,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.61%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1297,12 +1009,13 @@
           "exit_time": "2025-12-03 09:45:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.49%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1311,12 +1024,13 @@
           "exit_time": "2025-12-03 09:45:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.65%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1325,12 +1039,13 @@
           "exit_time": "2025-12-03 09:45:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.81%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1339,26 +1054,13 @@
           "exit_time": "2025-12-03 10:35:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.05%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764759600,
-          "entry_time": "2025-12-03 11:00:00",
-          "exit_time": "2025-12-03 11:25:00",
-          "entry_price": 0.44,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.63,
-          "candle_type": "Hammer",
-          "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 1.57%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1367,12 +1069,13 @@
           "exit_time": "2025-12-03 11:45:00",
           "entry_price": 0.44,
           "exit_price": 0.45,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.51%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1381,26 +1084,13 @@
           "exit_time": "2025-12-03 15:00:00",
           "entry_price": 0.45,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Inverted Hammer",
           "signal_reason": "Scalping BUY: Inverted Hammer above VWAP (VWAP dist: 1.79%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764772800,
-          "entry_time": "2025-12-03 14:40:00",
-          "exit_time": "2025-12-03 15:00:00",
-          "entry_price": 0.44,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.47%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1409,12 +1099,13 @@
           "exit_time": "2025-12-03 20:15:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.54%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1423,12 +1114,13 @@
           "exit_time": "2025-12-03 23:05:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Hammer",
           "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 0.36%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -1437,68 +1129,13 @@
           "exit_time": "2025-12-03 23:05:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.45%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764802800,
-          "entry_time": "2025-12-03 23:00:00",
-          "exit_time": "2025-12-03 23:45:00",
-          "entry_price": 0.44,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.2,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.93%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764804600,
-          "entry_time": "2025-12-03 23:30:00",
-          "exit_time": "2025-12-04 02:20:00",
-          "entry_price": 0.44,
-          "exit_price": 0.45,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.35%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764805200,
-          "entry_time": "2025-12-03 23:40:00",
-          "exit_time": "2025-12-04 02:20:00",
-          "entry_price": 0.44,
-          "exit_price": 0.45,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.32%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764812700,
-          "entry_time": "2025-12-04 01:45:00",
-          "exit_time": "2025-12-04 02:20:00",
-          "entry_price": 0.45,
-          "exit_price": 0.45,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Dragonfly Doji",
-          "signal_reason": "Scalping BUY: Dragonfly Doji above VWAP (VWAP dist: 1.81%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -1507,12 +1144,13 @@
           "exit_time": "2025-12-04 02:20:00",
           "entry_price": 0.44,
           "exit_price": 0.45,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Hammer",
           "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 1.73%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -1521,12 +1159,13 @@
           "exit_time": "2025-12-04 12:00:00",
           "entry_price": 0.45,
           "exit_price": 0.45,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.65%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -1535,68 +1174,13 @@
           "exit_time": "2025-12-04 15:45:00",
           "entry_price": 0.45,
           "exit_price": 0.45,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.71,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 2.11%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764878100,
-          "entry_time": "2025-12-04 19:55:00",
-          "exit_time": "2025-12-04 20:20:00",
-          "entry_price": 0.45,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.30%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764884700,
-          "entry_time": "2025-12-04 21:45:00",
-          "exit_time": "2025-12-04 22:05:00",
-          "entry_price": 0.45,
-          "exit_price": 0.45,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 2.31%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-05",
-          "timestamp": 1764897300,
-          "entry_time": "2025-12-05 01:15:00",
-          "exit_time": "2025-12-05 02:55:00",
-          "entry_price": 0.44,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.61,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.20%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-05",
-          "timestamp": 1764916500,
-          "entry_time": "2025-12-05 06:35:00",
-          "exit_time": "2025-12-05 08:50:00",
-          "entry_price": 0.44,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.5,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.09%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-05",
@@ -1605,12 +1189,13 @@
           "exit_time": "2025-12-05 08:50:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.43,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.03%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-05",
@@ -1619,12 +1204,13 @@
           "exit_time": "2025-12-05 08:50:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.61,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.21%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-05",
@@ -1633,12 +1219,13 @@
           "exit_time": "2025-12-05 10:00:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.14%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-05",
@@ -1647,12 +1234,13 @@
           "exit_time": "2025-12-05 10:50:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Inverted Hammer",
           "signal_reason": "Scalping BUY: Inverted Hammer above VWAP (VWAP dist: 0.01%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-08",
@@ -1661,40 +1249,13 @@
           "exit_time": "2025-12-08 14:35:00",
           "entry_price": 0.43,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.23%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-08",
-          "timestamp": 1765204200,
-          "entry_time": "2025-12-08 14:30:00",
-          "exit_time": "2025-12-08 14:35:00",
-          "entry_price": 0.43,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.65%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-08",
-          "timestamp": 1765205400,
-          "entry_time": "2025-12-08 14:50:00",
-          "exit_time": "2025-12-08 15:55:00",
-          "entry_price": 0.44,
-          "exit_price": 0.43,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.44,
-          "candle_type": "Inverted Hammer",
-          "signal_reason": "Scalping BUY: Inverted Hammer above VWAP (VWAP dist: 1.03%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-08",
@@ -1703,54 +1264,13 @@
           "exit_time": "2025-12-08 18:40:00",
           "entry_price": 0.43,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.23%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-08",
-          "timestamp": 1765218900,
-          "entry_time": "2025-12-08 18:35:00",
-          "exit_time": "2025-12-08 19:40:00",
-          "entry_price": 0.43,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.58%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-08",
-          "timestamp": 1765219800,
-          "entry_time": "2025-12-08 18:50:00",
-          "exit_time": "2025-12-08 19:40:00",
-          "entry_price": 0.43,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Inverted Hammer",
-          "signal_reason": "Scalping BUY: Inverted Hammer (Confirmed) above VWAP (VWAP dist: 0.48%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-08",
-          "timestamp": 1765220400,
-          "entry_time": "2025-12-08 19:00:00",
-          "exit_time": "2025-12-08 20:00:00",
-          "entry_price": 0.43,
-          "exit_price": 0.44,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.90%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-08",
@@ -1759,12 +1279,13 @@
           "exit_time": "2025-12-08 20:00:00",
           "entry_price": 0.43,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Bullish Engulfing",
           "signal_reason": "Scalping BUY: Bullish Engulfing above VWAP (VWAP dist: 0.95%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-08",
@@ -1773,40 +1294,13 @@
           "exit_time": "2025-12-08 20:00:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.06%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-08",
-          "timestamp": 1765224000,
-          "entry_time": "2025-12-08 20:00:00",
-          "exit_time": "2025-12-08 20:05:00",
-          "entry_price": 0.44,
-          "exit_price": 0.43,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Bullish Engulfing",
-          "signal_reason": "Scalping BUY: Bullish Engulfing above VWAP (VWAP dist: 1.49%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-08",
-          "timestamp": 1765224600,
-          "entry_time": "2025-12-08 20:10:00",
-          "exit_time": "2025-12-08 20:25:00",
-          "entry_price": 0.44,
-          "exit_price": 0.43,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.86%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-08",
@@ -1815,12 +1309,13 @@
           "exit_time": "2025-12-08 22:20:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.5,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.58%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-08",
@@ -1829,12 +1324,13 @@
           "exit_time": "2025-12-08 22:40:00",
           "entry_price": 0.44,
           "exit_price": 0.44,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.62%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-09",
@@ -1843,26 +1339,13 @@
           "exit_time": "2025-12-09 04:05:00",
           "entry_price": 0.43,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.21,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.80%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-09",
-          "timestamp": 1765245900,
-          "entry_time": "2025-12-09 02:05:00",
-          "exit_time": "2025-12-09 04:05:00",
-          "entry_price": 0.43,
-          "exit_price": 0.43,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.23,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.82%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-09",
@@ -1871,12 +1354,13 @@
           "exit_time": "2025-12-09 04:25:00",
           "entry_price": 0.44,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.33%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-09",
@@ -1885,26 +1369,13 @@
           "exit_time": "2025-12-09 04:05:00",
           "entry_price": 0.44,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.53,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.12%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-09",
-          "timestamp": 1765250400,
-          "entry_time": "2025-12-09 03:20:00",
-          "exit_time": "2025-12-09 04:05:00",
-          "entry_price": 0.44,
-          "exit_price": 0.43,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.6,
-          "candle_type": "Bullish Engulfing",
-          "signal_reason": "Scalping BUY: Bullish Engulfing above VWAP (VWAP dist: 1.19%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-09",
@@ -1913,12 +1384,13 @@
           "exit_time": "2025-12-09 06:00:00",
           "entry_price": 0.43,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.32,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.35%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-09",
@@ -1927,68 +1399,13 @@
           "exit_time": "2025-12-09 10:00:00",
           "entry_price": 0.43,
           "exit_price": 0.43,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.56,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.14%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-09",
-          "timestamp": 1765299900,
-          "entry_time": "2025-12-09 17:05:00",
-          "exit_time": "2025-12-09 17:20:00",
-          "entry_price": 0.43,
-          "exit_price": 0.43,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Inverted Hammer",
-          "signal_reason": "Scalping BUY: Inverted Hammer (Confirmed) above VWAP (VWAP dist: 0.11%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2026-01-03",
-          "timestamp": 1767416100,
-          "entry_time": "2026-01-03 04:55:00",
-          "exit_time": "2026-01-03 05:50:00",
-          "entry_price": 0.4,
-          "exit_price": 0.4,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.84%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2026-01-03",
-          "timestamp": 1767418800,
-          "entry_time": "2026-01-03 05:40:00",
-          "exit_time": "2026-01-03 06:05:00",
-          "entry_price": 0.4,
-          "exit_price": 0.39,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.63,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.33%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2026-01-03",
-          "timestamp": 1767419400,
-          "entry_time": "2026-01-03 05:50:00",
-          "exit_time": "2026-01-03 06:05:00",
-          "entry_price": 0.4,
-          "exit_price": 0.39,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.63%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2026-01-03",
@@ -1997,12 +1414,13 @@
           "exit_time": "2026-01-03 06:50:00",
           "entry_price": 0.4,
           "exit_price": 0.39,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Dragonfly Doji",
           "signal_reason": "Scalping BUY: Dragonfly Doji above VWAP (VWAP dist: 1.22%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2026-01-03",
@@ -2011,12 +1429,13 @@
           "exit_time": "2026-01-03 10:45:00",
           "entry_price": 0.4,
           "exit_price": 0.39,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.45,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.12%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2026-01-03",
@@ -2025,12 +1444,28 @@
           "exit_time": "2026-01-03 10:45:00",
           "entry_price": 0.4,
           "exit_price": 0.39,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.48,
           "candle_type": "Dragonfly Doji",
           "signal_reason": "Scalping BUY: Dragonfly Doji above VWAP (VWAP dist: 1.15%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
+        },
+        {
+          "date": "2026-01-03",
+          "timestamp": 1767430500,
+          "entry_time": "2026-01-03 08:55:00",
+          "exit_time": "2026-01-03 09:10:00",
+          "entry_price": 0.4,
+          "exit_price": 0.4,
+          "qty": 1.0,
+          "profit": 0.0,
+          "profit_percent": 0.7,
+          "candle_type": "Piercing Pattern",
+          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.74%)",
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2026-01-03",
@@ -2039,38 +1474,25 @@
           "exit_time": "2026-01-03 10:45:00",
           "entry_price": 0.4,
           "exit_price": 0.39,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.58,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.25%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2026-01-03",
-          "timestamp": 1767432900,
-          "entry_time": "2026-01-03 09:35:00",
-          "exit_time": "2026-01-03 10:45:00",
-          "entry_price": 0.4,
-          "exit_price": 0.39,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Dragonfly Doji",
-          "signal_reason": "Scalping BUY: Dragonfly Doji above VWAP (VWAP dist: 1.55%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         }
       ]
     },
     {
       "instrument": "DOGEUSDT",
       "instrument_token": "DOGEUSDT",
-      "total_signals": 53,
+      "total_signals": 36,
       "total_profit": -0.01,
       "avg_profit": -0.0,
-      "win_rate": 41.51,
-      "profitable_signals": 22,
-      "loss_signals": 31,
+      "win_rate": 38.89,
+      "profitable_signals": 14,
+      "loss_signals": 22,
       "orders": [
         {
           "date": "2025-12-03",
@@ -2079,12 +1501,13 @@
           "exit_time": "2025-12-03 01:45:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.59,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.09%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2093,12 +1516,13 @@
           "exit_time": "2025-12-03 02:05:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.14%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2107,12 +1531,13 @@
           "exit_time": "2025-12-03 05:20:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.43,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.46%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2121,12 +1546,13 @@
           "exit_time": "2025-12-03 05:20:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.4,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.41%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2135,40 +1561,13 @@
           "exit_time": "2025-12-03 04:40:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Inverted Hammer",
           "signal_reason": "Scalping BUY: Inverted Hammer (Confirmed) above VWAP (VWAP dist: 0.29%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764734700,
-          "entry_time": "2025-12-03 04:05:00",
-          "exit_time": "2025-12-03 05:20:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.42,
-          "candle_type": "Morning Star",
-          "signal_reason": "Scalping BUY: Morning Star above VWAP (VWAP dist: 0.41%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764736500,
-          "entry_time": "2025-12-03 04:35:00",
-          "exit_time": "2025-12-03 05:20:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.74,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.68%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2177,12 +1576,13 @@
           "exit_time": "2025-12-03 07:40:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Inverted Hammer",
           "signal_reason": "Scalping BUY: Inverted Hammer (Confirmed) above VWAP (VWAP dist: 0.13%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2191,12 +1591,13 @@
           "exit_time": "2025-12-03 07:50:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.30%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2205,40 +1606,13 @@
           "exit_time": "2025-12-03 08:55:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Bullish Engulfing",
           "signal_reason": "Scalping BUY: Bullish Engulfing above VWAP (VWAP dist: 0.57%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764747600,
-          "entry_time": "2025-12-03 07:40:00",
-          "exit_time": "2025-12-03 09:50:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.81%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764748200,
-          "entry_time": "2025-12-03 07:50:00",
-          "exit_time": "2025-12-03 09:55:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.01%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2247,54 +1621,13 @@
           "exit_time": "2025-12-03 09:50:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Dragonfly Doji",
           "signal_reason": "Scalping BUY: Dragonfly Doji above VWAP (VWAP dist: 0.74%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764750900,
-          "entry_time": "2025-12-03 08:35:00",
-          "exit_time": "2025-12-03 09:50:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.70%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764752100,
-          "entry_time": "2025-12-03 08:55:00",
-          "exit_time": "2025-12-03 10:20:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.10%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764756000,
-          "entry_time": "2025-12-03 10:00:00",
-          "exit_time": "2025-12-03 10:25:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.30%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2303,12 +1636,13 @@
           "exit_time": "2025-12-03 16:30:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.92%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2317,12 +1651,13 @@
           "exit_time": "2025-12-03 16:30:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.83%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2331,12 +1666,13 @@
           "exit_time": "2025-12-03 16:30:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.73%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2345,12 +1681,13 @@
           "exit_time": "2025-12-03 19:30:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.23%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2359,12 +1696,13 @@
           "exit_time": "2025-12-03 20:20:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.36%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2373,12 +1711,13 @@
           "exit_time": "2025-12-03 22:05:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.53%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2387,12 +1726,13 @@
           "exit_time": "2025-12-03 22:45:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.94%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2401,12 +1741,13 @@
           "exit_time": "2025-12-03 23:05:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.32%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-03",
@@ -2415,54 +1756,13 @@
           "exit_time": "2025-12-03 23:40:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.59%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764803700,
-          "entry_time": "2025-12-03 23:15:00",
-          "exit_time": "2025-12-04 00:20:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.76,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 2.15%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764804600,
-          "entry_time": "2025-12-03 23:30:00",
-          "exit_time": "2025-12-04 00:20:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.71,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 2.09%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-03",
-          "timestamp": 1764805200,
-          "entry_time": "2025-12-03 23:40:00",
-          "exit_time": "2025-12-04 00:25:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Inverted Hammer",
-          "signal_reason": "Scalping BUY: Inverted Hammer above VWAP (VWAP dist: 2.13%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -2471,12 +1771,13 @@
           "exit_time": "2025-12-04 03:25:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Inverted Hammer",
           "signal_reason": "Scalping BUY: Inverted Hammer above VWAP (VWAP dist: 1.47%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -2485,26 +1786,13 @@
           "exit_time": "2025-12-04 03:25:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.65%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764821100,
-          "entry_time": "2025-12-04 04:05:00",
-          "exit_time": "2025-12-04 04:30:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 2.36%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -2513,54 +1801,13 @@
           "exit_time": "2025-12-04 05:05:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.33,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 2.41%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764829800,
-          "entry_time": "2025-12-04 06:30:00",
-          "exit_time": "2025-12-04 06:40:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Hammer",
-          "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 1.72%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764834900,
-          "entry_time": "2025-12-04 07:55:00",
-          "exit_time": "2025-12-04 08:40:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.43,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 2.15%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
-        },
-        {
-          "date": "2025-12-04",
-          "timestamp": 1764835500,
-          "entry_time": "2025-12-04 08:05:00",
-          "exit_time": "2025-12-04 08:50:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.9,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 2.32%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -2569,12 +1816,13 @@
           "exit_time": "2025-12-04 10:15:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Hammer",
           "signal_reason": "Scalping BUY: Hammer above VWAP (VWAP dist: 1.98%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -2583,12 +1831,13 @@
           "exit_time": "2025-12-04 16:50:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.58,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.64%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -2597,12 +1846,13 @@
           "exit_time": "2025-12-04 17:50:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.70%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -2611,12 +1861,13 @@
           "exit_time": "2025-12-04 17:50:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.70%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -2625,12 +1876,13 @@
           "exit_time": "2025-12-04 19:15:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.45,
           "candle_type": "Bullish Engulfing",
           "signal_reason": "Scalping BUY: Bullish Engulfing above VWAP (VWAP dist: 0.24%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-04",
@@ -2639,12 +1891,13 @@
           "exit_time": "2025-12-04 22:05:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.71,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 0.60%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -2653,12 +1906,13 @@
           "exit_time": "2025-12-10 11:20:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.02,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.54%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -2667,12 +1921,13 @@
           "exit_time": "2025-12-10 11:20:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.45,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.97%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -2681,26 +1936,13 @@
           "exit_time": "2025-12-10 12:35:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 2.14%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-10",
-          "timestamp": 1765359000,
-          "entry_time": "2025-12-10 09:30:00",
-          "exit_time": "2025-12-10 11:30:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.6,
-          "candle_type": "Bullish Engulfing",
-          "signal_reason": "Scalping BUY: Bullish Engulfing above VWAP (VWAP dist: 1.99%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -2709,12 +1951,13 @@
           "exit_time": "2025-12-10 11:30:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.6,
           "candle_type": "Morning Star",
           "signal_reason": "Scalping BUY: Morning Star above VWAP (VWAP dist: 2.00%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -2723,26 +1966,13 @@
           "exit_time": "2025-12-10 12:35:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.9,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 2.11%)",
-          "exit_reason": "Stop-loss triggered (0.9%)"
-        },
-        {
-          "date": "2025-12-10",
-          "timestamp": 1765380300,
-          "entry_time": "2025-12-10 15:25:00",
-          "exit_time": "2025-12-10 15:40:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": -0.0,
-          "profit_percent": -0.23,
-          "candle_type": "Piercing Pattern",
-          "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 1.87%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Stop-loss triggered (0.9%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -2751,12 +1981,13 @@
           "exit_time": "2025-12-11 00:05:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Piercing Pattern",
           "signal_reason": "Scalping BUY: Piercing Pattern above VWAP (VWAP dist: 0.91%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-10",
@@ -2765,26 +1996,13 @@
           "exit_time": "2025-12-11 00:05:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.09%)",
-          "exit_reason": "Profit target hit (0.7%)"
-        },
-        {
-          "date": "2025-12-10",
-          "timestamp": 1765407000,
-          "entry_time": "2025-12-10 22:50:00",
-          "exit_time": "2025-12-11 00:05:00",
-          "entry_price": 0.15,
-          "exit_price": 0.15,
-          "qty": 1,
-          "profit": 0.0,
-          "profit_percent": 0.7,
-          "candle_type": "Long White Candle",
-          "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.38%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-11",
@@ -2793,12 +2011,13 @@
           "exit_time": "2025-12-11 00:05:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": 0.0,
           "profit_percent": 0.7,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 1.46%)",
-          "exit_reason": "Profit target hit (0.7%)"
+          "exit_reason": "Profit target hit (0.7%)",
+          "position_size": 1.0
         },
         {
           "date": "2025-12-11",
@@ -2807,12 +2026,13 @@
           "exit_time": "2025-12-11 00:55:00",
           "entry_price": 0.15,
           "exit_price": 0.15,
-          "qty": 1,
+          "qty": 1.0,
           "profit": -0.0,
           "profit_percent": -0.61,
           "candle_type": "Long White Candle",
           "signal_reason": "Scalping BUY: Long White Candle above VWAP (VWAP dist: 2.03%)",
-          "exit_reason": "Trailing stop triggered (0.6% from high)"
+          "exit_reason": "Trailing stop triggered (0.6% from high)",
+          "position_size": 1.0
         }
       ]
     },

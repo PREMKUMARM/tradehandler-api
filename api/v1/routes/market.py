@@ -22,12 +22,43 @@ from core.dependencies import get_request_id
 from utils.binance_client import fetch_klines, fetch_multiple_klines
 from utils.binance_vwap import compute_vwap, compute_vwap_batch
 from utils.binance_signals import analyze_symbol_for_signals
+from core.config import get_settings
+
+def get_binance_symbols() -> list:
+    """Get Binance symbols from environment configuration"""
+    settings = get_settings()
+    symbols = settings.binance_symbols
+    if isinstance(symbols, str):
+        # Handle comma-separated string
+        symbols = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    elif isinstance(symbols, list):
+        # Ensure all symbols are uppercase
+        symbols = [s.upper() if isinstance(s, str) else str(s).upper() for s in symbols]
+    else:
+        # Fallback to default
+        symbols = ["1000PEPEUSDT"]
+    return symbols
 import httpx
+import hmac
+import hashlib
+import time
+from urllib.parse import urlencode
+
+# Binance Futures SDK imports
+try:
+    from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
+        DerivativesTradingUsdsFutures,
+        ConfigurationRestAPI
+    )
+    BINANCE_SDK_AVAILABLE = True
+except ImportError:
+    BINANCE_SDK_AVAILABLE = False
+    print("[Warning] binance-sdk-derivatives-trading-usds-futures not installed. Using manual API calls.")
 
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
 # Binance Monitor Configuration
-BINANCE_SYMBOLS = ["1000PEPEUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
+# BINANCE_SYMBOLS is now loaded from environment via get_binance_symbols()
 BINANCE_TIMEFRAMES = ["1m", "5m", "15m", "30m"]
 # Global storage for latest VWAP data (in-memory cache)
 _latest_binance_vwap_data = {}
@@ -710,7 +741,8 @@ async def update_binance_vwap_data():
     while True:
         try:
             # Fetch klines for all symbols and timeframes
-            klines_data = await fetch_multiple_klines(BINANCE_SYMBOLS, BINANCE_TIMEFRAMES, limit=100)
+            binance_symbols = get_binance_symbols()
+            klines_data = await fetch_multiple_klines(binance_symbols, BINANCE_TIMEFRAMES, limit=100)
             
             # Calculate VWAP for all
             vwap_data = compute_vwap_batch(klines_data)
@@ -729,6 +761,30 @@ async def update_binance_vwap_data():
             print(f"[Binance Monitor] Error updating VWAP data: {e}")
             traceback.print_exc()
             await asyncio.sleep(5)  # Wait even on error to avoid tight loop
+
+
+@router.get("/binance-futures/symbols")
+async def get_binance_futures_symbols(request: Request):
+    """
+    Get configured Binance Futures symbols from environment
+    
+    Returns:
+        List of symbols configured in BINANCE_SYMBOLS env variable
+    """
+    request_id = get_request_id(request)
+    
+    try:
+        symbols = get_binance_symbols()
+        return SuccessResponse(
+            data={"symbols": symbols},
+            message=f"Binance Futures symbols retrieved successfully",
+            request_id=request_id
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving symbols: {str(e)}"
+        )
 
 
 @router.get("/binance-vwap")
@@ -845,8 +901,8 @@ async def get_binance_futures_live_prices(request: Request, symbols: str = None,
     Get live prices for Binance Futures symbols
     
     Args:
-        symbols: Comma-separated list of symbols (e.g., "ETHUSDT,SOLUSDT"). 
-                 If not provided, returns prices for default BINANCE_SYMBOLS.
+        symbols: Comma-separated list of symbols (e.g., "1000PEPEUSDT,ETHUSDT"). 
+                 If not provided, returns prices for symbols from BINANCE_SYMBOLS env variable.
         include_signals: If True, includes candle pattern and trading signals (slower).
     
     Returns:
@@ -859,7 +915,7 @@ async def get_binance_futures_live_prices(request: Request, symbols: str = None,
         if symbols:
             symbol_list = [s.strip().upper() for s in symbols.split(",")]
         else:
-            symbol_list = BINANCE_SYMBOLS
+            symbol_list = get_binance_symbols()
         
         # Fetch 24h ticker statistics from Binance Futures API
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1102,6 +1158,198 @@ async def validate_binance_signals(
         )
 
 
+@router.get("/binance-futures/balance")
+async def get_binance_futures_balance(request: Request):
+    """
+    Get Binance Futures wallet balance using official Binance SDK
+    
+    Returns:
+        Account balance information including USDT and other assets
+    """
+    request_id = get_request_id(request)
+    
+    try:
+        settings = get_settings()
+        api_key = settings.binance_api_key
+        api_secret = settings.binance_api_secret
+        
+        if not api_key or not api_secret:
+            raise HTTPException(
+                status_code=400,
+                detail="Binance API key and secret not configured. Please set BINANCE_API_KEY and BINANCE_API_SECRET in .env file"
+            )
+        
+        # Use official Binance SDK if available, otherwise fallback to manual API calls
+        if BINANCE_SDK_AVAILABLE:
+            try:
+                # Initialize Binance Futures client using official SDK
+                # Reference: https://github.com/binance/binance-connector-python/blob/master/clients/derivatives_trading_usds_futures/docs/migration_guide_derivatives_trading_usds_futures_sdk.md
+                configuration = ConfigurationRestAPI(
+                    api_key=api_key,
+                    api_secret=api_secret
+                )
+                client = DerivativesTradingUsdsFutures(config_rest_api=configuration)
+                
+                # Get account balance using official SDK
+                # Reference: https://binance-docs.github.io/apidocs/futures/en/#futures-account-balance-v2
+                # The endpoint is /fapi/v2/balance which returns list of asset balances
+                # SDK method name may vary, try common patterns
+                balance_data = []
+                try:
+                    # Try common SDK method names for balance endpoint
+                    if hasattr(client.rest_api, 'account_balance_v2'):
+                        balance_response = client.rest_api.account_balance_v2()
+                    elif hasattr(client.rest_api, 'balance'):
+                        balance_response = client.rest_api.balance()
+                    elif hasattr(client.rest_api, 'futures_account_balance'):
+                        balance_response = client.rest_api.futures_account_balance()
+                    else:
+                        # Fallback: use account information and extract assets
+                        balance_response = client.rest_api.account_information_v2()
+                        if isinstance(balance_response, dict) and 'assets' in balance_response:
+                            balance_data = balance_response['assets']
+                        else:
+                            raise AttributeError("Balance method not found")
+                    
+                    # Handle different response formats from SDK
+                    if isinstance(balance_response, list):
+                        balance_data = balance_response
+                    elif hasattr(balance_response, 'data'):
+                        balance_data = balance_response.data if isinstance(balance_response.data, list) else []
+                    elif isinstance(balance_response, dict):
+                        balance_data = balance_response.get('data', balance_response.get('assets', []))
+                        if not isinstance(balance_data, list):
+                            balance_data = []
+                except (AttributeError, KeyError) as e:
+                    print(f"[Binance SDK] Method not found or unexpected response format: {e}")
+                    raise  # Re-raise to trigger fallback
+                
+            except Exception as sdk_error:
+                print(f"[Binance SDK] Error using official SDK, falling back to manual API: {sdk_error}")
+                # Fallback to manual API call
+                balance_data = await _fetch_balance_manual(api_key, api_secret)
+        else:
+            # Use manual API call if SDK not available
+            balance_data = await _fetch_balance_manual(api_key, api_secret)
+        
+        # Filter and format balance data (show only assets with balance > 0)
+        formatted_balances = []
+        total_usdt_balance = 0.0
+        
+        for asset in balance_data:
+            balance = float(asset.get('balance', 0))
+            available = float(asset.get('availableBalance', 0))
+            asset_name = asset.get('asset', '')
+            
+            if balance > 0 or asset_name == 'USDT':  # Always show USDT
+                formatted_balances.append({
+                    "asset": asset_name,
+                    "balance": round(balance, 8),
+                    "available_balance": round(available, 8),
+                    "cross_wallet_balance": round(float(asset.get('crossWalletBalance', 0)), 8),
+                    "cross_unrealized_pnl": round(float(asset.get('crossUnPnl', 0)), 8),
+                    "max_withdraw_amount": round(float(asset.get('maxWithdrawAmount', 0)), 8),
+                    "margin_available": asset.get('marginAvailable', False),
+                    "update_time": asset.get('updateTime', 0)
+                })
+                
+                if asset_name == 'USDT':
+                    total_usdt_balance = balance
+        
+        return SuccessResponse(
+            data={
+                "balances": formatted_balances,
+                "total_usdt_balance": round(total_usdt_balance, 2),
+                "timestamp": int(time.time() * 1000)
+            },
+            message="Binance Futures wallet balance retrieved successfully",
+            request_id=request_id
+        )
+        
+    except httpx.HTTPStatusError as e:
+        error_detail = f"Binance API error: {e.response.status_code}"
+        error_code = None
+        try:
+            error_body = e.response.json()
+            error_detail = error_body.get('msg', error_detail)
+            error_code = error_body.get('code')
+            
+            # Provide helpful messages for common errors
+            if error_code == -1022:
+                error_detail = f"Signature validation failed. Please verify: 1) API key and secret are correct, 2) API key has Futures trading permissions, 3) IP address is whitelisted (if IP restriction is enabled). Original error: {error_body.get('msg', 'Unknown')}"
+            elif error_code == -2015:
+                error_detail = f"Invalid API key or permissions. Please check your API key has Futures trading enabled. Original error: {error_body.get('msg', 'Unknown')}"
+            elif error_code == -1021:
+                error_detail = f"Timestamp out of sync. Please check your system time. Original error: {error_body.get('msg', 'Unknown')}"
+        except:
+            pass
+        
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=error_detail
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching Binance Futures balance: {str(e)}"
+        )
+
+
+async def _fetch_balance_manual(api_key: str, api_secret: str) -> list:
+    """
+    Fallback function to fetch balance using manual API calls
+    Used when official SDK is not available or fails
+    
+    Reference: https://binance-docs.github.io/apidocs/futures/en/#futures-account-balance-v2
+    """
+    # Create signature for authenticated request
+    # Binance requires: timestamp parameter and signature in query string
+    # recvWindow helps with time synchronization issues (5000ms = 5 seconds tolerance)
+    timestamp = int(time.time() * 1000)
+    recv_window = 5000  # 5 seconds tolerance for timestamp
+    
+    # Build query string (must be in alphabetical order for signature)
+    query_params = {
+        "recvWindow": recv_window,
+        "timestamp": timestamp
+    }
+    query_string = urlencode(query_params, doseq=True, safe='')
+    
+    # Generate signature: HMAC SHA256 of query string
+    signature = hmac.new(
+        api_secret.encode('utf-8'),
+        query_string.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    
+    # Add signature to query string
+    final_query = f"{query_string}&signature={signature}"
+    
+    # Make authenticated request to Binance Futures API
+    url = f"{BINANCE_FUTURES_API}/fapi/v2/balance?{final_query}"
+    headers = {
+        "X-MBX-APIKEY": api_key
+    }
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers, timeout=10.0)
+        
+        # Check for signature errors
+        if response.status_code == 400:
+            try:
+                error_body = response.json()
+                if error_body.get('code') == -1022:
+                    print(f"[Binance API] Signature error. Query: {query_string}, Signature: {signature[:20]}...")
+                    print(f"[Binance API] API Key: {api_key[:10]}..., Secret length: {len(api_secret)}")
+            except:
+                pass
+        
+        response.raise_for_status()
+        return response.json()
+
+
 @router.websocket("/ws/binance-futures/live-prices")
 async def binance_futures_live_prices_websocket(websocket: WebSocket):
     """
@@ -1130,7 +1378,7 @@ async def binance_futures_live_prices_websocket(websocket: WebSocket):
     
     try:
         # Receive optional symbols list from client
-        symbols_to_fetch = set(BINANCE_SYMBOLS)
+        symbols_to_fetch = set(get_binance_symbols())
         try:
             message = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
             params = json.loads(message)

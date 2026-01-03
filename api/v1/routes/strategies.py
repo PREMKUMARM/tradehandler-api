@@ -13,7 +13,12 @@ from utils.kite_utils import get_kite_instance
 from core.user_context import get_user_id_from_request
 from kiteconnect.exceptions import KiteException
 from utils.binance_historical import fetch_historical_klines_for_date_range, convert_timeframe_to_binance
-from api.v1.routes.market import BINANCE_SYMBOLS
+from utils.binance_backtest import (
+    detect_candlestick_pattern,
+    generate_trading_signal,
+    process_backtest_data
+)
+from api.v1.routes.market import get_binance_symbols
 
 router = APIRouter(prefix="/strategies", tags=["Strategies"])
 
@@ -168,32 +173,32 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
         # Fallback to default list if no instruments provided
         if not instruments:
             instruments = [
-                {"name": "RELIANCE", "token": "738561"},
-                {"name": "TCS", "token": "2953217"},
-                {"name": "HDFCBANK", "token": "341249"},
-                {"name": "INFY", "token": "408065"},
-                {"name": "ICICIBANK", "token": "1270529"},
-                {"name": "SBIN", "token": "779521"},
-                {"name": "KOTAKBANK", "token": "492033"},
-                {"name": "AXISBANK", "token": "1510401"},
-                {"name": "INDUSINDBK", "token": "1346049"},
-                {"name": "FEDERALBNK", "token": "261889"},
-                {"name": "WIPRO", "token": "969473"},
-                {"name": "HCLTECH", "token": "1850625"},
-                {"name": "TECHM", "token": "3465729"},
-                {"name": "LTIM", "token": "4561409"},
-                {"name": "PERSISTENT", "token": "4701441"},
-                {"name": "SUNPHARMA", "token": "857857"},
-                {"name": "DRREDDY", "token": "225537"},
-                {"name": "CIPLA", "token": "177665"},
-                {"name": "LUPIN", "token": "2672641"},
-                {"name": "DIVISLAB", "token": "2800641"},
-                {"name": "BHARTIARTL", "token": "2714625"},
-                {"name": "BAJFINANCE", "token": "81153"},
-                {"name": "ITC", "token": "424961"},
-                {"name": "HINDUNILVR", "token": "356865"},
-                {"name": "MARUTI", "token": "2815745"},
-            ]
+            {"name": "RELIANCE", "token": "738561"},
+            {"name": "TCS", "token": "2953217"},
+            {"name": "HDFCBANK", "token": "341249"},
+            {"name": "INFY", "token": "408065"},
+            {"name": "ICICIBANK", "token": "1270529"},
+            {"name": "SBIN", "token": "779521"},
+            {"name": "KOTAKBANK", "token": "492033"},
+            {"name": "AXISBANK", "token": "1510401"},
+            {"name": "INDUSINDBK", "token": "1346049"},
+            {"name": "FEDERALBNK", "token": "261889"},
+            {"name": "WIPRO", "token": "969473"},
+            {"name": "HCLTECH", "token": "1850625"},
+            {"name": "TECHM", "token": "3465729"},
+            {"name": "LTIM", "token": "4561409"},
+            {"name": "PERSISTENT", "token": "4701441"},
+            {"name": "SUNPHARMA", "token": "857857"},
+            {"name": "DRREDDY", "token": "225537"},
+            {"name": "CIPLA", "token": "177665"},
+            {"name": "LUPIN", "token": "2672641"},
+            {"name": "DIVISLAB", "token": "2800641"},
+            {"name": "BHARTIARTL", "token": "2714625"},
+            {"name": "BAJFINANCE", "token": "81153"},
+            {"name": "ITC", "token": "424961"},
+            {"name": "HINDUNILVR", "token": "356865"},
+            {"name": "MARUTI", "token": "2815745"},
+        ]
         
         # Send start message
         await websocket.send_json({
@@ -833,7 +838,7 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
         start_date = params.get("start_date")
         end_date = params.get("end_date")
         timeframe = params.get("timeframe", "5minute")
-        symbols = params.get("symbols", BINANCE_SYMBOLS)  # Default to all Binance symbols
+        symbols = params.get("symbols", get_binance_symbols())  # Default to symbols from env
         
         if not start_date or not end_date:
             await websocket.send_json({
@@ -949,371 +954,40 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
                 df['vwap_diff'] = (df['close'] - df['vwap']).abs()
                 df['vwap_diff_percent'] = (df['close'] - df['vwap']) / df['vwap'] * 100
                 
-                # Reuse candlestick pattern detection from VWAP strategy
-                def detect_candlestick_pattern_bk(current_idx, df):
-                    """Detect candlestick pattern - same as VWAP strategy"""
-                    row = df.loc[current_idx]
-                    open_price = row['open']
-                    high = row['high']
-                    low = row['low']
-                    close = row['close']
-                    body_size = abs(close - open_price)
-                    upper_wick = high - max(open_price, close)
-                    lower_wick = min(open_price, close) - low
-                    total_range = high - low
-                    if total_range == 0:
-                        return 'Doji'
-                    body_ratio = body_size / total_range
-                    upper_wick_ratio = upper_wick / total_range
-                    lower_wick_ratio = lower_wick / total_range
-                    is_bullish = close > open_price
-                    is_bearish = close < open_price
-                    is_doji = body_ratio < 0.1
-                    prev_row = df.loc[current_idx - 1] if current_idx > 0 else None
-                    prev_prev_row = df.loc[current_idx - 2] if current_idx > 1 else None
-                    
-                    if is_doji:
-                        if upper_wick_ratio > 0.4 and lower_wick_ratio > 0.4:
-                            return 'Doji'
-                        elif upper_wick_ratio > 0.6:
-                            return 'Gravestone Doji'
-                        elif lower_wick_ratio > 0.6:
-                            return 'Dragonfly Doji'
-                        else:
-                            return 'Doji'
-                    if upper_wick_ratio < 0.05 and lower_wick_ratio < 0.05:
-                        return 'Bullish Marubozu' if is_bullish else 'Bearish Marubozu'
-                    if lower_wick_ratio > 0.6 and body_ratio < 0.3 and upper_wick_ratio < 0.2:
-                        return 'Hammer' if is_bullish else 'Hanging Man'
-                    if upper_wick_ratio > 0.6 and body_ratio < 0.3 and lower_wick_ratio < 0.2:
-                        return 'Inverted Hammer' if is_bullish else 'Shooting Star'
-                    if body_ratio > 0.7:
-                        return 'Long White Candle' if is_bullish else 'Long Black Candle'
-                    if body_ratio < 0.3:
-                        return 'Small White Candle' if is_bullish else 'Small Black Candle'
-                    if prev_row is not None:
-                        prev_open = prev_row['open']
-                        prev_close = prev_row['close']
-                        prev_high = prev_row['high']
-                        prev_low = prev_row['low']
-                        if is_bullish and prev_close < prev_open and close > prev_open and open_price < prev_close:
-                            return 'Bullish Engulfing'
-                        if is_bearish and prev_close > prev_open and close < prev_open and open_price > prev_close:
-                            return 'Bearish Engulfing'
-                        if is_bullish and prev_close > prev_open and open_price > prev_close and close < prev_open:
-                            return 'Bullish Harami'
-                        if is_bearish and prev_close < prev_open and open_price < prev_close and close > prev_open:
-                            return 'Bearish Harami'
-                        if is_bullish and prev_close < prev_open and close > (prev_open + prev_close) / 2:
-                            return 'Piercing Pattern'
-                        if is_bearish and prev_close > prev_open and close < (prev_open + prev_close) / 2:
-                            return 'Dark Cloud Cover'
-                    if prev_row is not None and prev_prev_row is not None:
-                        prev_prev_open = prev_prev_row['open']
-                        prev_prev_close = prev_prev_row['close']
-                        prev_open = prev_row['open']
-                        prev_close = prev_row['close']
-                        prev_body_size = abs(prev_close - prev_open)
-                        prev_prev_body_size = abs(prev_prev_close - prev_prev_open)
-                        if is_bullish and prev_prev_close < prev_prev_open and prev_body_size < prev_prev_body_size * 0.5 and close > (prev_prev_open + prev_prev_close) / 2:
-                            return 'Morning Star'
-                        if is_bearish and prev_prev_close > prev_prev_open and prev_body_size < prev_prev_body_size * 0.5 and close < (prev_prev_open + prev_prev_close) / 2:
-                            return 'Evening Star'
-                        if is_bullish and prev_close > prev_open and prev_prev_close > prev_prev_open and close > prev_close and prev_close > prev_prev_close:
-                            return 'Three White Soldiers'
-                        if is_bearish and prev_close < prev_open and prev_prev_close < prev_prev_open and close < prev_close and prev_close < prev_prev_close:
-                            return 'Three Black Crows'
-                    return 'Small White Candle' if is_bullish else 'Small Black Candle'
+                # Apply pattern detection using shared utility
+                df['candle_type'] = df.index.map(lambda i: detect_candlestick_pattern(i, df))
                 
-                # Apply pattern detection
-                df['candle_type'] = df.index.map(lambda i: detect_candlestick_pattern_bk(i, df))
-                
-                # Reuse signal generation from VWAP strategy
-                def generate_trading_signal_bk(current_idx, df):
-                    """Generate trading signal - same logic as VWAP strategy"""
-                    if current_idx < 2:
-                        return (None, None, None)
-                    
-                    row = df.loc[current_idx]
-                    candle_type = row.get('candle_type', '')
-                    close = row.get('close', 0)
-                    open_price = row.get('open', 0)
-                    high = row.get('high', 0)
-                    vwap = row.get('vwap', 0)
-                    
-                    if vwap == 0 or close == 0:
-                        return (None, None, None)
-                    
-                    prev_row = df.loc[current_idx - 1]
-                    prev_candle_type = prev_row.get('candle_type', '')
-                    
-                    if prev_candle_type != 'Three Black Crows':
-                        return (None, None, None)
-                    
-                    is_green_candle = close > open_price
-                    close_above_vwap = close > vwap
-                    high_above_vwap = high > vwap
-                    
-                    vwap_diff_percent = abs(close - vwap) / vwap * 100
-                    MAX_VWAP_DISTANCE_PCT = 1.5  # Tighter VWAP distance for better entries
-                    
-                    if vwap_diff_percent > MAX_VWAP_DISTANCE_PCT:
-                        return (None, None, None)
-                    
-                    # Prefer stronger reversal patterns, Long White Candle needs extra confirmation
-                    high_performance_candle_types = [
-                        'Dragonfly Doji', 'Piercing Pattern', 'Inverted Hammer'
-                    ]
-                    long_white_candle = 'Long White Candle' in candle_type
-                    current_candle_matches = any(pattern in candle_type for pattern in high_performance_candle_types) or long_white_candle
-                    
-                    if not (is_green_candle and (close_above_vwap or high_above_vwap) and current_candle_matches):
-                        return (None, None, None)
-                    
-                    # Trend filter: Check if price is above 20-period EMA
-                    if current_idx >= 20:
-                        closes = df['close'].tolist()
-                        ema20 = pd.Series(closes).ewm(span=20, adjust=False).mean()
-                        if close < ema20.iloc[-1]:  # Price below EMA20 suggests downtrend
-                            return (None, None, None)
-                    
-                    if 'Inverted Hammer' in candle_type:
-                        if current_idx < len(df) - 1:
-                            next_row = df.loc[current_idx + 1]
-                            next_close = next_row.get('close', 0)
-                            next_open = next_row.get('open', 0)
-                            if not (next_close > next_open and next_close > close):
-                                return (None, None, None)
-                        else:
-                            return (None, None, None)
-                    
-                    if current_idx < 10:  # Increased from 6 to avoid market open volatility
-                        return (None, None, None)
-                    
-                    if current_idx >= 3:
-                        prev_prev_row = df.loc[current_idx - 2]
-                        if prev_prev_row.get('close', 0) < prev_row.get('close', 0):
-                            if 'Inverted Hammer' in candle_type:
-                                return (None, None, None)
-                    
-                    if current_idx >= 14:
-                        current_rsi = row.get('rsi', 50)
-                        prev_rsi = prev_row.get('rsi', 50) if current_idx > 0 else 50
-                        
-                        if pd.notna(current_rsi) and pd.notna(prev_rsi):
-                            # For Long White Candle, require RSI to be in better range (35-55)
-                            if long_white_candle:
-                                if current_rsi < 35 or current_rsi > 55:
-                                    return (None, None, None)
-                                # Require RSI to be rising for Long White Candle
-                                if current_rsi <= prev_rsi:
-                                    return (None, None, None)
-                            else:
-                                # For other patterns, original RSI logic
-                                if current_rsi > 65:
-                                    return (None, None, None)
-                                if current_rsi < prev_rsi and current_rsi < 40:
-                                    return (None, None, None)
-                                if current_rsi > 60 and current_rsi > prev_rsi:
-                                    return (None, None, None)
-                                if current_rsi < 30:
-                                    if current_rsi <= prev_rsi:
-                                        return (None, None, None)
-                    
-                    if current_idx >= 26:
-                        current_macd = row.get('macd', 0)
-                        current_macd_signal = row.get('macd_signal', 0)
-                        prev_macd = prev_row.get('macd', 0) if current_idx > 0 else 0
-                        prev_macd_signal = prev_row.get('macd_signal', 0) if current_idx > 0 else 0
-                        
-                        if pd.notna(current_macd) and pd.notna(current_macd_signal):
-                            macd_bullish = current_macd > current_macd_signal
-                            macd_crossing = (prev_macd <= prev_macd_signal) and (current_macd > current_macd_signal)
-                            
-                            if not (macd_bullish or macd_crossing):
-                                return (None, None, None)
-                    
-                    if current_idx >= 1:
-                        current_volume = row.get('volume', 0)
-                        if current_idx >= 10:  # Use longer period for volume average
-                            recent_volumes = [df.loc[current_idx - i].get('volume', current_volume) for i in range(10)]
-                            avg_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else current_volume
-                            
-                            # Long White Candle requires volume to be at least 120% of average
-                            if long_white_candle:
-                                if avg_volume > 0 and current_volume < avg_volume * 1.2:
-                                    return (None, None, None)
-                            else:
-                                # Other patterns require at least 80% of average
-                                if avg_volume > 0 and current_volume < avg_volume * 0.8:
-                                    if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
-                                        return (None, None, None)
-                        elif current_volume == 0:
-                            return (None, None, None)
-                    
-                    # Momentum confirmation: Price should be moving up (close higher than 2 candles ago)
-                    if current_idx >= 2:
-                        price_2_candles_ago = df.loc[current_idx - 2].get('close', close)
-                        if close <= price_2_candles_ago:
-                            return (None, None, None)
-                    
-                    if current_idx >= 3:
-                        price_3_candles_ago = df.loc[current_idx - 3].get('close', close) if current_idx >= 3 else close
-                        price_change_pct = abs(close - price_3_candles_ago) / price_3_candles_ago * 100
-                        
-                        if price_change_pct > 2.0:
-                            if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
-                                return (None, None, None)
-                    
-                    if current_idx >= 5:
-                        recent_closes = [df.loc[current_idx - i].get('close', close) for i in range(6)]
-                        declining_count = sum(1 for i in range(1, len(recent_closes)) if recent_closes[i] < recent_closes[i-1])
-                        if declining_count >= 4:
-                            if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
-                                return (None, None, None)
-                    
-                    # Determine matched pattern
-                    if long_white_candle:
-                        matched_pattern = 'Long White Candle'
-                    else:
-                        matched_pattern = next((p for p in high_performance_candle_types if p in candle_type), candle_type)
-                    reason = f"Priority 1: {matched_pattern} candle {'closing' if close_above_vwap else 'high'} above VWAP after Three Black Crows (VWAP: {vwap_diff_percent:.2f}%)"
-                    return ('BUY', 1, reason)
-                
-                # Apply signal generation
+                # Apply signal generation using shared utility
                 df['trading_signal'] = None
                 df['signal_priority'] = None
                 df['signal_reason'] = None
                 for i in range(len(df)):
-                    signal, priority, reason = generate_trading_signal_bk(i, df)
+                    signal, priority, reason = generate_trading_signal(i, df)
                     if signal is not None:
                         df.loc[i, 'trading_signal'] = signal
                         df.loc[i, 'signal_priority'] = priority
                         df.loc[i, 'signal_reason'] = reason
                 
-                # Extract Priority 1 signals and calculate P&L
-                priority1_rows = df[(df['trading_signal'] == 'BUY') & (df['signal_priority'] == 1)]
-                current_price = float(df.iloc[-1]['close']) if len(df) > 0 else 0.0
+                # Calculate P&L using shared utility
+                STOP_LOSS_PCT = 0.9
+                TRAILING_STOP_PCT = 0.6
+                PROFIT_TARGET_PCT = 0.7
                 
-                for idx, signal_row in priority1_rows.iterrows():
-                    try:
-                        entry_price = float(signal_row['close'])
-                    except (ValueError, TypeError):
-                        entry_price = float(str(signal_row['close']))
-                    
-                    entry_idx = idx
-                    exit_price = current_price
-                    exit_idx = len(df) - 1
-                    
-                    # SCALPING: Optimized stops and profit targets for better profit/loss ratio
-                    STOP_LOSS_PCT = 0.9  # Tighter stop to reduce losses
-                    TRAILING_STOP_PCT = 0.6  # Tighter trailing stop
-                    PROFIT_TARGET_PCT = 0.7  # Slightly higher profit target (0.7% for better ratio)
-                    
-                    stop_loss_price = entry_price * (1 - STOP_LOSS_PCT / 100.0)
-                    profit_target_price = entry_price * (1 + PROFIT_TARGET_PCT / 100.0)
-                    highest_after_entry = entry_price
-                    exit_reason = "End of period"
-                    
-                    for check_idx in range(entry_idx + 1, len(df)):
-                        check_row = df.loc[check_idx]
-                        check_close = float(check_row.get('close', entry_price))
-                        check_high = float(check_row.get('high', entry_price))
-                        check_low = float(check_row.get('low', entry_price))
-                        
-                        if check_close > highest_after_entry:
-                            highest_after_entry = check_close
-                        
-                        # SCALPING: Profit target hit - take quick profit
-                        if check_high >= profit_target_price:
-                            exit_price = profit_target_price
-                            exit_idx = check_idx
-                            exit_reason = f"Profit target hit ({PROFIT_TARGET_PCT}%)"
-                            break
-                        
-                        if check_low <= stop_loss_price:
-                            exit_price = stop_loss_price
-                            exit_idx = check_idx
-                            exit_reason = f"Stop-loss triggered ({STOP_LOSS_PCT}%)"
-                            break
-                        
-                        if highest_after_entry > entry_price:
-                            trailing_stop_price = highest_after_entry * (1 - TRAILING_STOP_PCT / 100.0)
-                            if check_close <= trailing_stop_price:
-                                exit_price = check_close
-                                exit_idx = check_idx
-                                exit_reason = f"Trailing stop triggered ({TRAILING_STOP_PCT}% from high)"
-                                break
-                        
-                        # Quick exit if price moves against us (scalping - don't wait)
-                        if check_idx >= entry_idx + 2:  # Wait at least 2 candles
-                            price_drop_pct = (entry_price - check_close) / entry_price * 100
-                            # Exit early if price drops >0.5% (scalping - quick exits)
-                            if price_drop_pct > 0.5:
-                                exit_price = check_close
-                                exit_idx = check_idx
-                                exit_reason = "Quick exit: Price moving against trade"
-                                break
-                    
-                    try:
-                        exit_price_float = float(exit_price)
-                    except (ValueError, TypeError):
-                        exit_price_float = float(str(exit_price))
-                    
-                    profit = exit_price_float - entry_price
-                    
-                    entry_timestamp = signal_row['timestamp']
-                    try:
-                        if isinstance(entry_timestamp, datetime):
-                            entry_time = entry_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                        elif isinstance(entry_timestamp, pd.Timestamp):
-                            entry_time = entry_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                        else:
-                            entry_time = pd.to_datetime(entry_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                    except:
-                        entry_time = str(entry_timestamp) if entry_timestamp else '-'
-                    
-                    exit_timestamp = df.iloc[exit_idx]['timestamp']
-                    try:
-                        if isinstance(exit_timestamp, datetime):
-                            exit_time = exit_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                        elif isinstance(exit_timestamp, pd.Timestamp):
-                            exit_time = exit_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                        else:
-                            exit_time = pd.to_datetime(exit_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                    except:
-                        exit_time = str(exit_timestamp) if exit_timestamp else '-'
-                    
-                    try:
-                        if isinstance(entry_timestamp, datetime):
-                            timestamp_val = int(entry_timestamp.timestamp())
-                        elif isinstance(entry_timestamp, pd.Timestamp):
-                            timestamp_val = int(entry_timestamp.timestamp())
-                        else:
-                            timestamp_val = int(pd.to_datetime(entry_timestamp).timestamp())
-                    except:
-                        timestamp_val = 0
-                    
-                    symbol_signals.append({
-                        "date": entry_timestamp.strftime('%Y-%m-%d') if isinstance(entry_timestamp, (datetime, pd.Timestamp)) else str(entry_timestamp)[:10],
-                        "timestamp": timestamp_val,
-                        "entry_time": entry_time,
-                        "exit_time": exit_time,
-                        "entry_price": float(round(float(entry_price), 2)),
-                        "exit_price": float(round(float(exit_price_float), 2)),
-                        "qty": 1,
-                        "profit": float(round(float(profit), 2)),
-                        "profit_percent": float(round((float(profit) / float(entry_price) * 100) if entry_price > 0 else 0, 2)),
-                        "candle_type": str(signal_row.get('candle_type', '')) if signal_row.get('candle_type') is not None else '',
-                        "signal_reason": str(signal_row.get('signal_reason', '')) if signal_row.get('signal_reason') is not None else '',
-                        "exit_reason": exit_reason
-                    })
-                    
-                    symbol_profit += float(profit)
-                    if float(profit) > 0:
-                        symbol_profitable += 1
-                    elif float(profit) < 0:
-                        symbol_losses += 1
+                symbol_signals = process_backtest_data(
+                    df,
+                    stop_loss_pct=STOP_LOSS_PCT,
+                    trailing_stop_pct=TRAILING_STOP_PCT,
+                    profit_target_pct=PROFIT_TARGET_PCT,
+                    use_position_sizing=True
+                )
+                
+                # Calculate summary from orders
+                symbol_profit = sum(order['profit'] for order in symbol_signals)
+                symbol_profitable = sum(1 for order in symbol_signals if order['profit'] > 0)
+                symbol_losses = sum(1 for order in symbol_signals if order['profit'] < 0)
+                
+                # Orders are already processed by process_backtest_data utility
+                # symbol_signals already contains all the order data with P&L in correct format
                 
                 # Calculate summary for this symbol
                 if len(symbol_signals) > 0:

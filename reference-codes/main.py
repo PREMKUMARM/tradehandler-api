@@ -5,7 +5,13 @@ from binance_client import fetch_klines
 from rsi_calculator import compute_rsi
 
 app = FastAPI()
-SYMBOLS = ["1000PEPEUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
+# Symbols should be loaded from environment variable BINANCE_SYMBOLS
+# Example: BINANCE_SYMBOLS=1000PEPEUSDT,ETHUSDT
+import os
+from dotenv import load_dotenv
+load_dotenv()
+SYMBOLS_STR = os.getenv('BINANCE_SYMBOLS', '1000PEPEUSDT')
+SYMBOLS = [s.strip().upper() for s in SYMBOLS_STR.split(",") if s.strip()]
 TIMEFRAMES = ["1m", "5m", "15m", "30m"]
 latest_rsi_data = {}
 

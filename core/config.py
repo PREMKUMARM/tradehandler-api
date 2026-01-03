@@ -73,7 +73,15 @@ class Settings(BaseSettings):
     kite_api_secret: Optional[str] = Field(default=None, alias="KITE_API_SECRET")
     kite_redirect_uri: str = Field(default="http://13.233.151.3/auth-token", alias="KITE_REDIRECT_URI")
     
-    @field_validator("cors_origins", "allowed_hosts", mode="before")
+    # Binance Futures Settings
+    binance_api_key: Optional[str] = Field(default=None, alias="BINANCE_API_KEY")
+    binance_api_secret: Optional[str] = Field(default=None, alias="BINANCE_API_SECRET")
+    binance_symbols: Any = Field(
+        default=["1000PEPEUSDT"],
+        alias="BINANCE_SYMBOLS"
+    )
+    
+    @field_validator("cors_origins", "allowed_hosts", "binance_symbols", mode="before")
     @classmethod
     def handle_list_strings(cls, v: Any) -> List[str]:
         if isinstance(v, str):

@@ -17,6 +17,11 @@ EC2_IP="13.233.151.3"
 # Remote Paths
 REMOTE_API_PATH="/home/ubuntu/algofeast-workspace/algofeast-api"
 SERVICE_NAME="algofeast-api"
+LOCAL_ENV_FILE=".env"
+REMOTE_ENV_FILE="$REMOTE_API_PATH/.env"
+
+# Binance-related environment variables to sync
+BINANCE_VARS=("BINANCE_API_KEY" "BINANCE_API_SECRET" "BINANCE_SYMBOLS")
 
 # --- EXECUTION ---
 
@@ -25,7 +30,74 @@ set -e
 
 echo "🚀 Starting backend deployment to $EC2_IP..."
 
-# Connect to EC2 and deploy
+# Extract Binance environment variables from local .env
+echo "🔐 Extracting Binance environment variables from local .env..."
+BINANCE_API_KEY_VAL=""
+BINANCE_API_SECRET_VAL=""
+BINANCE_SYMBOLS_VAL=""
+
+if [ -f "$LOCAL_ENV_FILE" ]; then
+    BINANCE_API_KEY_VAL=$(grep "^BINANCE_API_KEY=" "$LOCAL_ENV_FILE" 2>/dev/null | cut -d '=' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
+    BINANCE_API_SECRET_VAL=$(grep "^BINANCE_API_SECRET=" "$LOCAL_ENV_FILE" 2>/dev/null | cut -d '=' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
+    BINANCE_SYMBOLS_VAL=$(grep "^BINANCE_SYMBOLS=" "$LOCAL_ENV_FILE" 2>/dev/null | cut -d '=' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
+    
+    [ -n "$BINANCE_API_KEY_VAL" ] && echo "  ✓ Found BINANCE_API_KEY"
+    [ -n "$BINANCE_API_SECRET_VAL" ] && echo "  ✓ Found BINANCE_API_SECRET"
+    [ -n "$BINANCE_SYMBOLS_VAL" ] && echo "  ✓ Found BINANCE_SYMBOLS"
+else
+    echo "  ⚠️  Local .env file not found, skipping environment variable sync"
+fi
+
+# Connect to EC2 and sync environment variables first
+echo "🔐 Syncing Binance environment variables to EC2..."
+ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
+    set -e
+    
+    REMOTE_ENV_FILE="$REMOTE_ENV_FILE"
+    BINANCE_API_KEY_VAL='$BINANCE_API_KEY_VAL'
+    BINANCE_API_SECRET_VAL='$BINANCE_API_SECRET_VAL'
+    BINANCE_SYMBOLS_VAL='$BINANCE_SYMBOLS_VAL'
+    
+    echo "🔐 Syncing Binance environment variables to remote .env..."
+    if [ ! -f "\$REMOTE_ENV_FILE" ]; then
+        echo "  📝 Creating remote .env file..."
+        touch "\$REMOTE_ENV_FILE"
+    fi
+    
+    # Sync BINANCE_API_KEY
+    if [ -n "\$BINANCE_API_KEY_VAL" ]; then
+        if grep -q "^BINANCE_API_KEY=" "\$REMOTE_ENV_FILE" 2>/dev/null; then
+            echo "  ✓ BINANCE_API_KEY already exists in remote .env (skipping)"
+        else
+            echo "  ➕ Adding BINANCE_API_KEY to remote .env..."
+            echo "BINANCE_API_KEY=\$BINANCE_API_KEY_VAL" >> "\$REMOTE_ENV_FILE"
+        fi
+    fi
+    
+    # Sync BINANCE_API_SECRET
+    if [ -n "\$BINANCE_API_SECRET_VAL" ]; then
+        if grep -q "^BINANCE_API_SECRET=" "\$REMOTE_ENV_FILE" 2>/dev/null; then
+            echo "  ✓ BINANCE_API_SECRET already exists in remote .env (skipping)"
+        else
+            echo "  ➕ Adding BINANCE_API_SECRET to remote .env..."
+            echo "BINANCE_API_SECRET=\$BINANCE_API_SECRET_VAL" >> "\$REMOTE_ENV_FILE"
+        fi
+    fi
+    
+    # Sync BINANCE_SYMBOLS
+    if [ -n "\$BINANCE_SYMBOLS_VAL" ]; then
+        if grep -q "^BINANCE_SYMBOLS=" "\$REMOTE_ENV_FILE" 2>/dev/null; then
+            echo "  ✓ BINANCE_SYMBOLS already exists in remote .env (skipping)"
+        else
+            echo "  ➕ Adding BINANCE_SYMBOLS to remote .env..."
+            echo "BINANCE_SYMBOLS=\$BINANCE_SYMBOLS_VAL" >> "\$REMOTE_ENV_FILE"
+        fi
+    fi
+EOF
+
+# Now continue with the main deployment
+echo ""
+echo "📦 Starting main deployment process..."
 ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" << EOF
     set -e
     

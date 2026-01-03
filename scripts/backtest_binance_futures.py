@@ -27,6 +27,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.binance_historical import fetch_historical_klines_for_date_range, convert_timeframe_to_binance
 from utils.indicators import calculate_rsi
+from utils.binance_backtest import (
+    detect_candlestick_pattern,
+    generate_trading_signal,
+    process_backtest_data
+)
 
 
 # Default configuration
@@ -34,108 +39,13 @@ DEFAULT_CONFIG = {
     "startDateStr": "2025-12-03",
     "endDateStr": "2026-01-03",
     "timeframe": "5minute",
-    "symbols": [
-        "1000PEPEUSDT",
-        "ETHUSDT",
-        "XRPUSDT",
-        "SOLUSDT",
-        "ADAUSDT",
-        "DOGEUSDT",
-        "MATICUSDT"
-    ]
+    "symbols": get_binance_symbols_from_env()  # Load from environment
 }
 
 
-def detect_candlestick_pattern(current_idx: int, df: pd.DataFrame) -> str:
-    """Detect candlestick pattern"""
-    row = df.loc[current_idx]
-    open_price = row['open']
-    high = row['high']
-    low = row['low']
-    close = row['close']
-    body_size = abs(close - open_price)
-    upper_wick = high - max(open_price, close)
-    lower_wick = min(open_price, close) - low
-    total_range = high - low
-    
-    if total_range == 0:
-        return 'Doji'
-    
-    body_ratio = body_size / total_range
-    upper_wick_ratio = upper_wick / total_range
-    lower_wick_ratio = lower_wick / total_range
-    is_bullish = close > open_price
-    is_bearish = close < open_price
-    is_doji = body_ratio < 0.1
-    
-    prev_row = df.loc[current_idx - 1] if current_idx > 0 else None
-    prev_prev_row = df.loc[current_idx - 2] if current_idx > 1 else None
-    
-    if is_doji:
-        if upper_wick_ratio > 0.4 and lower_wick_ratio > 0.4:
-            return 'Doji'
-        elif upper_wick_ratio > 0.6:
-            return 'Gravestone Doji'
-        elif lower_wick_ratio > 0.6:
-            return 'Dragonfly Doji'
-        else:
-            return 'Doji'
-    
-    if upper_wick_ratio < 0.05 and lower_wick_ratio < 0.05:
-        return 'Bullish Marubozu' if is_bullish else 'Bearish Marubozu'
-    
-    if lower_wick_ratio > 0.6 and body_ratio < 0.3 and upper_wick_ratio < 0.2:
-        return 'Hammer' if is_bullish else 'Hanging Man'
-    
-    if upper_wick_ratio > 0.6 and body_ratio < 0.3 and lower_wick_ratio < 0.2:
-        return 'Inverted Hammer' if is_bullish else 'Shooting Star'
-    
-    if body_ratio > 0.7:
-        return 'Long White Candle' if is_bullish else 'Long Black Candle'
-    
-    if body_ratio < 0.3:
-        return 'Small White Candle' if is_bullish else 'Small Black Candle'
-    
-    if prev_row is not None:
-        prev_open = prev_row['open']
-        prev_close = prev_row['close']
-        prev_high = prev_row['high']
-        prev_low = prev_row['low']
-        
-        if is_bullish and prev_close < prev_open and close > prev_open and open_price < prev_close:
-            return 'Bullish Engulfing'
-        if is_bearish and prev_close > prev_open and close < prev_open and open_price > prev_close:
-            return 'Bearish Engulfing'
-        if is_bullish and prev_close > prev_open and open_price > prev_close and close < prev_open:
-            return 'Bullish Harami'
-        if is_bearish and prev_close < prev_open and open_price < prev_close and close > prev_open:
-            return 'Bearish Harami'
-        if is_bullish and prev_close < prev_open and close > (prev_open + prev_close) / 2:
-            return 'Piercing Pattern'
-        if is_bearish and prev_close > prev_open and close < (prev_open + prev_close) / 2:
-            return 'Dark Cloud Cover'
-    
-    if prev_row is not None and prev_prev_row is not None:
-        prev_prev_open = prev_prev_row['open']
-        prev_prev_close = prev_prev_row['close']
-        prev_open = prev_row['open']
-        prev_close = prev_row['close']
-        prev_body_size = abs(prev_close - prev_open)
-        prev_prev_body_size = abs(prev_prev_close - prev_prev_open)
-        
-        if is_bullish and prev_prev_close < prev_prev_open and prev_body_size < prev_prev_body_size * 0.5 and close > (prev_prev_open + prev_prev_close) / 2:
-            return 'Morning Star'
-        if is_bearish and prev_prev_close > prev_prev_open and prev_body_size < prev_prev_body_size * 0.5 and close < (prev_prev_open + prev_prev_close) / 2:
-            return 'Evening Star'
-        if is_bullish and prev_close > prev_open and prev_prev_close > prev_prev_open and close > prev_close and prev_close > prev_prev_close:
-            return 'Three White Soldiers'
-        if is_bearish and prev_close < prev_open and prev_prev_close < prev_prev_open and close < prev_close and prev_close < prev_prev_close:
-            return 'Three Black Crows'
-    
-    return 'Small White Candle' if is_bullish else 'Small Black Candle'
+# Pattern detection and signal generation are now imported from utils.binance_backtest
 
-
-def generate_trading_signal(current_idx: int, df: pd.DataFrame) -> tuple:
+def generate_trading_signal_wrapper(current_idx: int, df: pd.DataFrame) -> tuple:
     """
     Generate trading signal - SCALPING strategy
     Focus: More frequent signals, quick profits, tighter stops
@@ -404,168 +314,26 @@ async def backtest_symbol(symbol: str, start_date: str, end_date: str, binance_i
                 df.loc[i, 'signal_priority'] = priority
                 df.loc[i, 'signal_reason'] = reason
         
-        # Extract Priority 1 signals and calculate P&L
+        # Calculate P&L using shared utility
         print("Calculating P&L for signals...")
-        priority1_rows = df[(df['trading_signal'] == 'BUY') & (df['signal_priority'] == 1)]
-        current_price = float(df.iloc[-1]['close']) if len(df) > 0 else 0.0
+        STOP_LOSS_PCT = 0.9
+        TRAILING_STOP_PCT = 0.6
+        PROFIT_TARGET_PCT = 0.7
         
-        symbol_signals = []
-        symbol_profit = 0.0
-        symbol_profitable = 0
-        symbol_losses = 0
+        symbol_signals = process_backtest_data(
+            df,
+            stop_loss_pct=STOP_LOSS_PCT,
+            trailing_stop_pct=TRAILING_STOP_PCT,
+            profit_target_pct=PROFIT_TARGET_PCT,
+            use_position_sizing=True
+        )
         
-        # SCALPING: Optimized stops and profit targets for better profit/loss ratio
-        STOP_LOSS_PCT = 0.9  # Tighter stop to reduce losses
-        TRAILING_STOP_PCT = 0.6  # Tighter trailing stop
-        PROFIT_TARGET_PCT = 0.7  # Slightly higher profit target (0.7% for better ratio)
+        # Calculate summary from orders
+        symbol_profit = sum(order['profit'] for order in symbol_signals)
+        symbol_profitable = sum(1 for order in symbol_signals if order['profit'] > 0)
+        symbol_losses = sum(1 for order in symbol_signals if order['profit'] < 0)
         
-        def calculate_position_size(df, entry_idx, entry_price):
-            """Calculate position size based on volatility (ATR)"""
-            if entry_idx < 14:
-                return 1.0  # Default position size if not enough data
-            
-            # Calculate ATR for volatility measurement
-            true_ranges = []
-            for i in range(max(0, entry_idx - 14), entry_idx):
-                if i > 0:
-                    high = float(df.iloc[i].get('high', entry_price))
-                    low = float(df.iloc[i].get('low', entry_price))
-                    prev_close = float(df.iloc[i-1].get('close', entry_price))
-                    
-                    tr = max(
-                        high - low,
-                        abs(high - prev_close),
-                        abs(low - prev_close)
-                    )
-                    true_ranges.append(tr)
-            
-            if not true_ranges:
-                return 1.0
-            
-            atr = sum(true_ranges) / len(true_ranges)
-            atr_pct = (atr / entry_price) * 100 if entry_price > 0 else 0
-            
-            # Position sizing: Higher volatility = smaller position size
-            # If ATR% > 2%, reduce position size proportionally
-            if atr_pct > 2.0:
-                position_multiplier = max(0.5, 2.0 / atr_pct)  # Reduce position for high volatility
-            else:
-                position_multiplier = 1.0  # Full position for normal volatility
-            
-            return position_multiplier
-        
-        for idx, signal_row in priority1_rows.iterrows():
-            entry_price = float(signal_row['close'])
-            entry_idx = idx
-            exit_price = current_price
-            exit_idx = len(df) - 1
-            
-            # Calculate position size based on volatility at entry
-            position_multiplier = calculate_position_size(df, entry_idx, entry_price)
-            
-            stop_loss_price = entry_price * (1 - STOP_LOSS_PCT / 100.0)
-            profit_target_price = entry_price * (1 + PROFIT_TARGET_PCT / 100.0)
-            
-            highest_after_entry = entry_price
-            exit_reason = "End of period"
-            
-            for check_idx in range(entry_idx + 1, len(df)):
-                check_row = df.loc[check_idx]
-                check_close = float(check_row.get('close', entry_price))
-                check_high = float(check_row.get('high', entry_price))
-                check_low = float(check_row.get('low', entry_price))
-                
-                if check_close > highest_after_entry:
-                    highest_after_entry = check_close
-                
-                # SCALPING: Profit target hit - take quick profit
-                if check_high >= profit_target_price:
-                    exit_price = profit_target_price
-                    exit_idx = check_idx
-                    exit_reason = f"Profit target hit ({PROFIT_TARGET_PCT}%)"
-                    break
-                
-                # Stop-loss check
-                if check_low <= stop_loss_price:
-                    exit_price = stop_loss_price
-                    exit_idx = check_idx
-                    exit_reason = f"Stop-loss triggered ({STOP_LOSS_PCT}%)"
-                    break
-                
-                # Trailing stop (tighter for scalping)
-                if highest_after_entry > entry_price:
-                    trailing_stop_price = highest_after_entry * (1 - TRAILING_STOP_PCT / 100.0)
-                    if check_close <= trailing_stop_price:
-                        exit_price = check_close
-                        exit_idx = check_idx
-                        exit_reason = f"Trailing stop triggered ({TRAILING_STOP_PCT}% from high)"
-                        break
-                
-                        # Quick exit if price moves against us (less aggressive for better win rate)
-                        if check_idx >= entry_idx + 3:  # Wait at least 3 candles
-                            price_drop_pct = (entry_price - check_close) / entry_price * 100
-                            # Exit early if price drops >0.7% (less aggressive than 0.5%)
-                            if price_drop_pct > 0.7:
-                                # Also check if next candle confirms weakness
-                                if check_idx < len(df) - 1:
-                                    next_row = df.loc[check_idx + 1]
-                                    next_close = float(next_row.get('close', check_close))
-                                    if next_close < check_close:
-                                        exit_price = check_close
-                                        exit_idx = check_idx
-                                        exit_reason = "Quick exit: Price moving against trade"
-                                        break
-                                else:
-                                    exit_price = check_close
-                                    exit_idx = check_idx
-                                    exit_reason = "Quick exit: Price moving against trade"
-                                    break
-            
-            exit_price_float = float(exit_price)
-            profit = (exit_price_float - entry_price) * position_multiplier  # Apply position sizing
-            
-            entry_timestamp = signal_row['timestamp']
-            if isinstance(entry_timestamp, datetime):
-                entry_time = entry_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                timestamp_val = int(entry_timestamp.timestamp())
-            elif isinstance(entry_timestamp, pd.Timestamp):
-                entry_time = entry_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                timestamp_val = int(entry_timestamp.timestamp())
-            else:
-                entry_time = pd.to_datetime(entry_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                timestamp_val = int(pd.to_datetime(entry_timestamp).timestamp())
-            
-            exit_timestamp = df.iloc[exit_idx]['timestamp']
-            if isinstance(exit_timestamp, datetime):
-                exit_time = exit_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-            elif isinstance(exit_timestamp, pd.Timestamp):
-                exit_time = exit_timestamp.strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                exit_time = pd.to_datetime(exit_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-            
-            symbol_signals.append({
-                "date": entry_timestamp.strftime('%Y-%m-%d') if isinstance(entry_timestamp, (datetime, pd.Timestamp)) else str(entry_timestamp)[:10],
-                "timestamp": timestamp_val,
-                "entry_time": entry_time,
-                "exit_time": exit_time,
-                "entry_price": round(entry_price, 2),
-                "exit_price": round(exit_price_float, 2),
-                "qty": round(position_multiplier, 3),  # Show position size multiplier
-                "profit": round(profit, 2),
-                "profit_percent": round((profit / entry_price * 100) if entry_price > 0 else 0, 2),
-                "candle_type": str(signal_row.get('candle_type', '')),
-                "signal_reason": str(signal_row.get('signal_reason', '')),
-                "exit_reason": exit_reason,
-                "position_size": round(position_multiplier, 3)  # Add position size info
-            })
-            
-            symbol_profit += profit
-            if profit > 0:
-                symbol_profitable += 1
-            elif profit < 0:
-                symbol_losses += 1
-        
-        # Calculate summary
+        # Calculate summary from orders
         if len(symbol_signals) > 0:
             avg_profit = symbol_profit / len(symbol_signals)
             win_rate = (symbol_profitable / len(symbol_signals)) * 100

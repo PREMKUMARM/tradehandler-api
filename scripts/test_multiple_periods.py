@@ -5,7 +5,7 @@ import json
 import asyncio
 import sys
 import os
-from backtest_binance_futures import backtest_symbol
+from backtest_binance_futures import backtest_symbol, get_binance_symbols_from_env
 
 async def test_period(start_date: str, end_date: str, period_name: str):
     """Test a specific time period"""
@@ -19,7 +19,7 @@ async def test_period(start_date: str, end_date: str, period_name: str):
         "startDateStr": start_date,
         "endDateStr": end_date,
         "timeframe": "5minute",
-        "symbols": ["1000PEPEUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
+        "symbols": get_binance_symbols_from_env()  # Load from environment
     }
     
     with open('config.json', 'w') as f:
