@@ -27,7 +27,7 @@ import httpx
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
 # Binance Monitor Configuration
-BINANCE_SYMBOLS = ["1000PEPEUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
+BINANCE_SYMBOLS = ["1000PEPEUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
 BINANCE_TIMEFRAMES = ["1m", "5m", "15m", "30m"]
 # Global storage for latest VWAP data (in-memory cache)
 _latest_binance_vwap_data = {}

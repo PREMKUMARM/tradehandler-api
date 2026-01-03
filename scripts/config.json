@@ -4,7 +4,6 @@
     "timeframe": "5minute",
     "symbols": [
         "1000PEPEUSDT",
-        "ETHUSDT",
         "XRPUSDT",
         "SOLUSDT",
         "ADAUSDT",
@@ -12,4 +11,3 @@
         "MATICUSDT"
     ]
 }
-

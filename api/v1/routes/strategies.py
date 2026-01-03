@@ -1205,10 +1205,10 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
                     exit_price = current_price
                     exit_idx = len(df) - 1
                     
-                    # SCALPING: Tighter stops and profit targets
-                    STOP_LOSS_PCT = 1.0  # Tighter stop for scalping
+                    # SCALPING: Optimized stops and profit targets for better profit/loss ratio
+                    STOP_LOSS_PCT = 0.9  # Tighter stop to reduce losses
                     TRAILING_STOP_PCT = 0.6  # Tighter trailing stop
-                    PROFIT_TARGET_PCT = 0.6  # Quick profit target (0.6% for scalping)
+                    PROFIT_TARGET_PCT = 0.7  # Slightly higher profit target (0.7% for better ratio)
                     
                     stop_loss_price = entry_price * (1 - STOP_LOSS_PCT / 100.0)
                     profit_target_price = entry_price * (1 + PROFIT_TARGET_PCT / 100.0)

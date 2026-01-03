@@ -194,18 +194,21 @@ def generate_trading_signal(current_idx: int, df: pd.DataFrame) -> tuple:
             if vwap < prev_vwap:  # VWAP declining - wait for better entry
                 return (None, None, None)
         
-        # Stricter RSI check - prefer 40-60 range for better win rate
+        # Fine-tuned RSI check - prefer 45-65 range for better win rate
         if current_idx >= 14:
             current_rsi = row.get('rsi', 50)
             prev_rsi = prev_row.get('rsi', 50)
             if pd.notna(current_rsi) and pd.notna(prev_rsi):
-                if current_rsi > 70:  # Too overbought
+                if current_rsi > 65:  # Too overbought (tighter)
                     return (None, None, None)
-                # Prefer RSI between 40-60 for better entries
-                if current_rsi < 30:  # Too oversold, might be weak
+                # Prefer RSI between 45-65 for better entries (narrower range)
+                if current_rsi < 35:  # Too oversold, might be weak (tighter)
                     return (None, None, None)
-                # Prefer RSI rising (momentum building)
-                if current_rsi < 40 and current_rsi <= prev_rsi:
+                # Prefer RSI rising (momentum building) - stricter
+                if current_rsi < 45 and current_rsi <= prev_rsi:
+                    return (None, None, None)
+                # Avoid RSI declining when already high
+                if current_rsi > 60 and current_rsi < prev_rsi:
                     return (None, None, None)
         
         # Stricter MACD check - require clear bullish signal
@@ -224,13 +227,16 @@ def generate_trading_signal(current_idx: int, df: pd.DataFrame) -> tuple:
                 if current_macd < 0 and not macd_crossing:
                     return (None, None, None)
         
-        # Stricter volume check - require at least 70% of average
+        # Fine-tuned volume check - require at least 80% of average for better quality
         current_volume = row.get('volume', 0)
         if current_idx >= 5:
             recent_volumes = [df.loc[current_idx - i].get('volume', current_volume) for i in range(5)]
             avg_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else current_volume
-            if avg_volume > 0 and current_volume < avg_volume * 0.7:  # At least 70% of average
+            if avg_volume > 0 and current_volume < avg_volume * 0.8:  # At least 80% of average (tighter)
                 return (None, None, None)
+            # Prefer above-average volume for stronger signals
+            if avg_volume > 0 and current_volume < avg_volume * 1.0 and 'Inverted Hammer' in candle_type:
+                return (None, None, None)  # Weak patterns need above-average volume
         
         # Stronger momentum: Price should be clearly moving up
         if current_idx >= 2:
@@ -408,16 +414,54 @@ async def backtest_symbol(symbol: str, start_date: str, end_date: str, binance_i
         symbol_profitable = 0
         symbol_losses = 0
         
-        # SCALPING: Tighter stops and profit targets
-        STOP_LOSS_PCT = 1.0  # Tighter stop for scalping
+        # SCALPING: Optimized stops and profit targets for better profit/loss ratio
+        STOP_LOSS_PCT = 0.9  # Tighter stop to reduce losses
         TRAILING_STOP_PCT = 0.6  # Tighter trailing stop
-        PROFIT_TARGET_PCT = 0.6  # Quick profit target (0.6% for scalping)
+        PROFIT_TARGET_PCT = 0.7  # Slightly higher profit target (0.7% for better ratio)
+        
+        def calculate_position_size(df, entry_idx, entry_price):
+            """Calculate position size based on volatility (ATR)"""
+            if entry_idx < 14:
+                return 1.0  # Default position size if not enough data
+            
+            # Calculate ATR for volatility measurement
+            true_ranges = []
+            for i in range(max(0, entry_idx - 14), entry_idx):
+                if i > 0:
+                    high = float(df.iloc[i].get('high', entry_price))
+                    low = float(df.iloc[i].get('low', entry_price))
+                    prev_close = float(df.iloc[i-1].get('close', entry_price))
+                    
+                    tr = max(
+                        high - low,
+                        abs(high - prev_close),
+                        abs(low - prev_close)
+                    )
+                    true_ranges.append(tr)
+            
+            if not true_ranges:
+                return 1.0
+            
+            atr = sum(true_ranges) / len(true_ranges)
+            atr_pct = (atr / entry_price) * 100 if entry_price > 0 else 0
+            
+            # Position sizing: Higher volatility = smaller position size
+            # If ATR% > 2%, reduce position size proportionally
+            if atr_pct > 2.0:
+                position_multiplier = max(0.5, 2.0 / atr_pct)  # Reduce position for high volatility
+            else:
+                position_multiplier = 1.0  # Full position for normal volatility
+            
+            return position_multiplier
         
         for idx, signal_row in priority1_rows.iterrows():
             entry_price = float(signal_row['close'])
             entry_idx = idx
             exit_price = current_price
             exit_idx = len(df) - 1
+            
+            # Calculate position size based on volatility at entry
+            position_multiplier = calculate_position_size(df, entry_idx, entry_price)
             
             stop_loss_price = entry_price * (1 - STOP_LOSS_PCT / 100.0)
             profit_target_price = entry_price * (1 + PROFIT_TARGET_PCT / 100.0)
@@ -478,7 +522,7 @@ async def backtest_symbol(symbol: str, start_date: str, end_date: str, binance_i
                                     break
             
             exit_price_float = float(exit_price)
-            profit = exit_price_float - entry_price
+            profit = (exit_price_float - entry_price) * position_multiplier  # Apply position sizing
             
             entry_timestamp = signal_row['timestamp']
             if isinstance(entry_timestamp, datetime):
@@ -506,12 +550,13 @@ async def backtest_symbol(symbol: str, start_date: str, end_date: str, binance_i
                 "exit_time": exit_time,
                 "entry_price": round(entry_price, 2),
                 "exit_price": round(exit_price_float, 2),
-                "qty": 1,
+                "qty": round(position_multiplier, 3),  # Show position size multiplier
                 "profit": round(profit, 2),
                 "profit_percent": round((profit / entry_price * 100) if entry_price > 0 else 0, 2),
                 "candle_type": str(signal_row.get('candle_type', '')),
                 "signal_reason": str(signal_row.get('signal_reason', '')),
-                "exit_reason": exit_reason
+                "exit_reason": exit_reason,
+                "position_size": round(position_multiplier, 3)  # Add position size info
             })
             
             symbol_profit += profit
