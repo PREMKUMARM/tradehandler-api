@@ -36,7 +36,7 @@ class CommentaryService:
         self.max_messages = max_messages
         self.commentary_queue: deque = deque(maxlen=max_messages)
         self.commentary_generator = get_commentary_generator()
-        self.last_candle_timestamps: Dict[str, int] = {}  # {symbol: last_5min_timestamp}
+        self.last_candle_timestamps: Dict[str, int] = {}  # {symbol: last_5min_period_start}
         self.is_initialized = False
         self._lock = asyncio.Lock()
     
@@ -157,16 +157,33 @@ class CommentaryService:
     async def process_new_candle(self, symbol: str, ticker_data: Dict, signal_data: Dict):
         """Process a new candle and generate commentary"""
         try:
-            # Get current 5-minute candle timestamp
+            # Get current 5-minute candle timestamp from ticker
             current_timestamp_ms = ticker_data.get('timestamp', 0)
-            current_5min_timestamp = (current_timestamp_ms // 300000) * 300000
+            # Round down to get the start of current 5-minute period
+            current_5min_start = (current_timestamp_ms // 300000) * 300000
+            # Calculate the close_time of the candle (end of the 5-minute period, 1ms before next)
+            # For a 5-minute candle: close_time = start + 299999ms
+            candle_close_timestamp = current_5min_start + 299999
             
-            # Check if this is a new candle
-            last_5min_timestamp = self.last_candle_timestamps.get(symbol, 0)
-            is_new_candle = (current_5min_timestamp > last_5min_timestamp)
+            # Check if this is a new candle (compare start times)
+            last_5min_start = self.last_candle_timestamps.get(symbol, 0)
+            is_new_candle = (current_5min_start > last_5min_start)
             
             if not is_new_candle:
                 return []  # Not a new candle, no commentary
+            
+            # Fetch the actual kline data to get precise close_time
+            # This ensures we use the exact timestamp when the candle closed
+            try:
+                from utils.binance_client import fetch_klines
+                klines = await fetch_klines(symbol, '5m', limit=1)
+                if klines and len(klines) > 0:
+                    # Use the actual close_time from the kline
+                    actual_close_time = klines[0].get('close_time') or klines[0].get('timestamp', candle_close_timestamp)
+                    candle_close_timestamp = actual_close_time
+            except Exception as e:
+                # Fallback to calculated close_time if fetch fails
+                print(f"[Commentary Service] Could not fetch kline for {symbol}, using calculated close_time: {e}")
             
             # Build current data
             validation_checks = signal_data.get('validation_checks', {})
@@ -177,7 +194,7 @@ class CommentaryService:
                 'high': ticker_data.get('high_24h', 0),
                 'low': ticker_data.get('low_24h', 0),
                 'volume': ticker_data.get('volume_24h', 0),
-                'timestamp': current_5min_timestamp,
+                'timestamp': candle_close_timestamp,
                 'candle_pattern': signal_data.get('candle_pattern', ''),
                 'signal': signal_data.get('signal'),
                 'signal_priority': signal_data.get('signal_priority'),
@@ -205,8 +222,8 @@ class CommentaryService:
                 for msg in messages:
                     self.commentary_queue.append(msg)
             
-            # Update timestamp
-            self.last_candle_timestamps[symbol] = current_5min_timestamp
+            # Update timestamp (store the start of the period for comparison)
+            self.last_candle_timestamps[symbol] = current_5min_start
             
             return messages
             
