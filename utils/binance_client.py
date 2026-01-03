@@ -13,7 +13,7 @@ async def fetch_klines(symbol: str, interval: str, limit: int = 100) -> List[dic
     Fetch candlestick data from Binance Futures API
     
     Args:
-        symbol: Trading pair symbol (e.g., "BTCUSDT")
+        symbol: Trading pair symbol (e.g., "ETHUSDT")
         interval: Timeframe (1m, 5m, 15m, 30m, 1h, 4h, 1d)
         limit: Number of candles to fetch (default: 100)
     

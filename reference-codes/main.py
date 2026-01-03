@@ -5,7 +5,7 @@ from binance_client import fetch_klines
 from rsi_calculator import compute_rsi
 
 app = FastAPI()
-SYMBOLS = ["1000PEPEUSDT","BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
+SYMBOLS = ["1000PEPEUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
 TIMEFRAMES = ["1m", "5m", "15m", "30m"]
 latest_rsi_data = {}
 

@@ -449,162 +449,83 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                                 return (None, None, None)
                             
                             prev_row = df.loc[current_idx - 1]
-                            prev_candle_type = prev_row.get('candle_type', '')
+                            prev_2_row = df.loc[current_idx - 2] if current_idx >= 2 else None
                             
-                            # Check for Three Black Crows pattern
-                            if prev_candle_type != 'Three Black Crows':
+                            # SCALPING: Skip first 5 candles to avoid market open volatility
+                            if current_idx < 5:
                                 return (None, None, None)
                             
+                            # Calculate VWAP distance
+                            vwap_diff_percent = abs(close - vwap) / vwap * 100
+                            MAX_VWAP_DISTANCE_PCT = 2.5  # Relaxed for more signals (scalping)
+                            
+                            if vwap_diff_percent > MAX_VWAP_DISTANCE_PCT:
+                                return (None, None, None)
+                            
+                            # BUY SIGNALS - Multiple patterns for scalping
+                            bullish_patterns = [
+                                'Hammer', 'Dragonfly Doji', 'Piercing Pattern', 'Inverted Hammer',
+                                'Bullish Engulfing', 'Long White Candle', 'Morning Star'
+                            ]
+                            
+                            is_bullish_pattern = any(pattern in candle_type for pattern in bullish_patterns)
                             is_green_candle = close > open_price
                             close_above_vwap = close > vwap
                             high_above_vwap = high > vwap
                             
-                            # VWAP proximity check: entry should be within 2% of VWAP
-                            vwap_diff_percent = abs(close - vwap) / vwap * 100
-                            MAX_VWAP_DISTANCE_PCT = 2.0  # Maximum 2% distance from VWAP
-                            
-                            if vwap_diff_percent > MAX_VWAP_DISTANCE_PCT:
-                                return (None, None, None)  # Entry too far from VWAP
-                            
-                            high_performance_candle_types = [
-                                'Dragonfly Doji', 'Piercing Pattern',
-                                'Inverted Hammer', 'Long White Candle'
-                            ]
-                            current_candle_matches = any(pattern in candle_type for pattern in high_performance_candle_types)
-                            
-                            if not (is_green_candle and (close_above_vwap or high_above_vwap) and current_candle_matches):
+                            # BUY: Green candle with bullish pattern near/above VWAP
+                            if not (is_green_candle and is_bullish_pattern and (close_above_vwap or high_above_vwap)):
                                 return (None, None, None)
                             
-                            # Pattern strength validation: Inverted Hammer needs stronger confirmation
-                            if 'Inverted Hammer' in candle_type:
-                                # For Inverted Hammer, require next candle confirmation
-                                if current_idx < len(df) - 1:
-                                    next_row = df.loc[current_idx + 1]
-                                    next_close = next_row.get('close', 0)
-                                    next_open = next_row.get('open', 0)
-                                    # Next candle should be bullish and close higher than entry
-                                    if not (next_close > next_open and next_close > close):
-                                        return (None, None, None)  # Inverted Hammer not confirmed
-                                else:
-                                    # Can't confirm if it's the last candle
-                                    return (None, None, None)
-                            
-                            # Entry timing check: Avoid entries in first 30 minutes (volatile period)
-                            # AI analysis: Entry at 09:50:00 (shortly after market open) was problematic
-                            # For backtest, we'll use index position as proxy
-                            # Skip if it's one of the first 6 candles (assuming 5min candles = first 30 mins)
-                            # This gives market time to stabilize after opening volatility
-                            if current_idx < 6:
-                                return (None, None, None)
-                            
-                            # Confirmation requirement: Check if previous reversal pattern is strong
-                            # Look at the candle before Three Black Crows to ensure proper context
-                            if current_idx >= 3:
-                                prev_prev_row = df.loc[current_idx - 2]
-                                # Ensure we're not entering during a strong downtrend
-                                if prev_prev_row.get('close', 0) < prev_row.get('close', 0):
-                                    # Still in downtrend, need stronger confirmation
-                                    if 'Inverted Hammer' in candle_type:
-                                        return (None, None, None)  # Inverted Hammer too weak in strong downtrend
-                            
-                            # AI Recommendation: Additional confirmation from RSI and MACD
-                            # RSI check (needs 14 candles) - run earlier than MACD
+                            # Simple RSI check - not too overbought
                             if current_idx >= 14:
                                 current_rsi = row.get('rsi', 50)
-                                prev_rsi = prev_row.get('rsi', 50) if current_idx > 0 else 50
-                                
-                                # RSI confirmation: Stricter overbought check (AI analysis showed RSI 79.809)
-                                # For reversal patterns, RSI should be in neutral to slightly oversold range
-                                if pd.notna(current_rsi) and pd.notna(prev_rsi):
-                                    # Reject if RSI is overbought (> 65) - stricter than before (was 70)
-                                    # RSI > 65 indicates strong upward momentum that may reverse
-                                    if current_rsi > 65:  # Overbought - avoid entry (stricter threshold)
+                                if pd.notna(current_rsi):
+                                    if current_rsi > 75:  # Too overbought
                                         return (None, None, None)
-                                    # Prefer RSI in neutral range (30-60) or recovering from oversold
-                                    if current_rsi < prev_rsi and current_rsi < 40:
-                                        # RSI declining and oversold - wait for confirmation
+                                    if current_rsi < 25:  # Too oversold, might be weak
                                         return (None, None, None)
-                                    # Additional check: If RSI is very high (> 60), require it to be turning down
-                                    # This prevents entries at the peak of momentum
-                                    if current_rsi > 60 and current_rsi > prev_rsi:
-                                        # RSI high and still rising - likely overbought, avoid entry
-                                        return (None, None, None)
-                                    # AI Recommendation: RSI should be moving out of oversold/overbought territory
-                                    # For reversal patterns, prefer RSI that's recovering from oversold (< 40)
-                                    # If RSI is oversold (< 30), require it to be turning up (recovering)
-                                    if current_rsi < 30:
-                                        # Very oversold - require RSI to be turning up for reversal confirmation
-                                        if current_rsi <= prev_rsi:
-                                            # RSI still declining or flat - wait for recovery
-                                            return (None, None, None)
                             
-                            # MACD confirmation (needs 26 candles) - additional layer of confirmation
+                            # Simple MACD check - prefer bullish or neutral
                             if current_idx >= 26:
                                 current_macd = row.get('macd', 0)
                                 current_macd_signal = row.get('macd_signal', 0)
-                                prev_macd = prev_row.get('macd', 0) if current_idx > 0 else 0
-                                prev_macd_signal = prev_row.get('macd_signal', 0) if current_idx > 0 else 0
-                                
                                 if pd.notna(current_macd) and pd.notna(current_macd_signal):
-                                    # MACD should be above signal (bullish) or crossing above
                                     macd_bullish = current_macd > current_macd_signal
-                                    macd_crossing = (prev_macd <= prev_macd_signal) and (current_macd > current_macd_signal)
-                                    
-                                    if not (macd_bullish or macd_crossing):
-                                        # MACD not confirming - skip trade
+                                    macd_near_cross = abs(current_macd - current_macd_signal) < abs(current_macd) * 0.1
+                                    if not (macd_bullish or macd_near_cross):
                                         return (None, None, None)
                             
-                            # AI Recommendation: Volume confirmation for reversal patterns
-                            # High volume confirms the strength of the reversal signal
-                            if current_idx >= 1:
-                                current_volume = row.get('volume', 0)
-                                # Calculate average volume over last 5 candles (if available)
-                                if current_idx >= 5:
-                                    recent_volumes = [df.loc[current_idx - i].get('volume', current_volume) for i in range(5)]
-                                    avg_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else current_volume
-                                    
-                                    # Require current volume to be at least 80% of average volume
-                                    # Low volume suggests weak conviction in the reversal
-                                    if avg_volume > 0 and current_volume < avg_volume * 0.8:
-                                        # Volume too low - pattern may not be reliable
-                                        # For weaker patterns, be more strict
-                                        if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
-                                            return (None, None, None)  # Weak patterns need volume confirmation
-                                elif current_volume == 0:
-                                    # No volume data - skip trade
+                            # Volume check - ensure some volume
+                            current_volume = row.get('volume', 0)
+                            if current_idx >= 5:
+                                recent_volumes = [df.loc[current_idx - i].get('volume', current_volume) for i in range(5)]
+                                avg_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else current_volume
+                                if avg_volume > 0 and current_volume < avg_volume * 0.5:  # At least 50% of average
                                     return (None, None, None)
                             
-                            # Check for significant price movement before entry (AI recommendation)
-                            # If price moved significantly in recent candles, may indicate exhaustion
-                            if current_idx >= 3:
-                                # Check price change in last 3 candles
-                                price_3_candles_ago = df.loc[current_idx - 3].get('close', close) if current_idx >= 3 else close
-                                price_change_pct = abs(close - price_3_candles_ago) / price_3_candles_ago * 100
-                                
-                                # If price moved more than 2% in last 3 candles, be cautious
-                                if price_change_pct > 2.0:
-                                    # Significant movement - require stronger confirmation
-                                    # For weaker patterns, reject if price moved too much
-                                    if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
-                                        return (None, None, None)  # Weaker patterns need more stability
-                                    # For stronger patterns, still allow but with caution
-                                    # (Long White Candle is strong, so we allow it but note the risk)
+                            # Momentum: Price should be moving up (close higher than 1-2 candles ago)
+                            if current_idx >= 2:
+                                price_1_candle_ago = prev_row.get('close', close)
+                                price_2_candles_ago = prev_2_row.get('close', close) if prev_2_row is not None else close
+                                if close <= price_1_candle_ago and close <= price_2_candles_ago:
+                                    return (None, None, None)
                             
-                            # Pattern reliability in context: Check recent price action
-                            # Look at last 5 candles to assess market sentiment
-                            if current_idx >= 5:
-                                recent_closes = [df.loc[current_idx - i].get('close', close) for i in range(6)]
-                                # Check if price is in a strong downtrend (declining closes)
-                                declining_count = sum(1 for i in range(1, len(recent_closes)) if recent_closes[i] < recent_closes[i-1])
-                                if declining_count >= 4:  # 4 out of 5 recent candles declining
-                                    # Strong downtrend - pattern may not be reliable
-                                    if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
-                                        # Weaker patterns need stronger confirmation in downtrend
-                                        return (None, None, None)
+                            # Pattern-specific confirmations
+                            if 'Inverted Hammer' in candle_type:
+                                if current_idx < len(df) - 1:
+                                    next_row = df.loc[current_idx + 1]
+                                    next_close = next_row.get('close', close)
+                                    if next_close > close:
+                                        matched_pattern = 'Inverted Hammer (Confirmed)'
+                                    else:
+                                        matched_pattern = 'Inverted Hammer'
+                                else:
+                                    matched_pattern = 'Inverted Hammer'
+                            else:
+                                matched_pattern = next((p for p in bullish_patterns if p in candle_type), candle_type)
                             
-                            # All checks passed - generate signal
-                            matched_pattern = next((p for p in high_performance_candle_types if p in candle_type), candle_type)
-                            reason = f"Priority 1: {matched_pattern} candle {'closing' if close_above_vwap else 'high'} above VWAP after Three Black Crows (VWAP: {vwap_diff_percent:.2f}%)"
+                            reason = f"Scalping BUY: {matched_pattern} above VWAP (VWAP dist: {vwap_diff_percent:.2f}%)"
                             return ('BUY', 1, reason)
                         
                         # Apply signal generation
@@ -637,12 +558,13 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                             exit_price = current_price
                             exit_idx = len(df) - 1
                             
-                            # Stop-loss: 1.5% below entry price (tighter as per AI recommendation)
-                            STOP_LOSS_PCT = 1.5
-                            stop_loss_price = entry_price * (1 - STOP_LOSS_PCT / 100.0)
+                            # SCALPING: Tighter stops and profit targets
+                            STOP_LOSS_PCT = 1.0  # Tighter stop for scalping
+                            TRAILING_STOP_PCT = 0.6  # Tighter trailing stop
+                            PROFIT_TARGET_PCT = 0.6  # Quick profit target (0.6% for scalping)
                             
-                            # Trailing stop: Exit if price drops 1% from highest point after entry
-                            TRAILING_STOP_PCT = 1.0
+                            stop_loss_price = entry_price * (1 - STOP_LOSS_PCT / 100.0)
+                            profit_target_price = entry_price * (1 + PROFIT_TARGET_PCT / 100.0)
                             
                             # Track highest price after entry for trailing stop
                             highest_after_entry = entry_price
@@ -652,11 +574,19 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                             for check_idx in range(entry_idx + 1, len(df)):
                                 check_row = df.loc[check_idx]
                                 check_close = float(check_row.get('close', entry_price))
+                                check_high = float(check_row.get('high', entry_price))
                                 check_low = float(check_row.get('low', entry_price))
                                 
                                 # Update highest price after entry
                                 if check_close > highest_after_entry:
                                     highest_after_entry = check_close
+                                
+                                # SCALPING: Profit target hit - take quick profit
+                                if check_high >= profit_target_price:
+                                    exit_price = profit_target_price
+                                    exit_idx = check_idx
+                                    exit_reason = f"Profit target hit ({PROFIT_TARGET_PCT}%)"
+                                    break
                                 
                                 # Check stop-loss (price hit stop-loss level)
                                 if check_low <= stop_loss_price:
@@ -674,12 +604,12 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
                                         exit_reason = f"Trailing stop triggered ({TRAILING_STOP_PCT}% from high)"
                                         break
                                 
-                                # Early exit if price doesn't confirm (price drops below entry after 2+ candles)
+                                # Quick exit if price moves against us (scalping - don't wait)
                                 if check_idx >= entry_idx + 2:
                                     if check_close < entry_price * 0.995:  # 0.5% below entry
                                         exit_price = check_close
                                         exit_idx = check_idx
-                                        exit_reason = "Early exit: Price not confirming trade"
+                                        exit_reason = "Quick exit: Price moving against trade"
                                         break
                             
                             try:
@@ -889,7 +819,7 @@ async def backtest_vwap_strategy_websocket(websocket: WebSocket):
 async def backtest_binance_futures_websocket(websocket: WebSocket):
     """
     WebSocket endpoint for streaming Binance Futures backtest results in real-time
-    Client sends: {"start_date": "2025-11-17", "end_date": "2025-12-26", "timeframe": "5minute", "symbols": ["BTCUSDT", "ETHUSDT"]}
+    Client sends: {"start_date": "2025-11-17", "end_date": "2025-12-26", "timeframe": "5minute", "symbols": ["ETHUSDT", "SOLUSDT"]}
     Server streams: {"type": "result", "data": {...}} for each symbol
     Server sends: {"type": "summary", "data": {...}} when complete
     Server sends: {"type": "error", "message": "..."} on error
@@ -1125,19 +1055,27 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
                     high_above_vwap = high > vwap
                     
                     vwap_diff_percent = abs(close - vwap) / vwap * 100
-                    MAX_VWAP_DISTANCE_PCT = 2.0
+                    MAX_VWAP_DISTANCE_PCT = 1.5  # Tighter VWAP distance for better entries
                     
                     if vwap_diff_percent > MAX_VWAP_DISTANCE_PCT:
                         return (None, None, None)
                     
+                    # Prefer stronger reversal patterns, Long White Candle needs extra confirmation
                     high_performance_candle_types = [
-                        'Dragonfly Doji', 'Piercing Pattern',
-                        'Inverted Hammer', 'Long White Candle'
+                        'Dragonfly Doji', 'Piercing Pattern', 'Inverted Hammer'
                     ]
-                    current_candle_matches = any(pattern in candle_type for pattern in high_performance_candle_types)
+                    long_white_candle = 'Long White Candle' in candle_type
+                    current_candle_matches = any(pattern in candle_type for pattern in high_performance_candle_types) or long_white_candle
                     
                     if not (is_green_candle and (close_above_vwap or high_above_vwap) and current_candle_matches):
                         return (None, None, None)
+                    
+                    # Trend filter: Check if price is above 20-period EMA
+                    if current_idx >= 20:
+                        closes = df['close'].tolist()
+                        ema20 = pd.Series(closes).ewm(span=20, adjust=False).mean()
+                        if close < ema20.iloc[-1]:  # Price below EMA20 suggests downtrend
+                            return (None, None, None)
                     
                     if 'Inverted Hammer' in candle_type:
                         if current_idx < len(df) - 1:
@@ -1149,7 +1087,7 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
                         else:
                             return (None, None, None)
                     
-                    if current_idx < 6:
+                    if current_idx < 10:  # Increased from 6 to avoid market open volatility
                         return (None, None, None)
                     
                     if current_idx >= 3:
@@ -1163,15 +1101,24 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
                         prev_rsi = prev_row.get('rsi', 50) if current_idx > 0 else 50
                         
                         if pd.notna(current_rsi) and pd.notna(prev_rsi):
-                            if current_rsi > 65:
-                                return (None, None, None)
-                            if current_rsi < prev_rsi and current_rsi < 40:
-                                return (None, None, None)
-                            if current_rsi > 60 and current_rsi > prev_rsi:
-                                return (None, None, None)
-                            if current_rsi < 30:
+                            # For Long White Candle, require RSI to be in better range (35-55)
+                            if long_white_candle:
+                                if current_rsi < 35 or current_rsi > 55:
+                                    return (None, None, None)
+                                # Require RSI to be rising for Long White Candle
                                 if current_rsi <= prev_rsi:
                                     return (None, None, None)
+                            else:
+                                # For other patterns, original RSI logic
+                                if current_rsi > 65:
+                                    return (None, None, None)
+                                if current_rsi < prev_rsi and current_rsi < 40:
+                                    return (None, None, None)
+                                if current_rsi > 60 and current_rsi > prev_rsi:
+                                    return (None, None, None)
+                                if current_rsi < 30:
+                                    if current_rsi <= prev_rsi:
+                                        return (None, None, None)
                     
                     if current_idx >= 26:
                         current_macd = row.get('macd', 0)
@@ -1188,14 +1135,26 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
                     
                     if current_idx >= 1:
                         current_volume = row.get('volume', 0)
-                        if current_idx >= 5:
-                            recent_volumes = [df.loc[current_idx - i].get('volume', current_volume) for i in range(5)]
+                        if current_idx >= 10:  # Use longer period for volume average
+                            recent_volumes = [df.loc[current_idx - i].get('volume', current_volume) for i in range(10)]
                             avg_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else current_volume
                             
-                            if avg_volume > 0 and current_volume < avg_volume * 0.8:
-                                if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
+                            # Long White Candle requires volume to be at least 120% of average
+                            if long_white_candle:
+                                if avg_volume > 0 and current_volume < avg_volume * 1.2:
                                     return (None, None, None)
+                            else:
+                                # Other patterns require at least 80% of average
+                                if avg_volume > 0 and current_volume < avg_volume * 0.8:
+                                    if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
+                                        return (None, None, None)
                         elif current_volume == 0:
+                            return (None, None, None)
+                    
+                    # Momentum confirmation: Price should be moving up (close higher than 2 candles ago)
+                    if current_idx >= 2:
+                        price_2_candles_ago = df.loc[current_idx - 2].get('close', close)
+                        if close <= price_2_candles_ago:
                             return (None, None, None)
                     
                     if current_idx >= 3:
@@ -1213,7 +1172,11 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
                             if 'Inverted Hammer' in candle_type or 'Piercing Pattern' in candle_type:
                                 return (None, None, None)
                     
-                    matched_pattern = next((p for p in high_performance_candle_types if p in candle_type), candle_type)
+                    # Determine matched pattern
+                    if long_white_candle:
+                        matched_pattern = 'Long White Candle'
+                    else:
+                        matched_pattern = next((p for p in high_performance_candle_types if p in candle_type), candle_type)
                     reason = f"Priority 1: {matched_pattern} candle {'closing' if close_above_vwap else 'high'} above VWAP after Three Black Crows (VWAP: {vwap_diff_percent:.2f}%)"
                     return ('BUY', 1, reason)
                 
@@ -1242,19 +1205,31 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
                     exit_price = current_price
                     exit_idx = len(df) - 1
                     
-                    STOP_LOSS_PCT = 1.5
+                    # SCALPING: Tighter stops and profit targets
+                    STOP_LOSS_PCT = 1.0  # Tighter stop for scalping
+                    TRAILING_STOP_PCT = 0.6  # Tighter trailing stop
+                    PROFIT_TARGET_PCT = 0.6  # Quick profit target (0.6% for scalping)
+                    
                     stop_loss_price = entry_price * (1 - STOP_LOSS_PCT / 100.0)
-                    TRAILING_STOP_PCT = 1.0
+                    profit_target_price = entry_price * (1 + PROFIT_TARGET_PCT / 100.0)
                     highest_after_entry = entry_price
                     exit_reason = "End of period"
                     
                     for check_idx in range(entry_idx + 1, len(df)):
                         check_row = df.loc[check_idx]
                         check_close = float(check_row.get('close', entry_price))
+                        check_high = float(check_row.get('high', entry_price))
                         check_low = float(check_row.get('low', entry_price))
                         
                         if check_close > highest_after_entry:
                             highest_after_entry = check_close
+                        
+                        # SCALPING: Profit target hit - take quick profit
+                        if check_high >= profit_target_price:
+                            exit_price = profit_target_price
+                            exit_idx = check_idx
+                            exit_reason = f"Profit target hit ({PROFIT_TARGET_PCT}%)"
+                            break
                         
                         if check_low <= stop_loss_price:
                             exit_price = stop_loss_price
@@ -1270,11 +1245,14 @@ async def backtest_binance_futures_websocket(websocket: WebSocket):
                                 exit_reason = f"Trailing stop triggered ({TRAILING_STOP_PCT}% from high)"
                                 break
                         
-                        if check_idx >= entry_idx + 2:
-                            if check_close < entry_price * 0.995:
+                        # Quick exit if price moves against us (scalping - don't wait)
+                        if check_idx >= entry_idx + 2:  # Wait at least 2 candles
+                            price_drop_pct = (entry_price - check_close) / entry_price * 100
+                            # Exit early if price drops >0.5% (scalping - quick exits)
+                            if price_drop_pct > 0.5:
                                 exit_price = check_close
                                 exit_idx = check_idx
-                                exit_reason = "Early exit: Price not confirming trade"
+                                exit_reason = "Quick exit: Price moving against trade"
                                 break
                     
                     try:

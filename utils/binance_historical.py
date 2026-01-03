@@ -57,7 +57,7 @@ async def fetch_historical_klines(
     Fetch historical klines from Binance Futures API for a date range
     
     Args:
-        symbol: Trading pair symbol (e.g., "BTCUSDT")
+        symbol: Trading pair symbol (e.g., "ETHUSDT")
         interval: Binance interval (1m, 5m, 15m, 30m, 1h, 4h, 1d)
         start_time: Start datetime
         end_time: End datetime

@@ -27,7 +27,7 @@ import httpx
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
 # Binance Monitor Configuration
-BINANCE_SYMBOLS = ["1000PEPEUSDT", "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
+BINANCE_SYMBOLS = ["1000PEPEUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT"]
 BINANCE_TIMEFRAMES = ["1m", "5m", "15m", "30m"]
 # Global storage for latest VWAP data (in-memory cache)
 _latest_binance_vwap_data = {}
@@ -737,7 +737,7 @@ async def get_binance_vwap(request: Request, symbol: str = None):
     Get current VWAP values for Binance symbols
     
     Args:
-        symbol: Optional symbol filter (e.g., "BTCUSDT"). If not provided, returns all symbols.
+        symbol: Optional symbol filter (e.g., "ETHUSDT"). If not provided, returns all symbols.
     
     Returns:
         VWAP data for symbol(s) across all timeframes
@@ -776,9 +776,9 @@ async def binance_vwap_websocket(websocket: WebSocket):
     
     Server streams VWAP data every 5 seconds:
     {
-        "BTCUSDT": {
-            "1m": {"vwap": 89650.23, "current_price": 89680.45, "position": "Above"},
-            "5m": {"vwap": 89680.12, "current_price": 89690.34, "position": "Above"},
+        "ETHUSDT": {
+            "1m": {"vwap": 2450.23, "current_price": 2455.45, "position": "Above"},
+            "5m": {"vwap": 2452.12, "current_price": 2458.34, "position": "Above"},
             "15m": {"vwap": 89700.67, "current_price": 89650.12, "position": "Below"},
             "30m": {"vwap": 89720.45, "current_price": 89680.78, "position": "Below"}
         },
@@ -845,7 +845,7 @@ async def get_binance_futures_live_prices(request: Request, symbols: str = None,
     Get live prices for Binance Futures symbols
     
     Args:
-        symbols: Comma-separated list of symbols (e.g., "BTCUSDT,ETHUSDT"). 
+        symbols: Comma-separated list of symbols (e.g., "ETHUSDT,SOLUSDT"). 
                  If not provided, returns prices for default BINANCE_SYMBOLS.
         include_signals: If True, includes candle pattern and trading signals (slower).
     
@@ -875,8 +875,6 @@ async def get_binance_futures_live_prices(request: Request, symbols: str = None,
                 ticker_data = {
                     "symbol": symbol,
                     "price": float(ticker.get('lastPrice', 0)),
-                    "price_change_24h": float(ticker.get('priceChange', 0)),
-                    "price_change_percent_24h": float(ticker.get('priceChangePercent', 0)),
                     "high_24h": float(ticker.get('highPrice', 0)),
                     "low_24h": float(ticker.get('lowPrice', 0)),
                     "volume_24h": float(ticker.get('volume', 0)),
@@ -890,7 +888,8 @@ async def get_binance_futures_live_prices(request: Request, symbols: str = None,
                     "candle_pattern": "N/A",
                     "signal": None,
                     "signal_priority": None,
-                    "signal_reason": None
+                    "signal_reason": None,
+                    "validation_checks": None
                 }
                 result.append(ticker_data)
         
@@ -899,7 +898,7 @@ async def get_binance_futures_live_prices(request: Request, symbols: str = None,
             try:
                 from utils.binance_client import fetch_klines
                 # Fetch klines for all symbols concurrently
-                klines_tasks = {ticker_data['symbol']: fetch_klines(ticker_data['symbol'], '5m', limit=100) 
+                klines_tasks = {ticker_data['symbol']: fetch_klines(ticker_data['symbol'], '5m', limit=200)  # 200 candles = ~16.7 hours for better signal accuracy 
                                for ticker_data in result}
                 
                 # Wait for all klines to be fetched
@@ -923,6 +922,7 @@ async def get_binance_futures_live_prices(request: Request, symbols: str = None,
                         ticker_data['signal'] = signal_data.get('signal')
                         ticker_data['signal_priority'] = signal_data.get('signal_priority')
                         ticker_data['signal_reason'] = signal_data.get('signal_reason')
+                        ticker_data['validation_checks'] = signal_data.get('validation_checks')
                     except Exception as e:
                         print(f"Error analyzing signals for {symbol}: {e}")
                         # Keep default values
@@ -952,22 +952,174 @@ async def get_binance_futures_live_prices(request: Request, symbols: str = None,
         )
 
 
+@router.get("/binance-futures/validate-signals")
+async def validate_binance_signals(
+    symbol: str = "ETHUSDT",
+    request: Request = None
+):
+    """
+    Validation endpoint to debug signal generation
+    
+    Returns detailed analysis of why signals are/aren't being generated for a symbol
+    """
+    request_id = get_request_id(request)
+    
+    try:
+        from utils.binance_client import fetch_klines
+        import pandas as pd
+        
+        # Fetch klines
+        klines = await fetch_klines(symbol.upper(), '5m', limit=200)
+        
+        if not klines or len(klines) < 30:
+            return SuccessResponse(
+                data={
+                    "error": f"Insufficient data: {len(klines) if klines else 0} candles (need at least 30)"
+                },
+                message="Signal validation failed",
+                request_id=request_id
+            )
+        
+        # Analyze signals
+        signal_data = analyze_symbol_for_signals(symbol, klines)
+        
+        # Get detailed analysis
+        df = pd.DataFrame(klines)
+        latest_idx = len(df) - 1
+        latest_row = df.iloc[latest_idx]
+        prev_row = df.iloc[latest_idx - 1] if latest_idx > 0 else None
+        
+        # Calculate indicators for display
+        from utils.binance_vwap import compute_vwap
+        from utils.indicators import calculate_rsi
+        
+        vwap = compute_vwap(klines)
+        closes = df['close'].tolist()
+        rsi_values = calculate_rsi(closes, period=14)
+        latest_rsi = rsi_values[-1] if isinstance(rsi_values, list) and len(rsi_values) > 0 else None
+        
+        # Calculate MACD
+        macd_info = {}
+        if len(closes) >= 35:
+            series = pd.Series(closes)
+            ema_fast = series.ewm(span=12, adjust=False).mean()
+            ema_slow = series.ewm(span=26, adjust=False).mean()
+            macd_line = ema_fast - ema_slow
+            signal_line = macd_line.ewm(span=9, adjust=False).mean()
+            macd_info = {
+                "macd": float(macd_line.iloc[-1]) if not pd.isna(macd_line.iloc[-1]) else None,
+                "macd_signal": float(signal_line.iloc[-1]) if not pd.isna(signal_line.iloc[-1]) else None,
+                "macd_bullish": float(macd_line.iloc[-1]) > float(signal_line.iloc[-1]) if not (pd.isna(macd_line.iloc[-1]) or pd.isna(signal_line.iloc[-1])) else None
+            }
+        
+        # Detect patterns for all candles to get prev_candle_type
+        from utils.binance_signals import detect_candlestick_pattern
+        df['candle_type'] = df.index.map(lambda i: detect_candlestick_pattern(i, df))
+        
+        # Check signal conditions
+        current_candle_type = signal_data.get('candle_pattern', 'N/A')
+        prev_candle_type = df.iloc[latest_idx - 1]['candle_type'] if latest_idx > 0 else 'N/A'
+        
+        close = float(latest_row.get('close', 0))
+        open_price = float(latest_row.get('open', 0))
+        high = float(latest_row.get('high', 0))
+        low = float(latest_row.get('low', 0))
+        
+        is_green = close > open_price
+        is_red = close < open_price
+        close_above_vwap = close > vwap if vwap else False
+        close_below_vwap = close < vwap if vwap else False
+        vwap_diff_pct = abs(close - vwap) / vwap * 100 if vwap and vwap > 0 else None
+        
+        # Check BUY conditions
+        buy_conditions = {
+            "prev_candle_is_three_black_crows": prev_candle_type == "Three Black Crows",
+            "current_candle_is_green": is_green,
+            "close_or_high_above_vwap": close_above_vwap or high > vwap if vwap else False,
+            "current_candle_matches_pattern": any(p in current_candle_type for p in ['Dragonfly Doji', 'Piercing Pattern', 'Inverted Hammer', 'Long White Candle']),
+            "vwap_distance_ok": vwap_diff_pct <= 2.0 if vwap_diff_pct else False,
+            "rsi_ok": latest_rsi is not None and latest_rsi <= 65 and latest_rsi >= 30,
+            "macd_bullish": macd_info.get("macd_bullish", False) if macd_info else False,
+            "sufficient_data": latest_idx >= 6
+        }
+        
+        # Check SELL conditions
+        sell_conditions = {
+            "prev_candle_is_three_white_soldiers": prev_candle_type == "Three White Soldiers",
+            "current_candle_is_red": is_red,
+            "close_or_low_below_vwap": close_below_vwap or low < vwap if vwap else False,
+            "current_candle_matches_pattern": any(p in current_candle_type for p in ['Gravestone Doji', 'Dark Cloud Cover', 'Shooting Star', 'Long Black Candle']),
+            "vwap_distance_ok": vwap_diff_pct <= 2.0 if vwap_diff_pct else False,
+            "rsi_ok": latest_rsi is not None and latest_rsi >= 35 and latest_rsi <= 70,
+            "macd_bearish": macd_info.get("macd_bullish", False) == False if macd_info else False,
+            "sufficient_data": latest_idx >= 6
+        }
+        
+        validation_result = {
+            "symbol": symbol.upper(),
+            "signal_generated": signal_data.get('signal'),
+            "signal_priority": signal_data.get('signal_priority'),
+            "signal_reason": signal_data.get('signal_reason'),
+            "current_candle_pattern": current_candle_type,
+            "previous_candle_pattern": prev_candle_type,
+            "indicators": {
+                "vwap": round(vwap, 2) if vwap else None,
+                "current_price": round(close, 2),
+                "vwap_distance_percent": round(vwap_diff_pct, 2) if vwap_diff_pct else None,
+                "rsi": round(latest_rsi, 2) if latest_rsi else None,
+                "macd": macd_info
+            },
+            "current_candle": {
+                "open": round(open_price, 2),
+                "high": round(high, 2),
+                "low": round(low, 2),
+                "close": round(close, 2),
+                "is_green": is_green,
+                "is_red": is_red,
+                "close_above_vwap": close_above_vwap,
+                "close_below_vwap": close_below_vwap
+            },
+            "buy_conditions": buy_conditions,
+            "sell_conditions": sell_conditions,
+            "buy_conditions_met": all(buy_conditions.values()),
+            "sell_conditions_met": all(sell_conditions.values()),
+            "data_points": len(klines),
+            "latest_candle_index": latest_idx
+        }
+        
+        return SuccessResponse(
+            data=validation_result,
+            message=f"Signal validation for {symbol.upper()}",
+            request_id=request_id
+        )
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error validating signals: {str(e)}"
+        )
+
+
 @router.websocket("/ws/binance-futures/live-prices")
 async def binance_futures_live_prices_websocket(websocket: WebSocket):
     """
-    WebSocket endpoint for real-time Binance Futures price streaming
+    WebSocket endpoint for real-time Binance Futures price streaming using WebSocket ticker stream
     
-    Client can optionally send: {"symbols": ["BTCUSDT", "ETHUSDT"]}
-    Server streams price updates every 2 seconds:
+    Client can optionally send: {"symbols": ["ETHUSDT", "SOLUSDT"]}
+    Server streams price updates in real-time from Binance WebSocket:
     [
         {
-            "symbol": "BTCUSDT",
-            "price": 89650.23,
-            "price_change_24h": 1250.45,
+            "symbol": "ETHUSDT",
+            "price": 2450.23,
+            "price_change_24h": 45.67,
             "price_change_percent_24h": 1.42,
             "high_24h": 90200.00,
             "low_24h": 88400.00,
             "volume_24h": 1234567.89,
+            "candle_pattern": "Bullish Pattern",
+            "signal": "BUY",
             ...
         },
         ...
@@ -978,19 +1130,70 @@ async def binance_futures_live_prices_websocket(websocket: WebSocket):
     
     try:
         # Receive optional symbols list from client
-        symbols_to_fetch = BINANCE_SYMBOLS
+        symbols_to_fetch = set(BINANCE_SYMBOLS)
         try:
             message = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
             params = json.loads(message)
             if 'symbols' in params and params['symbols']:
-                symbols_to_fetch = [s.upper() for s in params['symbols']]
+                symbols_to_fetch = {s.upper() for s in params['symbols']}
         except (asyncio.TimeoutError, json.JSONDecodeError, KeyError):
             # Use default symbols if no message received or invalid
             pass
         
-        print(f"[Binance Futures WS] Streaming prices for {len(symbols_to_fetch)} symbols: {symbols_to_fetch}")
+        print(f"[Binance Futures WS] Streaming prices for {len(symbols_to_fetch)} symbols: {list(symbols_to_fetch)}")
         
-        # Stream updates every 5 seconds
+        # Start global ticker listener if not already running
+        from utils.binance_websocket_ticker import start_global_ticker_listener, get_all_latest_tickers
+        listener = await start_global_ticker_listener(symbols_filter=symbols_to_fetch)
+        
+        # Track last update time for signal analysis and cache signal results
+        import time
+        last_signal_update = {}
+        signal_cache = {}  # Cache signal results: {symbol: {candle_pattern, signal, signal_priority, signal_reason}}
+        SIGNAL_UPDATE_INTERVAL = 30  # Update signals every 30 seconds
+        
+        # Analyze signals immediately for all symbols on first connection
+        async def analyze_signals_for_symbols(symbols: set):
+            """Analyze signals for multiple symbols concurrently"""
+            from utils.binance_client import fetch_klines
+            tasks = []
+            symbol_list = list(symbols)
+            
+            for symbol in symbol_list:
+                task = fetch_klines(symbol, '5m', limit=200)  # 200 candles = ~16.7 hours for better signal accuracy
+                tasks.append((symbol, task))
+            
+            # Fetch all klines concurrently
+            klines_results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+            
+            # Analyze signals for each symbol
+            for (symbol, _), klines_result in zip(tasks, klines_results):
+                try:
+                    if isinstance(klines_result, Exception):
+                        print(f"Error fetching klines for {symbol}: {klines_result}")
+                        continue
+                    
+                    klines = klines_result
+                    signal_data = analyze_symbol_for_signals(symbol, klines)
+                    signal_cache[symbol] = {
+                        'candle_pattern': signal_data.get('candle_pattern', 'N/A'),
+                        'signal': signal_data.get('signal'),
+                        'signal_priority': signal_data.get('signal_priority'),
+                        'signal_reason': signal_data.get('signal_reason'),
+                        'validation_checks': signal_data.get('validation_checks')
+                    }
+                    last_signal_update[symbol] = time.time()
+                except Exception as e:
+                    print(f"Error analyzing signals for {symbol}: {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        # Initial signal analysis
+        print("[Binance Futures WS] Analyzing signals for all symbols on initial connection...")
+        await analyze_signals_for_symbols(symbols_to_fetch)
+        print("[Binance Futures WS] Initial signal analysis complete")
+        
+        # Stream updates from WebSocket ticker listener
         while True:
             try:
                 # Check if WebSocket is still open
@@ -998,76 +1201,56 @@ async def binance_futures_live_prices_websocket(websocket: WebSocket):
                     print("[Binance Futures WS] WebSocket not connected, breaking loop")
                     break
                 
-                # Fetch 24h ticker statistics from Binance Futures API
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(f"{BINANCE_FUTURES_API}/fapi/v1/ticker/24hr")
-                    response.raise_for_status()
-                    all_tickers = response.json()
+                # Get latest ticker data from WebSocket listener
+                all_tickers = get_all_latest_tickers()
                 
-                # Filter to requested symbols and format response
+                # Filter to requested symbols
                 result = []
-                for ticker in all_tickers:
-                    symbol = ticker.get('symbol', '')
-                    if symbol in symbols_to_fetch:
-                        ticker_data = {
-                            "symbol": symbol,
-                            "price": float(ticker.get('lastPrice', 0)),
-                            "price_change_24h": float(ticker.get('priceChange', 0)),
-                            "price_change_percent_24h": float(ticker.get('priceChangePercent', 0)),
-                            "high_24h": float(ticker.get('highPrice', 0)),
-                            "low_24h": float(ticker.get('lowPrice', 0)),
-                            "volume_24h": float(ticker.get('volume', 0)),
-                            "quote_volume_24h": float(ticker.get('quoteVolume', 0)),
-                            "open_price": float(ticker.get('openPrice', 0)),
-                            "prev_close_price": float(ticker.get('prevClosePrice', 0)),
-                            "bid_price": float(ticker.get('bidPrice', 0)),
-                            "ask_price": float(ticker.get('askPrice', 0)),
-                            "count": int(ticker.get('count', 0)),
-                            "timestamp": int(ticker.get('closeTime', 0)),
-                            "candle_pattern": "N/A",
-                            "signal": None,
-                            "signal_priority": None,
-                            "signal_reason": None
-                        }
-                        result.append(ticker_data)
+                current_time = time.time()
                 
-                # Analyze signals for each symbol (fetch klines and analyze)
-                # Use 5m timeframe for signal analysis
-                try:
-                    from utils.binance_client import fetch_klines
-                    # Fetch klines for all symbols concurrently
-                    klines_tasks = {ticker_data['symbol']: fetch_klines(ticker_data['symbol'], '5m', limit=100) 
-                                   for ticker_data in result}
+                # Check which symbols need signal updates
+                symbols_to_update = set()
+                for symbol in symbols_to_fetch:
+                    should_update = (
+                        symbol not in last_signal_update or 
+                        (current_time - last_signal_update[symbol]) >= SIGNAL_UPDATE_INTERVAL
+                    )
+                    if should_update:
+                        symbols_to_update.add(symbol)
+                
+                # Update signals for symbols that need it
+                if symbols_to_update:
+                    await analyze_signals_for_symbols(symbols_to_update)
+                
+                # Build result with cached signals
+                for symbol in symbols_to_fetch:
+                    ticker_data = all_tickers.get(symbol)
+                    if not ticker_data:
+                        continue
                     
-                    # Wait for all klines to be fetched
-                    klines_results = await asyncio.gather(*klines_tasks.values(), return_exceptions=True)
+                    # Copy ticker data
+                    ticker_result = ticker_data.copy()
                     
-                    # Map results back to symbols
-                    for ticker_data in result:
-                        symbol = ticker_data['symbol']
-                        task_idx = list(klines_tasks.keys()).index(symbol)
-                        klines_result = klines_results[task_idx]
-                        
-                        try:
-                            if isinstance(klines_result, Exception):
-                                print(f"Error fetching klines for {symbol}: {klines_result}")
-                                continue
-                            
-                            klines = klines_result
-                            # Analyze signals
-                            signal_data = analyze_symbol_for_signals(symbol, klines)
-                            ticker_data['candle_pattern'] = signal_data.get('candle_pattern', 'N/A')
-                            ticker_data['signal'] = signal_data.get('signal')
-                            ticker_data['signal_priority'] = signal_data.get('signal_priority')
-                            ticker_data['signal_reason'] = signal_data.get('signal_reason')
-                        except Exception as e:
-                            print(f"Error analyzing signals for {symbol}: {e}")
-                            # Keep default values
-                except Exception as e:
-                    print(f"Error in signal analysis: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Continue without signals if there's an error
+                    # Add cached signal data
+                    if symbol in signal_cache:
+                        ticker_result['candle_pattern'] = signal_cache[symbol].get('candle_pattern', 'N/A')
+                        ticker_result['signal'] = signal_cache[symbol].get('signal')
+                        ticker_result['signal_priority'] = signal_cache[symbol].get('signal_priority')
+                        ticker_result['signal_reason'] = signal_cache[symbol].get('signal_reason')
+                        ticker_result['validation_checks'] = signal_cache[symbol].get('validation_checks')
+                    else:
+                        # Initialize with defaults if no cache
+                        ticker_result['candle_pattern'] = "N/A"
+                        ticker_result['signal'] = None
+                        ticker_result['signal_priority'] = None
+                        ticker_result['signal_reason'] = None
+                        ticker_result['validation_checks'] = None
+                    
+                    # Remove 24h change fields
+                    ticker_result.pop('price_change_24h', None)
+                    ticker_result.pop('price_change_percent_24h', None)
+                    
+                    result.append(ticker_result)
                 
                 # Sort by symbol
                 result.sort(key=lambda x: x['symbol'])
@@ -1086,20 +1269,9 @@ async def binance_futures_live_prices_websocket(websocket: WebSocket):
                         break
                     raise
                 
-                # Wait 5 seconds before next update (signals analysis takes time)
-                await asyncio.sleep(5)
+                # Wait 2 seconds before next update (WebSocket provides real-time updates)
+                await asyncio.sleep(2)
                 
-            except httpx.HTTPStatusError as e:
-                print(f"[Binance Futures WS] Binance API error: {e}")
-                try:
-                    if websocket.client_state.name == 'CONNECTED':
-                        await websocket.send_json({
-                            "error": f"Binance API error: {str(e)}"
-                        })
-                except RuntimeError:
-                    print("[Binance Futures WS] WebSocket closed during error send, breaking loop")
-                    break
-                await asyncio.sleep(5)  # Wait longer on error
             except RuntimeError as e:
                 if 'close message' in str(e).lower():
                     print("[Binance Futures WS] WebSocket closed, breaking loop")
@@ -1117,7 +1289,7 @@ async def binance_futures_live_prices_websocket(websocket: WebSocket):
                 except RuntimeError:
                     print("[Binance Futures WS] WebSocket closed during error send, breaking loop")
                     break
-                await asyncio.sleep(5)  # Wait longer on error
+                await asyncio.sleep(2)  # Wait before retry
                 
     except WebSocketDisconnect:
         print("[Binance Futures WS] Client disconnected")

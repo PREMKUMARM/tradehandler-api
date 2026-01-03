@@ -1,0 +1,15 @@
+{
+    "startDateStr": "2025-12-03",
+    "endDateStr": "2026-01-03",
+    "timeframe": "5minute",
+    "symbols": [
+        "1000PEPEUSDT",
+        "ETHUSDT",
+        "XRPUSDT",
+        "SOLUSDT",
+        "ADAUSDT",
+        "DOGEUSDT",
+        "MATICUSDT"
+    ]
+}
+
