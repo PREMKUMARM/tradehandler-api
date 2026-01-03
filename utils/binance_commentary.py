@@ -234,7 +234,7 @@ class CommentaryGenerator:
             'vwap': current_vwap,
             'rsi': current_rsi,
             'volume': current_volume,
-            'timestamp': current_timestamp,
+            'timestamp': candle_timestamp,
             'buy_conditions_met': buy_conditions_met,
             'sell_conditions_met': sell_conditions_met
         }
