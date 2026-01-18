@@ -75,3 +75,5 @@ def analyze_trend(candles):
 
 
 
+
+

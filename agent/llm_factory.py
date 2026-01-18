@@ -2,13 +2,29 @@
 LLM Factory for creating LLM instances based on configuration
 """
 from typing import Optional
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
+
+# Import OpenAI with error handling
+try:
+    from langchain_openai import ChatOpenAI
+except ImportError:
+    ChatOpenAI = None
+
+# Import Anthropic with error handling
+try:
+    from langchain_anthropic import ChatAnthropic
+except ImportError:
+    ChatAnthropic = None
+
+# Import Ollama with error handling
 try:
     from langchain_community.chat_models import ChatOllama
 except ImportError:
-    # Fallback for older versions or if community is missing
-    from langchain_community.llms import Ollama as ChatOllama
+    try:
+        # Fallback for older versions or if community is missing
+        from langchain_community.llms import Ollama as ChatOllama
+    except ImportError:
+        ChatOllama = None
+
 from langchain_core.language_models import BaseChatModel
 
 from .config import AgentConfig, LLMProvider, get_agent_config
@@ -28,6 +44,11 @@ def create_llm(config: Optional[AgentConfig] = None) -> BaseChatModel:
         config = get_agent_config()
     
     if config.llm_provider == LLMProvider.OPENAI:
+        if ChatOpenAI is None:
+            raise ImportError(
+                "langchain-openai is not installed. "
+                "Please install it with: pip install langchain-openai"
+            )
         if not config.openai_api_key:
             # Try to get from environment
             import os
@@ -45,6 +66,11 @@ def create_llm(config: Optional[AgentConfig] = None) -> BaseChatModel:
         )
     
     elif config.llm_provider == LLMProvider.ANTHROPIC:
+        if ChatAnthropic is None:
+            raise ImportError(
+                "langchain-anthropic is not installed. "
+                "Please install it with: pip install langchain-anthropic"
+            )
         if not config.anthropic_api_key:
             import os
             api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -61,6 +87,11 @@ def create_llm(config: Optional[AgentConfig] = None) -> BaseChatModel:
         )
     
     elif config.llm_provider == LLMProvider.OLLAMA:
+        if ChatOllama is None:
+            raise ImportError(
+                "langchain-community is not installed. "
+                "Please install it with: pip install langchain-community"
+            )
         return ChatOllama(
             model=config.agent_model,
             base_url=config.ollama_base_url,

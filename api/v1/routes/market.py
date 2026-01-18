@@ -98,6 +98,15 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str,
         from_date = datetime.strptime(fromDate, "%Y-%m-%d").date()
         to_date = datetime.strptime(toDate, "%Y-%m-%d").date()
         
+        # Check if date is in the future
+        today = datetime.now().date()
+        if from_date > today or to_date > today:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot fetch data for future dates. Selected date: {fromDate} to {toDate}, Today: {today.strftime('%Y-%m-%d')}. "
+                       f"Please select a date on or before today."
+            )
+        
         # Get historical data
         try:
             print(f"[get_candle] Calling historical_data with: token={int(instrument_token)}, from={from_date}, to={to_date}, interval={kite_interval}")
@@ -152,11 +161,30 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str,
                            "1) GET /api/v1/auth/google to get login URL, 2) Login through that URL, "
                            "3) POST /api/v1/auth/set-token with the request_token from redirect."
                 )
+            # Check if it's a permission error for indices
+            if error_type == "PermissionException" or "permission" in error_msg.lower():
+                # Try to determine if this is an index
+                try:
+                    instruments = kite.instruments("NSE")
+                    inst_info = next((inst for inst in instruments if str(inst.get("instrument_token")) == str(instrument_token)), None)
+                    if inst_info and (inst_info.get("segment") == "INDICES" or inst_info.get("instrument_type") == "INDEX"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Kite API permission error: {error_msg}. "
+                                   f"Index data ({inst_info.get('tradingsymbol', 'N/A')}) may require special API permissions or subscription. "
+                                   f"Please check: 1) Your Kite API key has market data permissions, "
+                                   f"2) The date {fromDate} is a valid trading day (not a holiday/weekend), "
+                                   f"3) Try selecting a different date or use a stock instead of an index."
+                        )
+                except:
+                    pass
+            
             # For non-token errors, provide more context
             raise HTTPException(
                 status_code=400, 
                 detail=f"Kite API error ({error_type}): {error_msg}. "
-                       f"Request: Instrument={instrument_token}, Interval={kite_interval}, From={fromDate}, To={toDate}"
+                       f"Request: Instrument={instrument_token}, Interval={kite_interval}, From={fromDate}, To={toDate}. "
+                       f"Note: If this is an index, ensure your API key has market data permissions and the date is a valid trading day."
             )
         
         # Convert to DataFrame for processing
@@ -545,12 +573,31 @@ def get_quote(instrument_key: str):
 
 
 @router.get("/instruments")
-def get_instruments():
-    """Get all instruments (for option chain, etc.)"""
+def get_instruments(exchange: str = "NSE"):
+    """Get all instruments (for option chain, etc.)
+    
+    Args:
+        exchange: Exchange to get instruments from (NSE, NFO, BSE, MCX, etc.)
+    """
     try:
         kite = get_kite_instance()
-        # Get instruments for NSE
-        instruments = kite.instruments("NSE")
+        # Get instruments for specified exchange
+        instruments = kite.instruments(exchange.upper())
+        
+        # Filter for Nifty options if NFO exchange
+        if exchange.upper() == "NFO":
+            # Get a sample of Nifty options to understand structure
+            nifty_options = [
+                inst for inst in instruments 
+                if inst.get("name") == "NIFTY" and inst.get("instrument_type") in ["CE", "PE"]
+            ]
+            # Return first 10 Nifty options as sample
+            return {
+                "data": nifty_options[:10] if len(nifty_options) > 10 else nifty_options,
+                "total": len(nifty_options),
+                "sample_count": min(10, len(nifty_options))
+            }
+        
         return {"data": instruments}
     except KiteException as e:
         raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
