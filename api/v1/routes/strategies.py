@@ -1128,6 +1128,24 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
         reward_ratio = params.get("reward_ratio", 2.0)  # 2x risk default
         capital = params.get("capital", 100000.0)
         
+        # Strategy configuration (with defaults) - explicitly convert to boolean
+        # Handle both boolean and string values from JSON
+        def to_bool(value, default):
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.lower() in ('true', '1', 'yes', 'on')
+            return bool(value)
+        
+        allow_options_selling = to_bool(params.get("allow_options_selling"), False)
+        skip_pe_on_gap_up = to_bool(params.get("skip_pe_on_gap_up"), True)
+        skip_ce_on_gap_down = to_bool(params.get("skip_ce_on_gap_down"), True)
+        skip_long_on_gap_down = to_bool(params.get("skip_long_on_gap_down"), True)
+        skip_short_on_gap_up = to_bool(params.get("skip_short_on_gap_up"), True)
+        skip_exhaustion_candles = to_bool(params.get("skip_exhaustion_candles"), True)
+        
         if not start_date or not end_date or not instrument_token:
             await websocket.send_json({
                 "type": "error",
@@ -1207,6 +1225,34 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
         print(f"[Backtest] Starting backtest for {instrument_name} ({instrument_token}) from {start_date} to {end_date}")
         print(f"[Backtest] Trading dates: {len(trading_dates)} days")
         print(f"[Backtest] Risk: {risk_per_trade}%, Reward Ratio: {reward_ratio}x, Capital: ₹{capital:,.2f}")
+        print(f"[Backtest] Raw params received: allow_options_selling={params.get('allow_options_selling')} (type: {type(params.get('allow_options_selling'))}), skip_pe_on_gap_up={params.get('skip_pe_on_gap_up')} (type: {type(params.get('skip_pe_on_gap_up'))})")
+        print(f"[Backtest] Strategy Configuration (after conversion): allow_options_selling={allow_options_selling} (type: {type(allow_options_selling)}), skip_pe_on_gap_up={skip_pe_on_gap_up} (type: {type(skip_pe_on_gap_up)}), skip_ce_on_gap_down={skip_ce_on_gap_down}, skip_long_on_gap_down={skip_long_on_gap_down}, skip_short_on_gap_up={skip_short_on_gap_up}, skip_exhaustion_candles={skip_exhaustion_candles}")
+        
+        # Helper function to send log messages via WebSocket
+        async def send_log(log_type: str, message: str, date: str = None, details: dict = None):
+            """Send log message to frontend"""
+            try:
+                await websocket.send_json({
+                    "type": "log",
+                    "log_type": log_type,  # info, warning, error, success, skip
+                    "message": message,
+                    "date": date,
+                    "details": details or {},
+                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                })
+                await asyncio.sleep(0.01)  # Small delay to prevent overwhelming
+            except:
+                pass  # Ignore errors if WebSocket is closed
+        
+        await send_log("info", "Strategy configuration loaded", None, {
+            "allow_options_selling": allow_options_selling,
+            "skip_pe_on_gap_up": skip_pe_on_gap_up,
+            "skip_ce_on_gap_down": skip_ce_on_gap_down,
+            "skip_long_on_gap_down": skip_long_on_gap_down,
+            "skip_short_on_gap_up": skip_short_on_gap_up,
+            "skip_exhaustion_candles": skip_exhaustion_candles,
+            "reason": "Configuration from UI will be applied during backtest"
+        })
         
         await websocket.send_json({
             "type": "start",
@@ -1259,6 +1305,7 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                     continue
                 
                 if not candles_30min or len(candles_30min) == 0:
+                    await send_log("warning", f"No 30min candles available for {trade_date.strftime('%Y-%m-%d')}", trade_date.strftime("%Y-%m-%d"))
                     print(f"[Backtest] No 30min candles for {trade_date}")
                     continue
                 
@@ -1295,6 +1342,7 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                         break
                 
                 if not gap_reference_candle:
+                    await send_log("warning", f"No reference candle (9:15-9:45) found for {trade_date.strftime('%Y-%m-%d')}", trade_date.strftime("%Y-%m-%d"))
                     print(f"[Backtest] No reference candle (9:15-9:45) found for {trade_date}")
                     continue
                 
@@ -1303,6 +1351,7 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                 gap_status = "No Gap"
                 gap_percent = 0.0
                 prev_day_close = None
+                prev_trading_date = None
                 
                 try:
                     # Find the previous trading day by going back day by day
@@ -1312,56 +1361,157 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                     lookback_count = 0
                     found_prev_trading_day = False
                     
+                    await send_log("info", f"Finding previous trading day for {trade_date.strftime('%Y-%m-%d')} (weekday: {trade_date.strftime('%A')})", trade_date.strftime("%Y-%m-%d"), {
+                        "trade_date": trade_date.strftime("%Y-%m-%d"),
+                        "weekday": trade_date.strftime("%A"),
+                        "reason": "Starting search for previous trading day to calculate gap"
+                    })
+                    
                     while lookback_count < max_lookback_days and not found_prev_trading_day:
                         # Skip weekends
                         if prev_date.weekday() >= 5:  # Saturday=5, Sunday=6
+                            await send_log("info", f"Skipping weekend: {prev_date.strftime('%Y-%m-%d')} ({prev_date.strftime('%A')})", trade_date.strftime("%Y-%m-%d"), {
+                                "skipped_date": prev_date.strftime("%Y-%m-%d"),
+                                "weekday": prev_date.strftime("%A"),
+                                "reason": "Weekend - not a trading day"
+                            })
                             prev_date = prev_date - timedelta(days=1)
                             lookback_count += 1
                             continue
                         
                         # Try to get data for this date
                         try:
-                            prev_candles = kite.historical_data(
-                                int(instrument_token),
+                            # Fetch minute-level data to get the actual closing price at 3:30 PM
+                            prev_candles_minute = kite.historical_data(
+                                int(gap_calculation_token),
                                 prev_date,
                                 prev_date,
-                                "day"
+                                "minute"
                             )
                             
                             # Check if we got valid data (not a holiday)
-                            if prev_candles and len(prev_candles) > 0:
-                                # Verify the candle is for the correct date
-                                candle_date = None
-                                candle_close = prev_candles[-1].get('close', 0)
+                            if prev_candles_minute and len(prev_candles_minute) > 0:
+                                # Filter candles for the specific date and get the last candle (should be around 3:30 PM)
+                                prev_day_candles = []
+                                for candle in prev_candles_minute:
+                                    candle_time = candle.get('date')
+                                    if isinstance(candle_time, str):
+                                        try:
+                                            candle_dt = datetime.strptime(candle_time.split('.')[0], '%Y-%m-%d %H:%M:%S')
+                                        except:
+                                            try:
+                                                candle_dt = datetime.strptime(candle_time.split(' ')[0], '%Y-%m-%d')
+                                            except:
+                                                continue
+                                    elif isinstance(candle_time, datetime):
+                                        candle_dt = candle_time
+                                    else:
+                                        continue
+                                    
+                                    # Check if candle is for the previous trading date
+                                    if candle_dt.date() == prev_date:
+                                        prev_day_candles.append(candle)
                                 
-                                # Try to extract date from candle
-                                candle_time = prev_candles[-1].get('date')
-                                if isinstance(candle_time, str):
+                                # If we have candles for this date, use the last one's close (actual market close at 3:30 PM)
+                                if prev_day_candles:
+                                    # Sort by time to get the last candle
+                                    prev_day_candles.sort(key=lambda c: c.get('date'))
+                                    last_candle = prev_day_candles[-1]
+                                    candle_close = last_candle.get('close', 0)
+                                    
+                                    # If we have valid close price, use it
+                                    if candle_close and float(candle_close) > 0:
+                                        prev_day_close = float(candle_close)
+                                        prev_trading_date = prev_date
+                                        found_prev_trading_day = True
+                                        
+                                        # Get the time of the last candle for logging
+                                        last_candle_time = last_candle.get('date')
+                                        if isinstance(last_candle_time, datetime):
+                                            last_candle_time_str = last_candle_time.strftime('%H:%M:%S')
+                                        else:
+                                            last_candle_time_str = str(last_candle_time)
+                                        
+                                        print(f"[Backtest] Found previous trading day for {trade_date}: {prev_date} (close: {prev_day_close:.2f} at {last_candle_time_str})")
+                                        await send_log("success", f"Found previous trading day: {prev_date.strftime('%Y-%m-%d')} ({prev_date.strftime('%A')}) - Close: ₹{prev_day_close:.2f} (at {last_candle_time_str})", trade_date.strftime("%Y-%m-%d"), {
+                                            "prev_trading_date": prev_date.strftime("%Y-%m-%d"),
+                                            "weekday": prev_date.strftime("%A"),
+                                            "close": prev_day_close,
+                                            "close_time": last_candle_time_str,
+                                            "candles_count": len(prev_day_candles),
+                                            "reason": f"Previous trading day found after looking back {lookback_count} day(s) - using last minute candle close"
+                                        })
+                                        break
+                                    else:
+                                        await send_log("info", f"No valid close price for {prev_date.strftime('%Y-%m-%d')}, continuing search", trade_date.strftime("%Y-%m-%d"), {
+                                            "checked_date": prev_date.strftime("%Y-%m-%d"),
+                                            "reason": "Data exists but close price is invalid"
+                                        })
+                                else:
+                                    await send_log("info", f"No candles found for {prev_date.strftime('%Y-%m-%d')}, trying daily candles as fallback", trade_date.strftime("%Y-%m-%d"), {
+                                        "checked_date": prev_date.strftime("%Y-%m-%d"),
+                                        "reason": "No minute candles found, trying daily candles"
+                                    })
+                                    # Fallback to daily candles
                                     try:
-                                        candle_date = datetime.strptime(candle_time.split(' ')[0], '%Y-%m-%d').date()
-                                    except:
-                                        pass
-                                elif isinstance(candle_time, datetime):
-                                    candle_date = candle_time.date()
-                                
-                                # If we have valid close price, use it
-                                if candle_close and float(candle_close) > 0:
-                                    prev_day_close = float(candle_close)
-                                    found_prev_trading_day = True
-                                    print(f"[Backtest] Found previous trading day for {trade_date}: {prev_date} (close: {prev_day_close:.2f})")
-                                    break
+                                        prev_candles_daily = kite.historical_data(
+                                            int(gap_calculation_token),
+                                            prev_date,
+                                            prev_date,
+                                            "day"
+                                        )
+                                        if prev_candles_daily and len(prev_candles_daily) > 0:
+                                            candle_close = prev_candles_daily[-1].get('close', 0)
+                                            if candle_close and float(candle_close) > 0:
+                                                prev_day_close = float(candle_close)
+                                                prev_trading_date = prev_date
+                                                found_prev_trading_day = True
+                                                print(f"[Backtest] Found previous trading day (daily candle) for {trade_date}: {prev_date} (close: {prev_day_close:.2f})")
+                                                await send_log("success", f"Found previous trading day: {prev_date.strftime('%Y-%m-%d')} ({prev_date.strftime('%A')}) - Close: ₹{prev_day_close:.2f} (from daily candle)", trade_date.strftime("%Y-%m-%d"), {
+                                                    "prev_trading_date": prev_date.strftime("%Y-%m-%d"),
+                                                    "weekday": prev_date.strftime("%A"),
+                                                    "close": prev_day_close,
+                                                    "reason": f"Previous trading day found using daily candle fallback"
+                                                })
+                                                break
+                                    except Exception as daily_e:
+                                        await send_log("info", f"Daily candle fallback also failed for {prev_date.strftime('%Y-%m-%d')}, continuing search", trade_date.strftime("%Y-%m-%d"), {
+                                            "checked_date": prev_date.strftime("%Y-%m-%d"),
+                                            "error": str(daily_e)[:50],
+                                            "reason": "Both minute and daily candles failed"
+                                        })
+                            else:
+                                await send_log("info", f"No data for {prev_date.strftime('%Y-%m-%d')} (likely holiday), continuing search", trade_date.strftime("%Y-%m-%d"), {
+                                    "checked_date": prev_date.strftime("%Y-%m-%d"),
+                                    "reason": "No candles returned - likely a market holiday"
+                                })
                         except Exception as e:
                             # This date might be a holiday or error, continue to previous day
                             print(f"[Backtest] No data for {prev_date} (might be holiday): {e}")
+                            await send_log("info", f"Error fetching data for {prev_date.strftime('%Y-%m-%d')}: {str(e)[:50]}", trade_date.strftime("%Y-%m-%d"), {
+                                "checked_date": prev_date.strftime("%Y-%m-%d"),
+                                "error": str(e)[:100],
+                                "reason": "Error fetching data - likely a holiday or API issue"
+                            })
                         
                         # Move to previous day
                         prev_date = prev_date - timedelta(days=1)
                         lookback_count += 1
                     
                     # Calculate gap if we found previous trading day's close
-                    if prev_day_close and prev_day_close > 0:
-                        gap = gap_reference_candle['open'] - prev_day_close
+                    if prev_day_close and prev_day_close > 0 and prev_trading_date:
+                        current_open = gap_reference_candle['open']
+                        gap = current_open - prev_day_close
                         gap_percent = (gap / prev_day_close) * 100 if prev_day_close > 0 else 0
+                        
+                        await send_log("info", f"Gap calculation: Open={current_open:.2f}, Prev Close={prev_day_close:.2f}, Gap={gap:.2f} ({gap_percent:.2f}%)", trade_date.strftime("%Y-%m-%d"), {
+                            "current_open": current_open,
+                            "prev_close": prev_day_close,
+                            "gap": gap,
+                            "gap_percent": gap_percent,
+                            "prev_trading_date": prev_trading_date.strftime("%Y-%m-%d"),
+                            "reason": f"Gap calculated: {gap:.2f} points ({gap_percent:.2f}%)"
+                        })
                         
                         if gap_percent > 0.1:  # Gap-up if > 0.1%
                             gap_status = f"Gap-Up ({gap_percent:.2f}%)"
@@ -1372,14 +1522,23 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                             is_gap_up = False
                             is_gap_down = True
                         else:
-                            gap_status = "No Gap"
+                            gap_status = f"No Gap ({gap_percent:.2f}%)"
                             is_gap_up = False
                             is_gap_down = False
+                            await send_log("info", f"Gap is within threshold (-0.1% to +0.1%), treating as 'No Gap'", trade_date.strftime("%Y-%m-%d"), {
+                                "gap_percent": gap_percent,
+                                "threshold": "±0.1%",
+                                "reason": "Gap is too small to be considered significant"
+                            })
                     else:
                         print(f"[Backtest] Could not find previous trading day for {trade_date} (looked back {lookback_count} days)")
                         gap_status = "N/A"
                         is_gap_up = False
                         is_gap_down = False
+                        await send_log("warning", f"Could not find previous trading day (looked back {lookback_count} days)", trade_date.strftime("%Y-%m-%d"), {
+                            "lookback_days": lookback_count,
+                            "reason": "No valid trading day found within lookback period"
+                        })
                         
                 except Exception as e:
                     print(f"[Backtest] Error fetching previous trading day data for {trade_date}: {e}")
@@ -1408,6 +1567,7 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                             selected_option_type = "PE"
                         else:
                             # No gap, skip this day
+                            await send_log("skip", f"No gap detected, skipping option selection", trade_date.strftime("%Y-%m-%d"))
                             print(f"[Backtest] No gap for {trade_date}, skipping option selection for index")
                             continue
                         
@@ -1439,6 +1599,7 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                         ]
                         
                         if not matching_options:
+                            await send_log("warning", f"No {selected_option_type} option found at strike {current_strike}", trade_date.strftime("%Y-%m-%d"), {"strike": current_strike, "type": selected_option_type})
                             print(f"[Backtest] No {selected_option_type} option found for {index_name} at strike {current_strike} on {trade_date}")
                             continue
                         
@@ -1461,6 +1622,7 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                                     valid_options.append(inst)
                         
                         if not valid_options:
+                            await send_log("warning", f"No valid expiry found for {index_name} {selected_option_type}", trade_date.strftime("%Y-%m-%d"))
                             print(f"[Backtest] No valid expiry found for {index_name} {selected_option_type} on {trade_date}")
                             continue
                         
@@ -1494,7 +1656,29 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                             elif isinstance(expiry, datetime):
                                 selected_option_expiry = expiry.strftime("%Y-%m-%d")
                         
+                        # Build reason for option selection
+                        reason_parts = []
+                        if is_gap_up:
+                            reason_parts.append(f"Gap-Up ({gap_percent:.2f}%) → Selected CE (Call) option")
+                        elif is_gap_down:
+                            reason_parts.append(f"Gap-Down ({abs(gap_percent):.2f}%) → Selected PE (Put) option")
+                        reason_parts.append(f"Strike {current_strike} (Index price: ₹{current_index_price:.2f}, Interval: {strike_interval})")
+                        reason_parts.append(f"Nearest expiry: {selected_option_expiry}")
+                        
+                        selection_reason = " | ".join(reason_parts)
+                        
                         print(f"[Backtest] Selected option for {trade_date}: {actual_instrument_name} (token: {actual_instrument_token}, lot_size: {actual_lot_size}, expiry: {selected_option_expiry})")
+                        await send_log("success", f"Selected {actual_instrument_name}", trade_date.strftime("%Y-%m-%d"), {
+                            "strike": selected_option_strike,
+                            "type": actual_instrument_type,
+                            "expiry": selected_option_expiry,
+                            "lot_size": actual_lot_size,
+                            "index_price": current_index_price,
+                            "strike_interval": strike_interval,
+                            "gap_percent": gap_percent,
+                            "gap_status": gap_status,
+                            "reason": selection_reason
+                        })
                         
                         # Fetch 30-minute candles for the selected option to get reference candle
                         try:
@@ -1532,10 +1716,21 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                                     break
                             
                             if not reference_candle:
+                                await send_log("warning", f"No 30-minute reference candle found for selected option on {trade_date.strftime('%Y-%m-%d')}", trade_date.strftime("%Y-%m-%d"), {
+                                    "option": actual_instrument_name,
+                                    "reason": "30-minute candle (9:15-9:45 AM) not found for selected option"
+                                })
                                 print(f"[Backtest] No reference candle found for selected option on {trade_date}")
                                 continue
+                            
+                            # Verify we're using the option's reference candle, not the index's
+                            # Log reference candle once (will be logged again below, but with more context)
+                            # Skip this duplicate log
                                 
                         except Exception as e:
+                            await send_log("error", f"Error fetching option 30min candles: {str(e)}", trade_date.strftime("%Y-%m-%d"), {
+                                "option": actual_instrument_name
+                            })
                             print(f"[Backtest] Error fetching option 30min candles for {trade_date}: {e}")
                             continue
                         
@@ -1545,7 +1740,17 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                         traceback.print_exc()
                         continue
                 
-                print(f"[Backtest] Reference candle for {trade_date}: HIGH={reference_candle['high']:.2f}, LOW={reference_candle['low']:.2f}, Gap: {gap_status}")
+                # Log which reference candle is being used (only once)
+                instrument_used = actual_instrument_name if is_index else instrument_name
+                await send_log("info", f"Reference candle (9:15-9:45 AM): HIGH=₹{reference_candle['high']:.2f}, LOW=₹{reference_candle['low']:.2f}", trade_date.strftime("%Y-%m-%d"), {
+                    "ref_high": reference_candle['high'],
+                    "ref_low": reference_candle['low'],
+                    "instrument": instrument_used,
+                    "gap_status": gap_status,
+                    "reason": f"{'Selected option' if is_index else 'Instrument'}'s 30-minute candle closed at 9:45 AM. Ready for breakout detection."
+                })
+                
+                print(f"[Backtest] Reference candle for {trade_date}: HIGH={reference_candle['high']:.2f}, LOW={reference_candle['low']:.2f}, Gap: {gap_status} (from {'option' if is_index else 'instrument'})")
                 
                 # Fetch 5-minute candles (use actual instrument token - may be option if index)
                 try:
@@ -1556,15 +1761,23 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                         "5minute"
                     )
                 except Exception as e:
+                    await send_log("error", f"Error fetching 5min candles: {str(e)}", trade_date.strftime("%Y-%m-%d"), {
+                        "instrument": instrument_used
+                    })
                     print(f"[Backtest] Error fetching 5min candles for {trade_date}: {e}")
                     continue
                 
                 if not candles_5min or len(candles_5min) == 0:
+                    await send_log("warning", f"No 5-minute candles available for {trade_date.strftime('%Y-%m-%d')}", trade_date.strftime("%Y-%m-%d"), {
+                        "instrument": instrument_used
+                    })
                     print(f"[Backtest] No 5min candles for {trade_date}")
                     continue
                 
-                # Filter candles from 9:45 AM onwards
+                # Filter candles from 9:45 AM onwards (after 30-min reference candle closes)
                 trading_candles = []
+                candle_start_time = datetime.strptime('09:45', '%H:%M').time()
+                
                 for candle in candles_5min:
                     candle_time = candle.get('date')
                     if isinstance(candle_time, str):
@@ -1583,8 +1796,11 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                     if candle_time.tzinfo is not None:
                         candle_time = candle_time.replace(tzinfo=None)
                     
-                    if candle_time.time() >= datetime.strptime('09:45', '%H:%M').time():
+                    # Only include candles from 9:45 AM onwards (after 30-min reference candle closes)
+                    if candle_time.time() >= candle_start_time:
                         trading_candles.append(candle)
+                
+                # Skip this log - already logged reference candle above
                 
                 # Gap direction already determined above (is_gap_up and is_gap_down are set)
                 
@@ -1604,28 +1820,49 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                     
                     # LONG: 5-min candle closes above 30-min HIGH
                     if close_5min > ref_high:
+                        # Don't log detection separately - will log in skip or success message
+                        
                         # Filter: For PE options, skip LONG on gap-up days (PE profits when price goes down)
-                        if (instrument_exchange == "NFO" or is_index) and actual_instrument_type == "PE" and is_gap_up:
-                            skipped_reason = f"LONG signal skipped - PE option on Gap-Up day ({gap_percent:.2f}%)"
+                        if skip_pe_on_gap_up and (instrument_exchange == "NFO" or is_index) and actual_instrument_type == "PE" and is_gap_up:
+                            skipped_reason = f"LONG skipped: PE on Gap-Up ({gap_percent:.2f}%)"
+                            await send_log("skip", skipped_reason, trade_date.strftime("%Y-%m-%d"), {
+                                "close": close_5min,
+                                "ref_high": ref_high,
+                                "reason": "PE profits when price goes down, but gap-up suggests upward momentum"
+                            })
                             print(f"[Backtest] {skipped_reason} for {trade_date}")
                             continue  # Skip this signal, continue looking
                         
                         # Filter: For CE options, skip LONG on gap-down days (CE profits when price goes up)
-                        if (instrument_exchange == "NFO" or is_index) and actual_instrument_type == "CE" and is_gap_down:
-                            skipped_reason = f"LONG signal skipped - CE option on Gap-Down day ({gap_percent:.2f}%)"
+                        if skip_ce_on_gap_down and (instrument_exchange == "NFO" or is_index) and actual_instrument_type == "CE" and is_gap_down:
+                            skipped_reason = f"LONG skipped: CE on Gap-Down ({gap_percent:.2f}%)"
+                            await send_log("skip", skipped_reason, trade_date.strftime("%Y-%m-%d"), {
+                                "close": close_5min,
+                                "ref_high": ref_high,
+                                "reason": "CE profits when price goes up, but gap-down suggests downward momentum"
+                            })
                             print(f"[Backtest] {skipped_reason} for {trade_date}")
                             continue  # Skip this signal, continue looking
                         
                         # Filter: Don't take LONG on gap-down days (against momentum) - for equity only
-                        if instrument_exchange != "NFO" and is_gap_down:
-                            skipped_reason = f"LONG signal skipped - Gap-Down day ({gap_percent:.2f}%)"
+                        if skip_long_on_gap_down and instrument_exchange != "NFO" and is_gap_down:
+                            skipped_reason = f"LONG skipped: Gap-Down ({gap_percent:.2f}%)"
+                            await send_log("skip", skipped_reason, trade_date.strftime("%Y-%m-%d"), {
+                                "close": close_5min,
+                                "ref_high": ref_high,
+                                "reason": "Gap-down suggests downward momentum, LONG would be against trend"
+                            })
                             print(f"[Backtest] {skipped_reason} for {trade_date}")
                             continue  # Skip this signal, continue looking
                         
                         # Filter: Avoid candles where close = high (exhaustion signal)
                         # Allow small tolerance (0.01% or 0.01 rupees) for floating point comparison
-                        if abs(close_5min - high_5min) < max(0.01, high_5min * 0.0001):
-                            skipped_reason = f"LONG signal skipped - Close equals High (exhaustion candle)"
+                        if skip_exhaustion_candles and abs(close_5min - high_5min) < max(0.01, high_5min * 0.0001):
+                            skipped_reason = f"LONG skipped: Exhaustion candle (Close=High)"
+                            await send_log("skip", skipped_reason, trade_date.strftime("%Y-%m-%d"), {
+                                "close": close_5min,
+                                "reason": "Close equals high indicates exhaustion - buyers may be exhausted"
+                            })
                             print(f"[Backtest] {skipped_reason} for {trade_date} at {close_5min:.2f}")
                             continue  # Skip this signal, continue looking
                         
@@ -1646,22 +1883,38 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                     
                     # SHORT: 5-min candle closes below 30-min LOW
                     elif close_5min < ref_low:
+                        # Don't log detection separately - will log in skip or success message
+                        
                         # Filter: Skip SHORT positions for NFO instruments (options selling not possible)
-                        if instrument_exchange == "NFO" or is_index:
-                            skipped_reason = f"SHORT signal skipped - Options selling not supported (only buying allowed)"
+                        if not allow_options_selling and (instrument_exchange == "NFO" or is_index):
+                            skipped_reason = f"SHORT skipped: Options selling not allowed"
+                            await send_log("skip", skipped_reason, trade_date.strftime("%Y-%m-%d"), {
+                                "close": close_5min,
+                                "ref_low": ref_low,
+                                "reason": "Options selling requires margin/funds not available, only options buying is allowed"
+                            })
                             print(f"[Backtest] {skipped_reason} for {trade_date}")
                             continue  # Skip this signal, continue looking
                         
                         # Filter: Don't take SHORT on gap-up days (against momentum)
-                        if is_gap_up:
-                            skipped_reason = f"SHORT signal skipped - Gap-Up day ({gap_percent:.2f}%)"
+                        if skip_short_on_gap_up and is_gap_up:
+                            skipped_reason = f"SHORT skipped: Gap-Up ({gap_percent:.2f}%)"
+                            await send_log("skip", skipped_reason, trade_date.strftime("%Y-%m-%d"), {
+                                "close": close_5min,
+                                "ref_low": ref_low,
+                                "reason": "Gap-up suggests upward momentum, SHORT would be against trend"
+                            })
                             print(f"[Backtest] {skipped_reason} for {trade_date}")
                             continue  # Skip this signal, continue looking
                         
                         # Filter: Avoid candles where close = low (exhaustion signal)
                         # Allow small tolerance (0.01% or 0.01 rupees) for floating point comparison
-                        if abs(close_5min - low_5min) < max(0.01, low_5min * 0.0001):
-                            skipped_reason = f"SHORT signal skipped - Close equals Low (exhaustion candle)"
+                        if skip_exhaustion_candles and abs(close_5min - low_5min) < max(0.01, low_5min * 0.0001):
+                            skipped_reason = f"SHORT skipped: Exhaustion candle (Close=Low)"
+                            await send_log("skip", skipped_reason, trade_date.strftime("%Y-%m-%d"), {
+                                "close": close_5min,
+                                "reason": "Close equals low indicates exhaustion - sellers may be exhausted"
+                            })
                             print(f"[Backtest] {skipped_reason} for {trade_date} at {close_5min:.2f}")
                             continue  # Skip this signal, continue looking
                         
@@ -1688,6 +1941,17 @@ async def backtest_range_breakout_30min_websocket(websocket: WebSocket):
                     continue
                 
                 print(f"[Backtest] Signal found for {trade_date}: {signal['direction']} at {signal['entry_price']:.2f}")
+                await send_log("success", f"{signal['direction']} signal found at ₹{signal['entry_price']:.2f}", trade_date.strftime("%Y-%m-%d"), {
+                    "direction": signal['direction'],
+                    "entry_price": signal['entry_price'],
+                    "stop_loss": signal['stop_loss'],
+                    "target": signal['target'],
+                    "ref_high": reference_candle['high'],
+                    "ref_low": reference_candle['low'],
+                    "gap_status": gap_status,
+                    "gap_percent": gap_percent,
+                    "reason": f"5-min candle closed {'above' if signal['direction'] == 'LONG' else 'below'} 30-min reference {'high' if signal['direction'] == 'LONG' else 'low'}"
+                })
                 
                 # Calculate position size using capital allocation approach
                 # Formula: position_size = risk_amount / entry_price
