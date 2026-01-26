@@ -246,23 +246,30 @@ class CommentaryGenerator:
         symbol: str,
         pattern: str,
         price: float,
-        vwap: float,
+        vwap: Optional[float],
         candle_timestamp: int
     ) -> Dict:
         """Format pattern detection message"""
-        vwap_dist = abs(price - vwap) / vwap * 100 if vwap > 0 else 0
-        vwap_pos = "above" if price > vwap else "below"
+        # Handle None vwap value
+        if vwap is None or vwap <= 0:
+            vwap_dist = 0
+            vwap_pos = "unknown"
+            vwap_message = f"{pattern} pattern detected on {symbol} at ${price:.8f}."
+        else:
+            vwap_dist = abs(price - vwap) / vwap * 100
+            vwap_pos = "above" if price > vwap else "below"
+            vwap_message = f"{pattern} pattern detected on {symbol} at ${price:.8f}. Price is {vwap_dist:.2f}% {vwap_pos} VWAP."
         
         return {
             "timestamp": candle_timestamp,
             "symbol": symbol,
             "event_type": "pattern_detected",
             "priority": "medium",
-            "message": f"{pattern} pattern detected on {symbol} at ${price:.8f}. Price is {vwap_dist:.2f}% {vwap_pos} VWAP.",
+            "message": vwap_message,
             "details": {
                 "pattern": pattern,
                 "price": round(price, 8),
-                "vwap": round(vwap, 8),
+                "vwap": round(vwap, 8) if vwap is not None else None,
                 "vwap_distance_percent": round(vwap_dist, 2)
             }
         }

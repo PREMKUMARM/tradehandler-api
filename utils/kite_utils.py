@@ -36,8 +36,67 @@ def get_access_token():
             return token if token else None
     return None
 
-def get_kite_instance(user_id: str = "default"):
-    """Get authenticated KiteConnect instance"""
+# Global validation state - centralized token validation
+_global_validation_state = {
+    "validated": False,
+    "is_valid": None,
+    "last_warning_time": 0,
+    "validation_token": None,
+    "validation_api_key": None
+}
+
+def _validate_kite_token_centralized(kite: KiteConnect, api_key: str, access_token: str, verbose: bool = False):
+    """Centralized token validation - only runs once globally per token/API key combination"""
+    import time
+    
+    # Check if we've already validated this exact token/API key combination
+    if _global_validation_state["validated"]:
+        if _global_validation_state["validation_token"] == access_token[:20] and \
+           _global_validation_state["validation_api_key"] == api_key:
+            # Same token, use cached result - no need to validate again
+            is_valid = _global_validation_state["is_valid"]
+            if not is_valid:
+                # Only warn once per minute to reduce log noise
+                current_time = time.time()
+                if current_time - _global_validation_state["last_warning_time"] > 60:
+                    print(f"[Kite Auth] WARNING: Token validation failed. Historical data may still work. (Warning shown once per minute)")
+                    _global_validation_state["last_warning_time"] = current_time
+            return is_valid
+    
+    # First time validation for this token/API key - do it now (only once globally)
+    _global_validation_state["validated"] = True
+    _global_validation_state["validation_token"] = access_token[:20]
+    _global_validation_state["validation_api_key"] = api_key
+    
+    try:
+        kite.profile()
+        _global_validation_state["is_valid"] = True
+        if verbose:
+            print(f"[Kite Auth] Token validated successfully")
+        return True
+    except Exception as profile_error:
+        error_str = str(profile_error).lower()
+        # Only warn if it's clearly a token/auth issue
+        if "invalid" in error_str or "expired" in error_str or "token" in error_str or "unauthorized" in error_str:
+            _global_validation_state["is_valid"] = False
+            _global_validation_state["last_warning_time"] = time.time()
+            print(f"[Kite Auth] WARNING: Token validation failed: {profile_error}")
+            print(f"[Kite Auth] API Key: {api_key[:15]}... | This warning appears once per minute. Historical data may still work.")
+            return False
+        else:
+            # Network or other errors - don't mark as invalid, but don't cache as valid either
+            if verbose:
+                print(f"[Kite Auth] Profile check failed (non-auth error): {profile_error}")
+            return None  # Unknown state
+
+def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_validation: bool = False):
+    """Get authenticated KiteConnect instance
+    
+    Args:
+        user_id: User ID for getting user-specific API key
+        verbose: If True, log detailed information (default: False to reduce log noise)
+        skip_validation: If True, skip token validation entirely (for performance)
+    """
     access_token = get_access_token()
     if not access_token:
         # Note: In a production app, you might want to return None or handle this differently 
@@ -63,25 +122,21 @@ def get_kite_instance(user_id: str = "default"):
     # Get user-specific API key
     current_api_key = get_kite_api_key(user_id=user_id)
     
-    print(f"[get_kite_instance] User ID: {user_id}")
-    print(f"[get_kite_instance] API Key: {current_api_key[:15] if current_api_key and len(current_api_key) > 15 else 'NOT SET'}...")
-    print(f"[get_kite_instance] Token length: {len(access_token)}, preview: {access_token[:20]}...")
-    
     kite = KiteConnect(api_key=current_api_key)
     kite.set_access_token(access_token)
     
-    # Try a quick validation to catch API key mismatches early
-    # But don't fail if profile() doesn't work - historical data might still work
-    try:
-        kite.profile()
-        print(f"[get_kite_instance] Token validated successfully with profile()")
-    except Exception as profile_error:
-        error_str = str(profile_error).lower()
-        # Only warn if it's clearly a token/auth issue, not if it's a network or other issue
-        if "invalid" in error_str or "expired" in error_str or "token" in error_str or "unauthorized" in error_str:
-            print(f"[get_kite_instance] WARNING: Token validation failed: {profile_error}")
-            print(f"[get_kite_instance] This might indicate API key mismatch. API Key used: {current_api_key[:15]}...")
-        # Continue anyway - historical data might still work even if profile() fails
+    # Check if this is the first validation call
+    is_first_validation = not _global_validation_state["validated"]
+    
+    # Centralized validation - only runs once globally
+    if not skip_validation:
+        _validate_kite_token_centralized(kite, current_api_key, access_token, verbose)
+    
+    # Minimal logging - only on first validation call and if verbose
+    if verbose and is_first_validation:
+        print(f"[get_kite_instance] User ID: {user_id}")
+        print(f"[get_kite_instance] API Key: {current_api_key[:15] if current_api_key and len(current_api_key) > 15 else 'NOT SET'}...")
+        print(f"[get_kite_instance] Token length: {len(access_token)}, preview: {access_token[:20]}...")
     
     return kite
 

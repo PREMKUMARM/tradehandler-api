@@ -738,7 +738,12 @@ def find_indicator_based_trading_opportunities(
                         df['date_only'] = df['date'].dt.date
                         df['symbol'] = symbol
                     except Exception as fe:
-                        print(f"[DEBUG] Kite fetch failed for {symbol}: {fe}")
+                        # Only log if it's not a token/auth error (those are handled by centralized validation)
+                        error_str = str(fe).lower()
+                        is_auth_error = any(keyword in error_str for keyword in ["invalid", "expired", "token", "unauthorized", "authentication", "api_key"])
+                        if not is_auth_error:
+                            print(f"[DEBUG] Kite fetch failed for {symbol}: {fe}")
+                        # For auth errors, rely on centralized validation warnings instead
                         continue
                 
                 # Calculate indicators for this instrument
