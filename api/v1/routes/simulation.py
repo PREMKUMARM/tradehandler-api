@@ -20,18 +20,8 @@ from utils.candle_utils import aggregate_to_tf
 from strategies.runner import run_strategy_on_candles
 from agent.config import get_agent_config
 
-# Helper function to add logs to live_logs list
-def add_live_log(message: str, log_type: str = "info"):
-    """Add log entry to live_logs list"""
-    global live_logs
-    live_logs.append({
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
-        "message": message,
-        "type": log_type
-    })
-    # Keep only last 1000 logs
-    if len(live_logs) > 1000:
-        live_logs = live_logs[-1000:]
+# Import add_live_log from simulation helpers (moved for reuse by strategies)
+from simulation.helpers import add_live_log
 
 router = APIRouter(prefix="/simulation", tags=["Simulation"])
 

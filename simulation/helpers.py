@@ -3,6 +3,7 @@ Simulation helper functions
 """
 from datetime import datetime, timedelta, time
 from .state import simulation_state
+from .state import live_logs
 
 
 def get_instrument_history(kite, token, sim_date):
@@ -86,6 +87,19 @@ def find_option(nifty_options, strike, type, sim_date=None):
                 return next((o for o in matches if o["expiry"] == exp), matches[0])
                 
     return matches[0]
+
+
+def add_live_log(message: str, log_type: str = "info"):
+    """Add log entry to live_logs list (shared helper for strategies and simulation)"""
+    global live_logs
+    live_logs.append({
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "message": message,
+        "type": log_type
+    })
+    # Keep only last 1000 logs
+    if len(live_logs) > 1000:
+        live_logs = live_logs[-1000:]
 
 
 

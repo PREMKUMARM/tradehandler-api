@@ -1,7 +1,7 @@
 """
 Authentication API endpoints for Google OAuth and Kite Connect
 """
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
 from typing import Optional
 import os
@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from pathlib import Path
 
 from core.responses import SuccessResponse, ErrorResponse
+from core.exceptions import AlgoFeastException, ValidationError, AuthenticationError, ExternalAPIError, BusinessLogicError
 from core.auth import generate_jwt_token
 from core.config import get_settings
 from core.user_context import get_user_id_from_request
@@ -19,6 +20,7 @@ from database.models import User
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import KiteException
 from utils.kite_utils import get_kite_api_key, get_access_token
+from utils.logger import log_info, log_error, log_warning, log_debug
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 

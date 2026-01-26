@@ -3,6 +3,7 @@ Nifty50 Options Backtest Strategy
 """
 from fastapi import APIRouter, Request
 from datetime import datetime, timedelta
+from kiteconnect.exceptions import KiteException
 from utils.kite_utils import get_kite_instance
 from core.user_context import get_user_id_from_request
 from core.exceptions import ValidationError, NotFoundError, ExternalAPIError, AlgoFeastException
@@ -54,12 +55,16 @@ async def backtest_nifty50_options(request: Request, backtest_request: Nifty50Op
             current_date += timedelta(days=1)
         
         if not trading_dates:
-            raise HTTPException(status_code=400, detail="No trading days found in date range")
+            raise ValidationError(
+                message="No trading days found in date range",
+                field="date_range",
+                details={"start_date": str(start_date), "end_date": str(end_date)}
+            )
         
         # Backtest results structure
         backtest_results = {
-            "start_date": start_date_str,
-            "end_date": end_date_str,
+            "start_date": str(start_date),
+            "end_date": str(end_date),
             "strategy_type": strategy_type,
             "total_trading_days": len(trading_dates),
             "trades": [],
@@ -78,14 +83,21 @@ async def backtest_nifty50_options(request: Request, backtest_request: Nifty50Op
         
         # NOTE: Full backtest implementation was removed from main.py (~700 lines)
         # This is a placeholder that returns the structure expected by the frontend
-        # TODO: Implement full backtest logic here or import from a separate module
+        # The actual backtest logic should be implemented using the strategies/runner module
+        # or by importing from a dedicated backtest module
         
         return {"data": backtest_results}
         
-    except HTTPException:
+    except AlgoFeastException:
         raise
     except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+        log_error(f"Kite API error in Nifty50 options backtest: {str(e)}")
+        raise ExternalAPIError(message=f"Kite API error: {str(e)}", service="Kite Connect")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error backtesting strategy: {str(e)}")
+        log_error(f"Error backtesting Nifty50 options strategy: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error backtesting strategy: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
