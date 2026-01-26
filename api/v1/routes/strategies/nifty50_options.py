@@ -1,48 +1,31 @@
 """
 Nifty50 Options Backtest Strategy
 """
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request
 from datetime import datetime, timedelta
 from utils.kite_utils import get_kite_instance
 from core.user_context import get_user_id_from_request
-from kiteconnect.exceptions import KiteException
+from core.exceptions import ValidationError, NotFoundError, ExternalAPIError, AlgoFeastException
+from schemas.strategies import Nifty50OptionsBacktestRequest
+from utils.logger import log_error, log_info
 
 router = APIRouter()
 
 
 @router.post("/backtest-nifty50-options")
-async def backtest_nifty50_options(request: Request):
+async def backtest_nifty50_options(request: Request, backtest_request: Nifty50OptionsBacktestRequest):
     """
     Backtest Nifty50 options strategy for given date range with multiple strategy options
-    
-    Request body:
-    {
-        "start_date": "2025-01-01",
-        "end_date": "2025-01-31",
-        "strategy_type": "915_candle_break",
-        "fund": 200000,
-        "risk": 1,
-        "reward": 3
-    }
     """
     try:
-        payload = await request.json()
-        start_date_str = payload.get("start_date")
-        end_date_str = payload.get("end_date")
-        strategy_type = payload.get("strategy_type", "915_candle_break")
-        fund = payload.get("fund", 200000)
-        risk_pct = payload.get("risk", 1) / 100
-        reward_pct = payload.get("reward", 3) / 100
+        start_date = backtest_request.start_date
+        end_date = backtest_request.end_date
+        strategy_type = backtest_request.strategy_type
+        fund = backtest_request.fund
+        risk_pct = backtest_request.risk / 100
+        reward_pct = backtest_request.reward / 100
         
-        if not start_date_str or not end_date_str:
-            raise HTTPException(status_code=400, detail="start_date and end_date are required (format: YYYY-MM-DD)")
-        
-        # Parse dates
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-        
-        if start_date > end_date:
-            raise HTTPException(status_code=400, detail="start_date must be before end_date")
+        log_info(f"Starting Nifty50 options backtest: {start_date} to {end_date}, strategy: {strategy_type}")
         
         user_id = get_user_id_from_request(request)
         kite = get_kite_instance(user_id)
@@ -57,7 +40,10 @@ async def backtest_nifty50_options(request: Request):
         ]
         
         if not nifty_options:
-            raise HTTPException(status_code=404, detail="Nifty50 options not found")
+            raise NotFoundError(
+                resource="Nifty50 options",
+                identifier="NFO exchange"
+            )
         
         # Generate list of trading dates (excluding weekends)
         trading_dates = []

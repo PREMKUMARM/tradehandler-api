@@ -1,18 +1,21 @@
 """
 Order management API endpoints
 """
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request
 from typing import Optional
 
 from utils.kite_utils import get_kite_instance
 from kiteconnect.exceptions import KiteException
 from core.user_context import get_user_id_from_request
+from core.exceptions import ValidationError, ExternalAPIError, AlgoFeastException
+from schemas.orders import PlaceOrderRequest, ModifyOrderRequest, CancelOrderRequest, OrderResponse
+from utils.logger import log_error, log_info
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
 
-@router.post("/place")
-async def place_order(req: Request):
+@router.post("/place", response_model=OrderResponse)
+async def place_order(req: Request, order_request: PlaceOrderRequest):
     """Place an order"""
     try:
         user_id = "default"
@@ -22,36 +25,51 @@ async def place_order(req: Request):
             pass
         
         kite = get_kite_instance(user_id=user_id)
-        payload = await req.json()
         
-        # Map Upstox format to Kite Connect format
+        # Map Pydantic model to Kite Connect format
         kite_order_params = {
-            "variety": payload.get('variety', kite.VARIETY_REGULAR),
-            "exchange": payload.get('exchange', kite.EXCHANGE_NSE),
-            "tradingsymbol": payload.get('tradingsymbol') or payload.get('instrument_token', '').split('|')[-1],
-            "transaction_type": payload.get('transaction_type', payload.get('transactionType', 'BUY')),
-            "quantity": payload.get('quantity', payload.get('qty', 1)),
-            "price": payload.get('price'),
-            "product": payload.get('product', kite.PRODUCT_MIS),
-            "order_type": payload.get('order_type', payload.get('orderType', kite.ORDER_TYPE_MARKET)),
-            "validity": payload.get('validity', kite.VALIDITY_DAY),
-            "disclosed_quantity": payload.get('disclosed_quantity', payload.get('disclosedQuantity', 0)),
-            "trigger_price": payload.get('trigger_price', payload.get('triggerPrice')),
-            "squareoff": payload.get('squareoff'),
-            "stoploss": payload.get('stoploss'),
-            "trailing_stoploss": payload.get('trailing_stoploss'),
-            "tag": payload.get('tag', 'algofeast')
+            "variety": kite.VARIETY_REGULAR,
+            "exchange": order_request.exchange,
+            "tradingsymbol": order_request.tradingsymbol,
+            "transaction_type": order_request.transaction_type,
+            "quantity": order_request.quantity,
+            "product": order_request.product,
+            "order_type": order_request.order_type,
+            "validity": order_request.validity or kite.VALIDITY_DAY,
+            "tag": order_request.tag or 'algofeast'
         }
         
-        # Remove None values
-        kite_order_params = {k: v for k, v in kite_order_params.items() if v is not None}
+        # Add optional fields
+        if order_request.price:
+            kite_order_params["price"] = order_request.price
+        if order_request.trigger_price:
+            kite_order_params["trigger_price"] = order_request.trigger_price
+        if order_request.disclosed_quantity:
+            kite_order_params["disclosed_quantity"] = order_request.disclosed_quantity
         
+        log_info(f"Placing order: {order_request.tradingsymbol} {order_request.transaction_type} {order_request.quantity}")
         order_id = kite.place_order(**kite_order_params)
-        return {"data": {"order_id": order_id}, "status": "success"}
+        
+        return OrderResponse(
+            order_id=str(order_id),
+            status="success",
+            message="Order placed successfully"
+        )
     except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+        log_error(f"Kite API error placing order: {str(e)}")
+        raise ExternalAPIError(
+            message=str(e),
+            service="Kite Connect"
+        )
+    except AlgoFeastException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error placing order: {str(e)}")
+        log_error(f"Error placing order: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error placing order: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.post("/modify")

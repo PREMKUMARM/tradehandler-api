@@ -1,7 +1,9 @@
 """
 User management API endpoints
 """
-from fastapi import APIRouter, Request, HTTPException, Header
+from fastapi import APIRouter, Request, Header
+from core.exceptions import ValidationError, AlgoFeastException
+from utils.logger import log_error
 from typing import Optional, List, Dict, Any
 from core.responses import SuccessResponse, ErrorResponse
 from core.user_context import get_user_id_from_request
@@ -48,8 +50,15 @@ async def get_current_user(request: Request):
             pass
         
         return SuccessResponse(data=user_info)
+    except AlgoFeastException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting current user: {str(e)}")
+        log_error(f"Error getting current user: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting current user: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.post("/switch", response_model=SuccessResponse)
@@ -62,7 +71,7 @@ async def switch_user(
     This is mainly for frontend use - the backend will use the user_id from the request.
     """
     if not user_id or not user_id.strip():
-        raise HTTPException(status_code=400, detail="user_id is required")
+        raise ValidationError(message="user_id is required", field="user_id")
     
     user_id = user_id.strip()
     
@@ -109,8 +118,15 @@ async def list_users(request: Request):
             })
         
         return SuccessResponse(data={"users": users, "total": len(users)})
+    except AlgoFeastException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing users: {str(e)}")
+        log_error(f"Error listing users: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error listing users: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/{user_id}/info", response_model=SuccessResponse)
@@ -150,6 +166,13 @@ async def get_user_info(user_id: str, request: Request):
             pass
         
         return SuccessResponse(data=user_info)
+    except AlgoFeastException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting user info: {str(e)}")
+        log_error(f"Error getting user info: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting user info: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 

@@ -99,3 +99,40 @@ def log_tool_interaction(tool_name: str, input_data: dict, output_data: dict,
         request_id: Optional request ID
     """
     log_tool_execution(tool_name, input_data, output_data, request_id)
+
+
+# Convenience functions for easy print() replacement
+def log_info(message: str, request_id: Optional[str] = None, **kwargs):
+    """Log info message - replacement for print() statements"""
+    logger = get_logger("app")
+    extra = {"request_id": request_id or "N/A"}
+    if kwargs:
+        message = f"{message} | {kwargs}"
+    logger.info(message, extra=extra)
+
+
+def log_error(message: str, request_id: Optional[str] = None, **kwargs):
+    """Log error message - replacement for print() statements"""
+    logger = get_logger("app")
+    extra = {"request_id": request_id or "N/A"}
+    if kwargs:
+        message = f"{message} | {kwargs}"
+    logger.error(message, extra=extra)
+
+
+def log_warning(message: str, request_id: Optional[str] = None, **kwargs):
+    """Log warning message - replacement for print() statements"""
+    logger = get_logger("app")
+    extra = {"request_id": request_id or "N/A"}
+    if kwargs:
+        message = f"{message} | {kwargs}"
+    logger.warning(message, extra=extra)
+
+
+def log_debug(message: str, request_id: Optional[str] = None, **kwargs):
+    """Log debug message - replacement for print() statements"""
+    logger = get_logger("app")
+    extra = {"request_id": request_id or "N/A"}
+    if kwargs:
+        message = f"{message} | {kwargs}"
+    logger.debug(message, extra=extra)

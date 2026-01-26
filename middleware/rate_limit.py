@@ -4,10 +4,11 @@ Rate limiting middleware
 import time
 from typing import Callable, Dict
 from collections import defaultdict
-from fastapi import Request, Response, HTTPException, status
+from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.config import get_settings
+from core.exceptions import RateLimitError
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -38,9 +39,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         # Check rate limit
         if len(self.requests[client_id]) >= self.settings.rate_limit_per_minute:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Rate limit exceeded: {self.settings.rate_limit_per_minute} requests per minute"
+            raise RateLimitError(
+                limit=self.settings.rate_limit_per_minute,
+                window=60,
+                details={"client_id": client_id}
             )
         
         # Record request

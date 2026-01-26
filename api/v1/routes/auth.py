@@ -42,9 +42,9 @@ async def google_login(request: Request):
     Redirects user to Google OAuth consent screen
     """
     if not GOOGLE_CLIENT_ID:
-        raise HTTPException(
-            status_code=500,
-            detail="Google OAuth is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET"
+        raise BusinessLogicError(
+            message="Google OAuth is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET",
+            error_code="CONFIGURATION_ERROR"
         )
     
     # Build OAuth URL
@@ -170,7 +170,7 @@ async def google_callback(request: Request, code: Optional[str] = None, error: O
         return RedirectResponse(url=redirect_url)
         
     except Exception as e:
-        print(f"Error in Google OAuth callback: {e}")
+        log_error(f"Error in Google OAuth callback: {e}")
         return RedirectResponse(
             url=f"http://localhost:4200/auth/login?error=server_error"
         )
@@ -195,13 +195,13 @@ async def get_current_user(request: Request):
         user_id = get_user_id_from_request(request)
     
     if not user_id or user_id == "default":
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise AuthenticationError(message="Not authenticated")
     
     user_repo = get_user_repository()
     user = user_repo.get_by_user_id(user_id)
     
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise NotFoundError(resource="User", identifier=user_id)
     
     return SuccessResponse(data={
         "user_id": user.user_id,
@@ -231,13 +231,13 @@ async def verify_token(request: Request):
     
     authorization = request.headers.get("Authorization")
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="No token provided")
+        raise AuthenticationError(message="No token provided")
     
     token = authorization.replace("Bearer ", "").strip()
     payload = verify_jwt_token(token)
     
     if not payload:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise AuthenticationError(message="Invalid or expired token")
     
     return SuccessResponse(data={
         "valid": True,
@@ -285,24 +285,29 @@ async def kite_login(request: Request):
         redirect_uri = get_kite_redirect_uri()
         
         if current_api_key == 'your_api_key_here' or not current_api_key:
-            raise HTTPException(
-                status_code=500, 
-                detail="KITE_API_KEY is not configured. Please set it in the Configuration page or environment variables"
+            raise BusinessLogicError(
+                message="KITE_API_KEY is not configured. Please set it in the Configuration page or environment variables",
+                error_code="CONFIGURATION_ERROR"
             )
         
         kite = KiteConnect(api_key=current_api_key)
         login_url = kite.login_url()
-        print(f"Generated login URL with redirect_uri: {redirect_uri}")
+        log_info(f"Generated login URL with redirect_uri: {redirect_uri}")
         return {
             "login_url": login_url,
             "message": "Redirect user to this URL for authentication",
             "redirect_uri": redirect_uri,
             "note": f"Make sure the redirect URI in your Kite Connect app settings matches: {redirect_uri}"
         }
-    except HTTPException:
+    except AlgoFeastException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating login URL: {str(e)}")
+        log_error(f"Error generating login URL: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error generating login URL: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.post("/kite/set-token")
@@ -318,13 +323,16 @@ async def kite_set_token(request: Request):
         user_id = get_user_id_from_request(request)
         redirect_uri = get_kite_redirect_uri()
         
-        print(f"Received request_token: {request_token[:20] if request_token else None}...")
-        print(f"Received access-token from request: {access_token_from_request[:20] if access_token_from_request else None}...")
-        print(f"User ID: {user_id}")
-        print(f"Redirect URI configured: {redirect_uri}")
+        log_debug(f"Received request_token: {request_token[:20] if request_token else None}...")
+        log_debug(f"Received access-token from request: {access_token_from_request[:20] if access_token_from_request else None}...")
+        log_debug(f"User ID: {user_id}")
+        log_debug(f"Redirect URI configured: {redirect_uri}")
         
         if not request_token and not access_token_from_request:
-            raise HTTPException(status_code=400, detail="Either request_token or access-token required")
+            raise ValidationError(
+                message="Either request_token or access-token required",
+                field="request_token"
+            )
         
         access_token = None
         
@@ -332,22 +340,22 @@ async def kite_set_token(request: Request):
             current_api_key = get_kite_api_key(user_id)
             current_api_secret = get_kite_api_secret(user_id)
             
-            print(f"API Key configured: {current_api_key[:10] if current_api_key and len(current_api_key) > 10 else 'NOT SET'}...")
+            log_debug(f"API Key configured: {current_api_key[:10] if current_api_key and len(current_api_key) > 10 else 'NOT SET'}...")
             
             if current_api_key == 'your_api_key_here' or not current_api_key:
-                raise HTTPException(
-                    status_code=500, 
-                    detail="KITE_API_KEY is not configured. Please set it in the Configuration page or environment variables"
+                raise BusinessLogicError(
+                    message="KITE_API_KEY is not configured. Please set it in the Configuration page or environment variables",
+                    error_code="CONFIGURATION_ERROR"
                 )
             if current_api_secret == 'your_api_secret_here' or not current_api_secret:
-                raise HTTPException(
-                    status_code=500, 
-                    detail="KITE_API_SECRET is not configured. Please set it in the Configuration page or environment variables"
+                raise BusinessLogicError(
+                    message="KITE_API_SECRET is not configured. Please set it in the Configuration page or environment variables",
+                    error_code="CONFIGURATION_ERROR"
                 )
             
             kite = KiteConnect(api_key=current_api_key)
             try:
-                print(f"Attempting to generate session with request_token...")
+                log_debug(f"Attempting to generate session with request_token...")
                 data_response = kite.generate_session(request_token, api_secret=current_api_secret)
                 
                 if isinstance(data_response, dict):
@@ -356,54 +364,60 @@ async def kite_set_token(request: Request):
                     access_token = getattr(data_response, 'access_token', None) if hasattr(data_response, 'access_token') else None
                 
                 if access_token and access_token == request_token:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Token exchange failed: Received request_token instead of access_token. "
+                    raise ValidationError(
+                        message="Token exchange failed: Received request_token instead of access_token. "
                                "This usually means: 1) API key/secret mismatch, "
                                "2) Redirect URI mismatch, or 3) Request token expired. "
-                               f"Please check your Kite Connect app settings. Redirect URI should be: {redirect_uri}"
+                               f"Please check your Kite Connect app settings. Redirect URI should be: {redirect_uri}",
+                        field="request_token"
                     )
                 
                 if not access_token:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail="Failed to get access_token from Kite. "
+                    raise ValidationError(
+                        message="Failed to get access_token from Kite. "
                                "Please check: 1) API key and secret are correct, "
                                f"2) Redirect URI matches exactly: {redirect_uri}, "
-                               "3) Request token is fresh (they expire quickly)."
+                               "3) Request token is fresh (they expire quickly).",
+                        field="request_token"
                     )
             except KiteException as e:
                 error_msg = str(e)
                 if "invalid" in error_msg.lower() or "expired" in error_msg.lower():
-                    raise HTTPException(
-                        status_code=400, 
-                        detail=f"Invalid request token: {error_msg}. "
+                    raise ValidationError(
+                        message=f"Invalid request token: {error_msg}. "
                                f"Please ensure: 1) Redirect URI in Kite Connect app settings matches exactly '{redirect_uri}', "
                                f"2) Request token is used immediately (they expire quickly), "
-                               f"3) API key and secret are correct."
+                               f"3) API key and secret are correct.",
+                        field="request_token"
                     )
-                raise HTTPException(status_code=400, detail=f"Kite API error: {error_msg}")
+                raise ExternalAPIError(
+                    message=error_msg,
+                    service="Kite Connect"
+                )
         else:
             access_token = access_token_from_request
         
         if not access_token:
-            raise HTTPException(status_code=400, detail="Failed to obtain access token")
+            raise ValidationError(
+                message="Failed to obtain access token",
+                field="access_token"
+            )
         
         if request_token and access_token == request_token:
-            raise HTTPException(
-                status_code=400,
-                detail="Internal error: Access token matches request token. "
-                       "The token exchange may have failed. Please try again with a fresh request_token."
+            raise ValidationError(
+                message="Internal error: Access token matches request token. "
+                       "The token exchange may have failed. Please try again with a fresh request_token.",
+                field="access_token"
             )
         
         if len(access_token) < 20:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid access token (too short: {len(access_token)} chars). "
+            raise ValidationError(
+                message=f"Invalid access token (too short: {len(access_token)} chars). "
                        "Kite access tokens should be at least 20 characters. "
                        "Please check: 1) Your Kite API Key and Secret are correct, "
                        f"2) The redirect URI matches exactly: {redirect_uri}, "
-                       "3) The request_token is fresh (they expire quickly)."
+                       "3) The request_token is fresh (they expire quickly).",
+                field="access_token"
             )
         
         # Store access token
@@ -413,17 +427,21 @@ async def kite_set_token(request: Request):
         with open("config/access_token.txt", "w") as f:
             f.write(access_token.strip())
         
-        print(f"Access token stored successfully (length: {len(access_token)})")
+        log_info(f"Access token stored successfully (length: {len(access_token)})")
         return {
             "status": "success", 
             "message": "Access token stored successfully",
             "access_token": access_token[:20] + "..." if access_token else None
         }
-    except HTTPException:
+    except AlgoFeastException:
         raise
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error setting token: {str(e)}")
+        log_error(f"Unexpected error: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error setting token: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/kite/access-token")
@@ -492,5 +510,10 @@ async def kite_delete_access_token():
             return {"status": "success", "message": "Access token deleted successfully"}
         return {"status": "success", "message": "No access token file found"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting token: {str(e)}")
+        log_error(f"Error deleting token: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error deleting token: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 

@@ -87,3 +87,18 @@ class ExternalAPIError(AlgoFeastException):
         )
         self.service = service
 
+
+class RateLimitError(AlgoFeastException):
+    """Rate limit exceeded error"""
+    
+    def __init__(self, limit: int, window: int = 60, details: Optional[Dict[str, Any]] = None):
+        message = f"Rate limit exceeded: {limit} requests per {window} seconds"
+        super().__init__(
+            message=message,
+            status_code=429,
+            error_code="RATE_LIMIT_EXCEEDED",
+            details={"limit": limit, "window": window, **(details or {})}
+        )
+        self.limit = limit
+        self.window = window
+

@@ -1,13 +1,15 @@
 """
 API routes for selected stocks management
 """
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from typing import List, Optional
 from datetime import datetime
 from core.responses import SuccessResponse, ErrorResponse
 from core.dependencies import get_request_id
+from core.exceptions import ValidationError, NotFoundError, AlgoFeastException
 from database.stocks_repository import get_stocks_repository, SelectedStock
 from agent.tools.instrument_resolver import resolve_instrument_name
+from utils.logger import log_error, log_info
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -29,7 +31,12 @@ async def get_selected_stocks(request: Request, active_only: bool = False):
             request_id=request_id
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting stocks: {str(e)}")
+        log_error(f"Error getting stocks: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting stocks: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.post("")
@@ -43,7 +50,10 @@ async def add_stock(request: Request, stock_data: dict):
         exchange = stock_data.get("exchange", "NSE")
         
         if not tradingsymbol:
-            raise HTTPException(status_code=400, detail="tradingsymbol is required")
+            raise ValidationError(
+                message="tradingsymbol is required",
+                field="tradingsymbol"
+            )
         
         # Resolve instrument if not provided
         instrument_token = stock_data.get("instrument_token")
@@ -55,9 +65,9 @@ async def add_stock(request: Request, stock_data: dict):
             # Resolve instrument name
             instrument_info = resolve_instrument_name(tradingsymbol, exchange)
             if not instrument_info:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Instrument '{tradingsymbol}' not found in {exchange}"
+                raise NotFoundError(
+                    resource="Instrument",
+                    identifier=f"{tradingsymbol} in {exchange}"
                 )
             
             instrument_token = instrument_info.get("instrument_token")
@@ -97,28 +107,43 @@ async def add_stock(request: Request, stock_data: dict):
             existing.updated_at = datetime.now()
             
             if repo.save(existing):
+                log_info(f"Stock updated: {existing.instrument_key}")
                 return SuccessResponse(
                     data={"stock": existing.to_dict()},
                     message="Stock already exists and was updated",
                     request_id=request_id
                 )
             else:
-                raise HTTPException(status_code=500, detail="Failed to update existing stock")
+                raise AlgoFeastException(
+                    message="Failed to update existing stock",
+                    status_code=500,
+                    error_code="DATABASE_ERROR"
+                )
         
         # New stock - save it
         if repo.save(stock):
+            log_info(f"Stock added: {stock.instrument_key}")
             return SuccessResponse(
                 data={"stock": stock.to_dict()},
                 message="Stock added successfully",
                 request_id=request_id
             )
         else:
-            raise HTTPException(status_code=500, detail="Failed to save stock. Please check server logs for details.")
+            raise AlgoFeastException(
+                message="Failed to save stock. Please check server logs for details.",
+                status_code=500,
+                error_code="DATABASE_ERROR"
+            )
             
-    except HTTPException:
+    except AlgoFeastException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding stock: {str(e)}")
+        log_error(f"Error adding stock: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error adding stock: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.post("/bulk")
@@ -176,7 +201,12 @@ async def add_stocks_bulk(request: Request, stocks_data: List[dict]):
             request_id=request_id
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding stocks: {str(e)}")
+        log_error(f"Error adding stocks: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error adding stocks: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.delete("/{instrument_key:path}")
@@ -187,16 +217,25 @@ async def remove_stock(instrument_key: str, request: Request):
     try:
         repo = get_stocks_repository()
         if repo.delete(instrument_key):
+            log_info(f"Stock removed: {instrument_key}")
             return SuccessResponse(
                 message="Stock removed successfully",
                 request_id=request_id
             )
         else:
-            raise HTTPException(status_code=404, detail="Stock not found")
-    except HTTPException:
+            raise NotFoundError(
+                resource="Stock",
+                identifier=instrument_key
+            )
+    except AlgoFeastException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error removing stock: {str(e)}")
+        log_error(f"Error removing stock: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error removing stock: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.patch("/{instrument_key:path}/toggle")
@@ -207,16 +246,25 @@ async def toggle_stock_active(instrument_key: str, request: Request, is_active: 
     try:
         repo = get_stocks_repository()
         if repo.toggle_active(instrument_key, is_active):
+            log_info(f"Stock toggled: {instrument_key} -> {'active' if is_active else 'inactive'}")
             return SuccessResponse(
                 message=f"Stock {'activated' if is_active else 'deactivated'} successfully",
                 request_id=request_id
             )
         else:
-            raise HTTPException(status_code=404, detail="Stock not found")
-    except HTTPException:
+            raise NotFoundError(
+                resource="Stock",
+                identifier=instrument_key
+            )
+    except AlgoFeastException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error toggling stock status: {str(e)}")
+        log_error(f"Error toggling stock status: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error toggling stock status: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/search")
@@ -237,7 +285,12 @@ async def search_instruments(request: Request, query: str, exchange: str = "NSE"
             request_id=request_id
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error searching instruments: {str(e)}")
+        log_error(f"Error searching instruments: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error searching instruments: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.post("/cache/refresh")
@@ -256,7 +309,12 @@ async def refresh_instruments_cache(request: Request):
             request_id=request_id
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error refreshing cache: {str(e)}")
+        log_error(f"Error refreshing cache: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error refreshing cache: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/cache/info")
@@ -274,5 +332,10 @@ async def get_cache_info(request: Request):
             request_id=request_id
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting cache info: {str(e)}")
+        log_error(f"Error getting cache info: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting cache info: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 

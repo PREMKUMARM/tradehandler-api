@@ -1,7 +1,7 @@
 """
 Market data API endpoints (candles, quotes, instruments, etc.)
 """
-from fastapi import APIRouter, Request, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 import pandas as pd
 import numpy as np
@@ -19,6 +19,8 @@ from kiteconnect.exceptions import KiteException
 from core.user_context import get_user_id_from_request
 from core.responses import SuccessResponse, ErrorResponse
 from core.dependencies import get_request_id
+from core.exceptions import ValidationError, NotFoundError, ExternalAPIError, AlgoFeastException
+from utils.logger import log_info, log_error, log_debug, log_warning
 from utils.binance_client import fetch_klines, fetch_multiple_klines
 from utils.binance_vwap import compute_vwap, compute_vwap_batch
 from utils.binance_signals import analyze_symbol_for_signals
@@ -101,37 +103,37 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str,
         # Check if date is in the future
         today = datetime.now().date()
         if from_date > today or to_date > today:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot fetch data for future dates. Selected date: {fromDate} to {toDate}, Today: {today.strftime('%Y-%m-%d')}. "
-                       f"Please select a date on or before today."
+            raise ValidationError(
+                message=f"Cannot fetch data for future dates. Selected date: {fromDate} to {toDate}, Today: {today.strftime('%Y-%m-%d')}. "
+                       f"Please select a date on or before today.",
+                field="date"
             )
         
         # Get historical data
         try:
-            print(f"[get_candle] Calling historical_data with: token={int(instrument_token)}, from={from_date}, to={to_date}, interval={kite_interval}")
+            log_debug(f"[get_candle] Calling historical_data with: token={int(instrument_token)}, from={from_date}, to={to_date}, interval={kite_interval}")
             historical_data = kite.historical_data(
                 instrument_token=int(instrument_token),
                 from_date=from_date,
                 to_date=to_date,
                 interval=kite_interval
             )
-            print(f"[get_candle] Successfully retrieved {len(historical_data) if historical_data else 0} candles")
+            log_debug(f"[get_candle] Successfully retrieved {len(historical_data) if historical_data else 0} candles")
         except KiteException as e:
             error_msg = str(e)
             error_type = type(e).__name__
-            print(f"[get_candle] KiteException ({error_type}): {error_msg}")
-            print(f"[get_candle] User ID: {user_id}")
-            print(f"[get_candle] Instrument: {instrument_token}, Interval: {interval} ({kite_interval}), Date: {fromDate} to {toDate}")
-            print(f"[get_candle] From date object: {from_date}, To date object: {to_date}")
+            log_error(f"[get_candle] KiteException ({error_type}): {error_msg}")
+            log_debug(f"[get_candle] User ID: {user_id}")
+            log_debug(f"[get_candle] Instrument: {instrument_token}, Interval: {interval} ({kite_interval}), Date: {fromDate} to {toDate}")
+            log_debug(f"[get_candle] From date object: {from_date}, To date object: {to_date}")
             
             # Get current API key and token for debugging
             from utils.kite_utils import get_kite_api_key, get_access_token
             current_api_key = get_kite_api_key(user_id=user_id)
             current_token = get_access_token()
-            print(f"[get_candle] Current API Key: {current_api_key[:15] if current_api_key else 'NOT SET'}...")
-            print(f"[get_candle] Current Token length: {len(current_token) if current_token else 0}")
-            print(f"[get_candle] Full error: {repr(e)}")
+            log_debug(f"[get_candle] Current API Key: {current_api_key[:15] if current_api_key else 'NOT SET'}...")
+            log_debug(f"[get_candle] Current Token length: {len(current_token) if current_token else 0}")
+            log_debug(f"[get_candle] Full error: {repr(e)}")
             
             # Check if it's actually a token error or something else
             is_token_error = (
@@ -141,19 +143,19 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str,
             
             # If it's InputException, it's likely an input validation issue, not token
             if error_type == "InputException":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Kite API input error: {error_msg}. "
+                raise ValidationError(
+                    message=f"Kite API input error: {error_msg}. "
                            f"This might be due to: 1) Invalid instrument token ({instrument_token}), "
                            f"2) Invalid date range ({fromDate} to {toDate} - check if dates are valid trading days), "
                            f"3) Invalid interval ({kite_interval}). "
-                           f"Note: Markets are closed on weekends and holidays."
+                           f"Note: Markets are closed on weekends and holidays.",
+                    field="instrument_token"
                 )
             
             if is_token_error:
-                raise HTTPException(
-                    status_code=401,
-                    detail=f"Kite API error: {error_msg} (Error type: {error_type}). "
+                from core.exceptions import AuthenticationError
+                raise AuthenticationError(
+                    message=f"Kite API error: {error_msg} (Error type: {error_type}). "
                            "Possible causes: 1) Token was generated with a different API key than currently configured, "
                            "2) Token has expired (Kite tokens expire daily), or 3) API key was changed after token generation. "
                            f"Current API Key: {current_api_key[:10] if current_api_key else 'NOT SET'}... "
@@ -168,23 +170,25 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str,
                     instruments = kite.instruments("NSE")
                     inst_info = next((inst for inst in instruments if str(inst.get("instrument_token")) == str(instrument_token)), None)
                     if inst_info and (inst_info.get("segment") == "INDICES" or inst_info.get("instrument_type") == "INDEX"):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Kite API permission error: {error_msg}. "
+                        raise ValidationError(
+                            message=f"Kite API permission error: {error_msg}. "
                                    f"Index data ({inst_info.get('tradingsymbol', 'N/A')}) may require special API permissions or subscription. "
                                    f"Please check: 1) Your Kite API key has market data permissions, "
                                    f"2) The date {fromDate} is a valid trading day (not a holiday/weekend), "
-                                   f"3) Try selecting a different date or use a stock instead of an index."
+                                   f"3) Try selecting a different date or use a stock instead of an index.",
+                            field="instrument_token"
                         )
+                except AlgoFeastException:
+                    raise
                 except:
                     pass
             
             # For non-token errors, provide more context
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Kite API error ({error_type}): {error_msg}. "
+            raise ExternalAPIError(
+                message=f"Kite API error ({error_type}): {error_msg}. "
                        f"Request: Instrument={instrument_token}, Interval={kite_interval}, From={fromDate}, To={toDate}. "
-                       f"Note: If this is an index, ensure your API key has market data permissions and the date is a valid trading day."
+                       f"Note: If this is an index, ensure your API key has market data permissions and the date is a valid trading day.",
+                service="Kite Connect"
             )
         
         # Convert to DataFrame for processing
@@ -526,9 +530,20 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str,
         else:
             return JSONResponse(content=[])
     except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+        log_error(f"Kite API error getting candles: {str(e)}")
+        raise ExternalAPIError(
+            message=str(e),
+            service="Kite Connect"
+        )
+    except AlgoFeastException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting candles: {str(e)}")
+        log_error(f"Error getting candles: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting candles: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/resolve-instrument/{instrument_name}")
@@ -547,8 +562,11 @@ def resolve_instrument(instrument_name: str, exchange: str = "NSE"):
                 "instrument_type": result.get("instrument_type")
             }
         else:
-            raise HTTPException(status_code=404, detail=f"Instrument '{instrument_name}' not found in {exchange}")
-    except HTTPException:
+            raise NotFoundError(
+                resource="Instrument",
+                identifier=f"{instrument_name} in {exchange}"
+            )
+    except AlgoFeastException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error resolving instrument: {str(e)}")

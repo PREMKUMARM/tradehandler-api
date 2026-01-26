@@ -1,7 +1,9 @@
 """
 Portfolio management API endpoints (balance, positions, orders, etc.)
 """
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request
+from core.exceptions import ExternalAPIError, AlgoFeastException, AuthenticationError
+from utils.logger import log_error, log_debug
 
 from utils.kite_utils import (
     api_key,
@@ -29,8 +31,8 @@ def get_balance(request: Request):
         
         equity_data = margins.get('equity', {})
         
-        print(f"Raw Kite Connect margins response: {margins}")
-        print(f"Equity data: {equity_data}")
+        log_debug(f"Raw Kite Connect margins response: {margins}")
+        log_debug(f"Equity data: {equity_data}")
         
         available_value = equity_data.get('available', 0)
         utilised_value = equity_data.get('utilised', 0)
@@ -50,9 +52,9 @@ def get_balance(request: Request):
         
         total_margin = equity_data.get('net', 0) or equity_data.get('live_balance', 0)
         
-        print(f"Calculated available_margin: {available_margin}")
-        print(f"Calculated utilised_margin: {utilised_margin}")
-        print(f"Calculated total_margin: {total_margin}")
+        log_debug(f"Calculated available_margin: {available_margin}")
+        log_debug(f"Calculated utilised_margin: {utilised_margin}")
+        log_debug(f"Calculated total_margin: {total_margin}")
         
         # Transform to match frontend expected format (Upstox-style)
         transformed_margins = {
@@ -65,13 +67,24 @@ def get_balance(request: Request):
             "commodity": margins.get('commodity', {})
         }
         
-        print(f"Transformed margins structure: {transformed_margins}")
+        log_debug(f"Transformed margins structure: {transformed_margins}")
         
         return {"data": transformed_margins}
     except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+        log_error(f"Kite API error getting balance: {str(e)}")
+        raise ExternalAPIError(
+            message=str(e),
+            service="Kite Connect"
+        )
+    except AlgoFeastException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting balance: {str(e)}")
+        log_error(f"Error getting balance: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting balance: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/positions")
@@ -125,9 +138,20 @@ def get_positions(request: Request):
         
         return {"data": transformed_positions}
     except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+        log_error(f"Kite API error getting positions: {str(e)}")
+        raise ExternalAPIError(
+            message=str(e),
+            service="Kite Connect"
+        )
+    except AlgoFeastException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting positions: {str(e)}")
+        log_error(f"Error getting positions: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting positions: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/orders")
@@ -211,9 +235,20 @@ def get_orders(request: Request):
         
         return {"data": transformed_orders}
     except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+        log_error(f"Kite API error getting orders: {str(e)}")
+        raise ExternalAPIError(
+            message=str(e),
+            service="Kite Connect"
+        )
+    except AlgoFeastException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting orders: {str(e)}")
+        log_error(f"Error getting orders: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting orders: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/live-positions")
@@ -247,9 +282,20 @@ def get_live_positions(request: Request):
             }
         }
     except KiteException as e:
-        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+        log_error(f"Kite API error fetching positions: {str(e)}")
+        raise ExternalAPIError(
+            message=str(e),
+            service="Kite Connect"
+        )
+    except AlgoFeastException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching positions: {str(e)}")
+        log_error(f"Error fetching positions: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error fetching positions: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/ws-portfolio")
@@ -275,7 +321,12 @@ def get_portfolio_ws(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting WebSocket info: {str(e)}")
+        log_error(f"Error getting WebSocket info: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting WebSocket info: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 @router.get("/ws-orders")
@@ -301,7 +352,12 @@ def get_orders_ws(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting WebSocket info: {str(e)}")
+        log_error(f"Error getting WebSocket info: {str(e)}")
+        raise AlgoFeastException(
+            message=f"Error getting WebSocket info: {str(e)}",
+            status_code=500,
+            error_code="INTERNAL_ERROR"
+        )
 
 
 

@@ -3,7 +3,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 from kiteconnect import KiteConnect
-from fastapi import HTTPException
+from core.exceptions import AuthenticationError, ValidationError, AlgoFeastException
+from utils.logger import log_info, log_error, log_warning, log_debug
 
 # Global API key - get from AgentConfig (managed via UI) or environment
 def get_kite_api_key(user_id: str = "default"):
@@ -59,7 +60,7 @@ def _validate_kite_token_centralized(kite: KiteConnect, api_key: str, access_tok
                 # Only warn once per minute to reduce log noise
                 current_time = time.time()
                 if current_time - _global_validation_state["last_warning_time"] > 60:
-                    print(f"[Kite Auth] WARNING: Token validation failed. Historical data may still work. (Warning shown once per minute)")
+                    log_warning("[Kite Auth] Token validation failed. Historical data may still work. (Warning shown once per minute)")
                     _global_validation_state["last_warning_time"] = current_time
             return is_valid
     
@@ -72,7 +73,7 @@ def _validate_kite_token_centralized(kite: KiteConnect, api_key: str, access_tok
         kite.profile()
         _global_validation_state["is_valid"] = True
         if verbose:
-            print(f"[Kite Auth] Token validated successfully")
+            log_info("[Kite Auth] Token validated successfully")
         return True
     except Exception as profile_error:
         error_str = str(profile_error).lower()
@@ -80,13 +81,13 @@ def _validate_kite_token_centralized(kite: KiteConnect, api_key: str, access_tok
         if "invalid" in error_str or "expired" in error_str or "token" in error_str or "unauthorized" in error_str:
             _global_validation_state["is_valid"] = False
             _global_validation_state["last_warning_time"] = time.time()
-            print(f"[Kite Auth] WARNING: Token validation failed: {profile_error}")
-            print(f"[Kite Auth] API Key: {api_key[:15]}... | This warning appears once per minute. Historical data may still work.")
+            log_warning(f"[Kite Auth] Token validation failed: {profile_error}")
+            log_warning(f"[Kite Auth] API Key: {api_key[:15]}... | This warning appears once per minute. Historical data may still work.")
             return False
         else:
             # Network or other errors - don't mark as invalid, but don't cache as valid either
             if verbose:
-                print(f"[Kite Auth] Profile check failed (non-auth error): {profile_error}")
+                log_debug(f"[Kite Auth] Profile check failed (non-auth error): {profile_error}")
             return None  # Unknown state
 
 def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_validation: bool = False):
@@ -101,22 +102,21 @@ def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_vali
     if not access_token:
         # Note: In a production app, you might want to return None or handle this differently 
         # for background tasks vs API requests
-        raise HTTPException(
-            status_code=401, 
-            detail="Access token not found. Please authenticate first. "
+        raise AuthenticationError(
+            message="Access token not found. Please authenticate first. "
                    "Steps: 1) GET /auth to get login URL, 2) Login through that URL, "
                    "3) POST /set-token with the request_token from redirect to store access token."
         )
     
     # Validate token length before using it (Kite access tokens can be 32 characters)
     if len(access_token) < 20:
-        raise HTTPException(
-            status_code=401,
-            detail=f"Invalid access token detected (length: {len(access_token)} chars). "
+        raise ValidationError(
+            message=f"Invalid access token detected (length: {len(access_token)} chars). "
                    "Kite Connect access tokens should be at least 20 characters. "
                    "The stored token appears to be invalid or corrupted. "
                    "Please regenerate: 1) DELETE /access-token to clear invalid token, "
-                   "2) GET /auth to get login URL, 3) Login and POST /set-token with request_token."
+                   "2) GET /auth to get login URL, 3) Login and POST /set-token with request_token.",
+            field="access_token"
         )
     
     # Get user-specific API key
@@ -134,9 +134,9 @@ def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_vali
     
     # Minimal logging - only on first validation call and if verbose
     if verbose and is_first_validation:
-        print(f"[get_kite_instance] User ID: {user_id}")
-        print(f"[get_kite_instance] API Key: {current_api_key[:15] if current_api_key and len(current_api_key) > 15 else 'NOT SET'}...")
-        print(f"[get_kite_instance] Token length: {len(access_token)}, preview: {access_token[:20]}...")
+        log_debug(f"[get_kite_instance] User ID: {user_id}")
+        log_debug(f"[get_kite_instance] API Key: {current_api_key[:15] if current_api_key and len(current_api_key) > 15 else 'NOT SET'}...")
+        log_debug(f"[get_kite_instance] Token length: {len(access_token)}, preview: {access_token[:20]}...")
     
     return kite
 
@@ -190,7 +190,7 @@ def calculate_trend_and_suggestions(kite: KiteConnect, instrument_token: int, cu
                         else:
                             trend_scores[timeframe] = 0
             except Exception as e:
-                print(f"Error fetching {timeframe} candles: {e}")
+                log_error(f"Error fetching {timeframe} candles: {e}")
                 continue
         
         # Calculate overall trend
@@ -246,7 +246,7 @@ def calculate_trend_and_suggestions(kite: KiteConnect, instrument_token: int, cu
             "reason": ". ".join(reason_parts)
         }
     except Exception as e:
-        print(f"Error in trend calculation: {e}")
+        log_error(f"Error in trend calculation: {e}")
         return {
             "trend": "NEUTRAL",
             "trend_strength": 0,
