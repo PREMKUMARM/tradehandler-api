@@ -213,6 +213,10 @@ async def startup_event():
     # Initialize Binance commentary service with historical data
     from utils.binance_commentary_service import initialize_commentary_service
     asyncio.create_task(initialize_commentary_service())
+    
+    # Start Kite ticker WebSocket listener (market hours aware)
+    from utils.kite_websocket_ticker import manage_kite_ticker_market_hours
+    asyncio.create_task(manage_kite_ticker_market_hours())
 
 # Simulation state and helpers moved to simulation/ module
 

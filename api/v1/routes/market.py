@@ -1,13 +1,15 @@
 """
 Market data API endpoints (candles, quotes, instruments, etc.)
 """
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import JSONResponse
+from typing import List, Optional, Dict
 import pandas as pd
 import numpy as np
 from datetime import datetime
 import asyncio
 import json
+import time
 
 from utils.kite_utils import (
     api_key,
@@ -789,6 +791,1081 @@ def get_nifty50_options_ws():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting WebSocket info: {str(e)}")
+
+
+# ============================================================================
+# Kite Ticker WebSocket Endpoints
+# ============================================================================
+
+@router.websocket("/ws/kite-ticker")
+async def kite_ticker_websocket(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time Kite ticker data streaming
+    
+    Server streams ticker updates in real-time from Kite WebSocket:
+    [
+        {
+            "instrument_token": 256265,
+            "last_price": 24500.50,
+            "ohlc": {"open": 24400, "high": 24550, "low": 24350, "close": 24500},
+            "volume": 1234567,
+            "timestamp": 1234567890,
+            ...
+        },
+        ...
+    ]
+    """
+    try:
+        await websocket.accept()
+        log_info("[Kite Ticker WS] Client connected")
+    except Exception as e:
+        log_error(f"[Kite Ticker WS] Error accepting connection: {e}")
+        return
+    
+    try:
+        from utils.kite_websocket_ticker import get_kite_ticker_instance, get_all_latest_kite_ticks
+        from concurrent.futures import ThreadPoolExecutor
+        
+        # Get ticker instance (non-blocking check)
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        
+        def get_ticker():
+            return get_kite_ticker_instance()
+        
+        ticker = await loop.run_in_executor(executor, get_ticker)
+        
+        if not ticker:
+            log_warning("[Kite Ticker WS] Ticker not initialized - sending info message")
+            try:
+                # Send error message to frontend
+                await websocket.send_json({
+                    "message": "Kite ticker not initialized. Market may be closed or access token not configured.",
+                    "error": "Ticker not initialized",
+                    "is_initialized": False
+                })
+                # Keep connection open briefly so frontend can receive the message
+                await asyncio.sleep(1)
+            except Exception as e:
+                log_error(f"[Kite Ticker WS] Error sending message: {e}")
+            finally:
+                # Close connection gracefully
+                try:
+                    if websocket.client_state.name == 'CONNECTED':
+                        await websocket.close()
+                except:
+                    pass
+            return
+        
+        # Send initial data (non-blocking)
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            from datetime import datetime, date
+            import json
+            loop = asyncio.get_event_loop()
+            executor = ThreadPoolExecutor(max_workers=1)
+            
+            def serialize_datetime(obj):
+                """Recursively serialize datetime objects to ISO format strings"""
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                elif isinstance(obj, date):
+                    return obj.isoformat()
+                elif isinstance(obj, dict):
+                    return {k: serialize_datetime(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [serialize_datetime(item) for item in obj]
+                elif isinstance(obj, (int, float, str, bool, type(None))):
+                    return obj
+                else:
+                    # For any other type, try to convert to string
+                    return str(obj)
+            
+            def get_initial_ticks():
+                return get_all_latest_kite_ticks()
+            
+            initial_ticks = await loop.run_in_executor(executor, get_initial_ticks)
+            if initial_ticks:
+                # Get first 30-minute and 5-minute candles, and calculate strategy
+                def get_candles_and_strategy():
+                    from utils.kite_utils import get_kite_instance
+                    from datetime import timedelta
+                    kite = get_kite_instance()
+                    today_date = datetime.now().date()
+                    
+                    # Get previous day closes for gap calculation
+                    prev_date = today_date - timedelta(days=1)
+                    while prev_date.weekday() > 4:  # Skip weekends
+                        prev_date = prev_date - timedelta(days=1)
+                    
+                    candles_30min = {}
+                    breaking_5min = {}
+                    previous_closes = {}
+                    strategy_statuses = {}
+                    
+                    for token in initial_ticks.keys():
+                        candles_30min[token] = get_first_30min_candle_ohlc(kite, token, today_date)
+                        # Get breaking 5min candle (requires 30min candle data)
+                        breaking_5min[token] = get_breaking_5min_candle_ohlc(kite, token, today_date, candles_30min.get(token))
+                        
+                        # Get previous close
+                        try:
+                            hist_data = kite.historical_data(
+                                instrument_token=token,
+                                from_date=prev_date,
+                                to_date=prev_date + timedelta(days=1),
+                                interval="day"
+                            )
+                            if hist_data and len(hist_data) > 0:
+                                prev_close = hist_data[-1].get('close', 0)
+                                if prev_close and prev_close > 0:
+                                    previous_closes[token] = float(prev_close)
+                        except:
+                            pass
+                        
+                        # Calculate gap
+                        gap_value = None
+                        previous_close = previous_closes.get(token)
+                        tick_data = initial_ticks.get(token, {})
+                        if previous_close and tick_data.get('ohlc', {}).get('open'):
+                            gap_value = tick_data.get('ohlc', {}).get('open') - previous_close
+                        
+                        # Calculate strategy status
+                        strategy_statuses[token] = calculate_strategy_status(
+                            gap_value=gap_value,
+                            first_30min_ohlc=candles_30min.get(token),
+                            breaking_5min_ohlc=breaking_5min.get(token),
+                            previous_close=previous_close
+                        )
+                    
+                    return candles_30min, breaking_5min, strategy_statuses
+                
+                first_30min_candles, breaking_5min_candles, strategy_statuses = await loop.run_in_executor(executor, get_candles_and_strategy)
+                
+                # Format and serialize tick data (remove unwanted fields)
+                formatted_ticks = []
+                for token, tick_data in initial_ticks.items():
+                    formatted_tick = {
+                        "instrument_token": token,
+                        "last_price": tick_data.get('last_price', 0),
+                        "ohlc": tick_data.get('ohlc', {}),
+                        "timestamp": tick_data.get('timestamp', 0),
+                        "change": tick_data.get('change', 0),
+                        "depth": tick_data.get('depth', {}),
+                        "first_30min_ohlc": first_30min_candles.get(token),
+                        "first_5min_ohlc": breaking_5min_candles.get(token),
+                        "strategy_status": strategy_statuses.get(token)
+                    }
+                    # Serialize datetime objects before sending
+                    formatted_tick = serialize_datetime(formatted_tick)
+                    formatted_ticks.append(formatted_tick)
+                await websocket.send_json(formatted_ticks)
+        except Exception as e:
+            log_error(f"[Kite Ticker WS] Error getting initial ticks: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Stream updates - send ticks when available, status updates periodically
+        last_sent_time = {}
+        last_status_sent = 0
+        last_ticker_status = None
+        
+        while True:
+            try:
+                # Check if WebSocket is still open
+                if websocket.client_state.name != 'CONNECTED':
+                    log_info("[Kite Ticker WS] WebSocket not connected, breaking loop")
+                    break
+                
+                current_time = time.time()
+                
+                # Send status update every 30 seconds (instead of polling REST API)
+                if current_time - last_status_sent > 30:
+                    try:
+                        def get_status_update():
+                            ticker = get_kite_ticker_instance()
+                            if ticker:
+                                return {
+                                    "type": "status",
+                                    "is_connected": ticker.is_connected,
+                                    "is_running": ticker.is_running,
+                                    "is_market_open": ticker.is_market_open(),
+                                    "subscribed_instruments": ticker.instrument_tokens,
+                                    "subscribed_count": len(ticker.instrument_tokens)
+                                }
+                            return None
+                        
+                        status_update = await loop.run_in_executor(executor, get_status_update)
+                        if status_update:
+                            # Add instrument details (lightweight, cached lookup)
+                            try:
+                                from utils.kite_utils import get_kite_instance
+                                kite = get_kite_instance()
+                                nse_instruments = kite.instruments("NSE")
+                                bse_instruments = kite.instruments("BSE")
+                                all_instruments = nse_instruments + bse_instruments
+                                
+                                instrument_details = []
+                                for token in status_update.get("subscribed_instruments", []):
+                                    for inst in all_instruments:
+                                        if inst.get("instrument_token") == token:
+                                            instrument_details.append({
+                                                "token": token,
+                                                "name": inst.get("name") or inst.get("tradingsymbol") or f"Token {token}",
+                                                "tradingsymbol": inst.get("tradingsymbol"),
+                                                "exchange": inst.get("exchange")
+                                            })
+                                            break
+                                
+                                status_update["subscribed_instruments_details"] = instrument_details
+                            except Exception as e:
+                                log_debug(f"[Kite Ticker WS] Could not get instrument details: {e}")
+                            
+                            await websocket.send_json(status_update)
+                            last_status_sent = current_time
+                            last_ticker_status = status_update
+                    except Exception as e:
+                        log_error(f"[Kite Ticker WS] Error sending status update: {e}")
+                
+                # Get latest ticker data (non-blocking via executor)
+                def get_latest_ticks():
+                    return get_all_latest_kite_ticks()
+                
+                all_ticks = await loop.run_in_executor(executor, get_latest_ticks)
+                
+                # Only send if there are updates or every 5 seconds
+                should_send = False
+                
+                if all_ticks:
+                    # Check if any tick has been updated
+                    for token, tick_data in all_ticks.items():
+                        tick_time = tick_data.get('timestamp', 0)
+                        if token not in last_sent_time or tick_time > last_sent_time.get(token, 0):
+                            should_send = True
+                            last_sent_time[token] = tick_time
+                    
+                    # Also send periodic updates (every 5 seconds) even if no change
+                    if current_time - max(last_sent_time.values() or [0]) > 5:
+                        should_send = True
+                
+                if should_send and all_ticks:
+                    # Format tick data for frontend
+                    from datetime import datetime, date
+                    
+                    def serialize_datetime(obj):
+                        """Recursively serialize datetime objects to ISO format strings"""
+                        if isinstance(obj, datetime):
+                            return obj.isoformat()
+                        elif isinstance(obj, date):
+                            return obj.isoformat()
+                        elif isinstance(obj, dict):
+                            return {k: serialize_datetime(v) for k, v in obj.items()}
+                        elif isinstance(obj, list):
+                            return [serialize_datetime(item) for item in obj]
+                        elif isinstance(obj, (int, float, str, bool, type(None))):
+                            return obj
+                        else:
+                            # For any other type, try to convert to string
+                            return str(obj)
+                    
+                    # Get first 30-minute and 5-minute candles, and calculate strategy (do this once per update cycle)
+                    def get_candles_and_strategy():
+                        from utils.kite_utils import get_kite_instance
+                        from datetime import timedelta
+                        kite = get_kite_instance()
+                        today_date = datetime.now().date()
+                        
+                        # Get previous day closes for gap calculation
+                        prev_date = today_date - timedelta(days=1)
+                        while prev_date.weekday() > 4:  # Skip weekends
+                            prev_date = prev_date - timedelta(days=1)
+                        
+                        candles_30min = {}
+                        breaking_5min = {}
+                        previous_closes = {}
+                        strategy_statuses = {}
+                        
+                        for token in all_ticks.keys():
+                            candles_30min[token] = get_first_30min_candle_ohlc(kite, token, today_date)
+                            # Get breaking 5min candle (requires 30min candle data)
+                            breaking_5min[token] = get_breaking_5min_candle_ohlc(kite, token, today_date, candles_30min.get(token))
+                            
+                            # Get previous close
+                            try:
+                                hist_data = kite.historical_data(
+                                    instrument_token=token,
+                                    from_date=prev_date,
+                                    to_date=prev_date + timedelta(days=1),
+                                    interval="day"
+                                )
+                                if hist_data and len(hist_data) > 0:
+                                    prev_close = hist_data[-1].get('close', 0)
+                                    if prev_close and prev_close > 0:
+                                        previous_closes[token] = float(prev_close)
+                            except:
+                                pass
+                            
+                            # Calculate gap
+                            gap_value = None
+                            previous_close = previous_closes.get(token)
+                            tick_data = all_ticks.get(token, {})
+                            if previous_close and tick_data.get('ohlc', {}).get('open'):
+                                gap_value = tick_data.get('ohlc', {}).get('open') - previous_close
+                            
+                            # Calculate strategy status
+                            strategy_statuses[token] = calculate_strategy_status(
+                                gap_value=gap_value,
+                                first_30min_ohlc=candles_30min.get(token),
+                                breaking_5min_ohlc=breaking_5min.get(token),
+                                previous_close=previous_close
+                            )
+                        
+                        return candles_30min, breaking_5min, strategy_statuses
+                    
+                    first_30min_candles, breaking_5min_candles, strategy_statuses = await loop.run_in_executor(executor, get_candles_and_strategy)
+                    
+                    formatted_ticks = []
+                    for token, tick_data in all_ticks.items():
+                        formatted_tick = {
+                            "instrument_token": token,
+                            "last_price": tick_data.get('last_price', 0),
+                            "ohlc": tick_data.get('ohlc', {}),
+                            "timestamp": tick_data.get('timestamp', 0),
+                            "change": tick_data.get('change', 0),
+                            "depth": tick_data.get('depth', {}),
+                            "first_30min_ohlc": first_30min_candles.get(token),
+                            "first_5min_ohlc": breaking_5min_candles.get(token),
+                            "strategy_status": strategy_statuses.get(token)
+                        }
+                        # Serialize any datetime objects in the tick data
+                        formatted_tick = serialize_datetime(formatted_tick)
+                        formatted_ticks.append(formatted_tick)
+                    
+                    # Send updates
+                    try:
+                        await websocket.send_json(formatted_ticks)
+                    except (RuntimeError, WebSocketDisconnect) as e:
+                        if isinstance(e, WebSocketDisconnect):
+                            log_info("[Kite Ticker WS] WebSocket disconnected during send")
+                        else:
+                            log_warning(f"[Kite Ticker WS] WebSocket closed: {e}")
+                        break
+                
+                # Wait 1 second before next update
+                await asyncio.sleep(1)
+                
+            except (RuntimeError, WebSocketDisconnect) as e:
+                if isinstance(e, WebSocketDisconnect):
+                    log_info("[Kite Ticker WS] WebSocket disconnected")
+                else:
+                    log_warning(f"[Kite Ticker WS] WebSocket closed: {e}")
+                break
+            except Exception as e:
+                import traceback
+                log_error(f"[Kite Ticker WS] Error in streaming loop: {e}")
+                log_error(f"[Kite Ticker WS] Traceback: {traceback.format_exc()}")
+                try:
+                    if websocket.client_state.name == 'CONNECTED':
+                        await websocket.send_json({
+                            "error": f"Streaming error: {str(e)}"
+                        })
+                except (RuntimeError, WebSocketDisconnect):
+                    pass
+                await asyncio.sleep(5)  # Wait before retrying
+    
+    except WebSocketDisconnect:
+        log_info("[Kite Ticker WS] Client disconnected")
+    except Exception as e:
+        log_error(f"[Kite Ticker WS] Error: {e}")
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+@router.get("/kite-ticker/latest")
+async def get_latest_kite_ticks(request: Request):
+    """
+    Get latest ticker data from Kite WebSocket
+    
+    Returns all instruments that are currently subscribed and receiving ticks
+    """
+    try:
+        from utils.kite_websocket_ticker import get_all_latest_kite_ticks, get_kite_ticker_instance
+        from concurrent.futures import ThreadPoolExecutor
+        import asyncio
+        
+        # Run sync operations in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        
+        def get_ticker_data():
+            ticker = get_kite_ticker_instance()
+            if not ticker:
+                return None, {}
+            all_ticks = get_all_latest_kite_ticks()
+            return ticker, all_ticks
+        
+        ticker, all_ticks = await loop.run_in_executor(executor, get_ticker_data)
+        
+        if not ticker:
+            return SuccessResponse(
+                data={
+                    "ticks": {},
+                    "is_connected": False,
+                    "message": "Kite ticker not initialized. Market may be closed or access token not configured."
+                },
+                request_id=get_request_id(request)
+            )
+        
+        # Format ticks for response (do this in executor to avoid blocking on lock)
+        def format_ticks_data():
+            from datetime import datetime, timedelta
+            kite = get_kite_instance()
+            today_date = datetime.now().date()
+            
+            # Get previous day closes for gap calculation
+            prev_date = today_date - timedelta(days=1)
+            while prev_date.weekday() > 4:  # Skip weekends
+                prev_date = prev_date - timedelta(days=1)
+            
+            previous_closes = {}
+            for token in all_ticks.keys():
+                try:
+                    hist_data = kite.historical_data(
+                        instrument_token=token,
+                        from_date=prev_date,
+                        to_date=prev_date + timedelta(days=1),
+                        interval="day"
+                    )
+                    if hist_data and len(hist_data) > 0:
+                        prev_close = hist_data[-1].get('close', 0)
+                        if prev_close and prev_close > 0:
+                            previous_closes[token] = float(prev_close)
+                except:
+                    pass
+            
+            formatted_ticks = {}
+            for token, tick_data in all_ticks.items():
+                # Get first 30-minute candle OHLC
+                first_30min_ohlc = get_first_30min_candle_ohlc(kite, token, today_date)
+                # Get breaking 5-minute candle (requires 30min candle data)
+                breaking_5min_ohlc = get_breaking_5min_candle_ohlc(kite, token, today_date, first_30min_ohlc)
+                
+                # Calculate gap
+                gap_value = None
+                previous_close = previous_closes.get(token)
+                if previous_close and tick_data.get('ohlc', {}).get('open'):
+                    gap_value = tick_data.get('ohlc', {}).get('open') - previous_close
+                
+                # Calculate strategy status
+                strategy_status = calculate_strategy_status(
+                    gap_value=gap_value,
+                    first_30min_ohlc=first_30min_ohlc,
+                    breaking_5min_ohlc=breaking_5min_ohlc,
+                    previous_close=previous_close
+                )
+                
+                formatted_ticks[token] = {
+                    "instrument_token": token,
+                    "last_price": tick_data.get('last_price', 0),
+                    "ohlc": tick_data.get('ohlc', {}),
+                    "timestamp": tick_data.get('timestamp', 0),
+                    "change": tick_data.get('change', 0),
+                    "depth": tick_data.get('depth', {}),
+                    "first_30min_ohlc": first_30min_ohlc,
+                    "first_5min_ohlc": breaking_5min_ohlc,
+                    "strategy_status": strategy_status
+                }
+            return formatted_ticks, ticker.is_connected, ticker.is_running, ticker.instrument_tokens
+        
+        formatted_ticks, is_connected, is_running, subscribed = await loop.run_in_executor(executor, format_ticks_data)
+        
+        return SuccessResponse(
+            data={
+                "ticks": formatted_ticks,
+                "is_connected": is_connected,
+                "is_running": is_running,
+                "subscribed_instruments": subscribed,
+                "count": len(formatted_ticks)
+            },
+            request_id=get_request_id(request)
+        )
+    
+    except Exception as e:
+        log_error(f"Error getting latest Kite ticks: {e}")
+        return ErrorResponse(
+            message=f"Error getting latest ticks: {str(e)}",
+            request_id=get_request_id(request)
+        )
+
+
+@router.get("/kite-ticker/status")
+async def get_kite_ticker_status(request: Request):
+    """Get Kite ticker connection status"""
+    try:
+        from utils.kite_websocket_ticker import get_kite_ticker_instance
+        from concurrent.futures import ThreadPoolExecutor
+        import asyncio
+        
+        # Run sync operations in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        
+        def get_status():
+            ticker = get_kite_ticker_instance()
+            if not ticker:
+                return None
+            
+            # Resolve instrument tokens to names for better display
+            instrument_details = []
+            try:
+                from utils.kite_utils import get_kite_instance
+                kite = get_kite_instance()
+                
+                # Get instruments from both NSE and BSE
+                nse_instruments = kite.instruments("NSE")
+                bse_instruments = kite.instruments("BSE")
+                all_instruments = nse_instruments + bse_instruments
+                
+                for token in ticker.instrument_tokens:
+                    # Find instrument by token
+                    inst_info = None
+                    for inst in all_instruments:
+                        if inst.get("instrument_token") == token:
+                            inst_info = inst
+                            break
+                    
+                    if inst_info:
+                        instrument_details.append({
+                            "token": token,
+                            "name": inst_info.get("name") or inst_info.get("tradingsymbol") or f"Token {token}",
+                            "tradingsymbol": inst_info.get("tradingsymbol"),
+                            "exchange": inst_info.get("exchange")
+                        })
+                    else:
+                        # Fallback if not found
+                        instrument_details.append({
+                            "token": token,
+                            "name": f"Token {token}",
+                            "tradingsymbol": None,
+                            "exchange": None
+                        })
+            except Exception as e:
+                log_error(f"[Kite Ticker Status] Error resolving instrument names: {e}")
+                # Fallback to just tokens if resolution fails
+                instrument_details = [{"token": t, "name": f"Token {t}"} for t in ticker.instrument_tokens]
+            
+            return {
+                "is_initialized": True,
+                "is_connected": ticker.is_connected,
+                "is_running": ticker.is_running,
+                "is_market_open": ticker.is_market_open(),
+                "subscribed_instruments": ticker.instrument_tokens,
+                "subscribed_instruments_details": instrument_details,
+                "subscribed_count": len(ticker.instrument_tokens)
+            }
+        
+        status_data = await loop.run_in_executor(executor, get_status)
+        
+        if not status_data:
+            return SuccessResponse(
+                data={
+                    "is_initialized": False,
+                    "is_connected": False,
+                    "is_running": False,
+                    "message": "Kite ticker not initialized"
+                },
+                request_id=get_request_id(request)
+            )
+        
+        return SuccessResponse(
+            data=status_data,
+            request_id=get_request_id(request)
+        )
+    
+    except Exception as e:
+        log_error(f"Error getting Kite ticker status: {e}")
+        return ErrorResponse(
+            message=f"Error getting ticker status: {str(e)}",
+            request_id=get_request_id(request)
+        )
+
+
+@router.post("/kite-ticker/subscribe")
+async def subscribe_kite_instruments(request: Request):
+    """
+    Subscribe to additional instruments in Kite ticker
+    
+    Request body (either instrument_tokens OR instrument_names):
+        {
+            "instrument_tokens": [256265, 260105, ...]  # Optional: list of instrument tokens
+            "instrument_names": ["NIFTY 50", "NIFTY BANK", "SENSEX"]  # Optional: list of instrument names
+        }
+    """
+    try:
+        from utils.kite_websocket_ticker import get_kite_ticker_instance
+        from agent.tools.instrument_resolver import get_instrument_token
+        from concurrent.futures import ThreadPoolExecutor
+        import asyncio
+        
+        # Parse request body
+        body = await request.json()
+        instrument_tokens = body.get("instrument_tokens", [])
+        instrument_names = body.get("instrument_names", [])
+        
+        if not instrument_tokens and not instrument_names:
+            return ErrorResponse(
+                message="Either instrument_tokens or instrument_names is required in request body",
+                request_id=get_request_id(request)
+            )
+        
+        # Resolve instrument names to tokens if provided
+        resolved_tokens = list(instrument_tokens) if instrument_tokens else []
+        
+        if instrument_names:
+            if not isinstance(instrument_names, list):
+                return ErrorResponse(
+                    message="instrument_names must be a list of strings",
+                    request_id=get_request_id(request)
+                )
+            
+            # Resolve names to tokens
+            from utils.kite_utils import get_kite_instance
+            kite = get_kite_instance()
+            
+            for name in instrument_names:
+                token = None
+                if name.upper() == "SENSEX":
+                    # For SENSEX, specifically search for INDEX type in BSE
+                    try:
+                        bse_instruments = kite.instruments("BSE")
+                        for inst in bse_instruments:
+                            # Look for SENSEX index (not ETF)
+                            if (inst.get("name", "").upper() == "SENSEX" and 
+                                inst.get("instrument_type", "").upper() == "INDEX"):
+                                token = inst.get("instrument_token")
+                                log_info(f"[Kite Ticker API] Found SENSEX index: token {token}")
+                                break
+                    except Exception as e:
+                        log_error(f"[Kite Ticker API] Error finding SENSEX index: {e}")
+                else:
+                    # For other instruments, use standard resolver
+                    token = get_instrument_token(name, exchange="NSE")
+                    if not token:
+                        token = get_instrument_token(name, exchange="BSE")
+                
+                if token:
+                    resolved_tokens.append(token)
+                    log_info(f"[Kite Ticker API] Resolved '{name}' to token {token}")
+                else:
+                    log_warning(f"[Kite Ticker API] Could not resolve instrument name '{name}'")
+        
+        if not resolved_tokens:
+            return ErrorResponse(
+                message="No valid instrument tokens found. Please check instrument names or tokens.",
+                request_id=get_request_id(request)
+            )
+        
+        if not isinstance(instrument_tokens, list) and instrument_tokens:
+            return ErrorResponse(
+                message="instrument_tokens must be a list of integers",
+                request_id=get_request_id(request)
+            )
+        
+        # Run sync operations in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        
+        def subscribe_instruments():
+            ticker = get_kite_ticker_instance()
+            if not ticker:
+                return None, "Kite ticker not initialized. Please ensure market is open and access token is configured."
+            ticker.subscribe(resolved_tokens)
+            return ticker, None
+        
+        ticker, error = await loop.run_in_executor(executor, subscribe_instruments)
+        
+        if error:
+            return ErrorResponse(
+                message=error,
+                request_id=get_request_id(request)
+            )
+        
+        return SuccessResponse(
+            data={
+                "message": f"Subscribed to {len(resolved_tokens)} instrument(s)",
+                "subscribed_tokens": resolved_tokens,
+                "all_subscribed": ticker.instrument_tokens
+            },
+            request_id=get_request_id(request)
+        )
+    
+    except json.JSONDecodeError:
+        return ErrorResponse(
+            message="Invalid JSON in request body",
+            request_id=get_request_id(request)
+        )
+    except Exception as e:
+        log_error(f"Error subscribing to instruments: {e}")
+        return ErrorResponse(
+            message=f"Error subscribing: {str(e)}",
+            request_id=get_request_id(request)
+        )
+
+
+def get_first_30min_candle_ohlc(kite, instrument_token: int, today_date) -> Optional[Dict]:
+    """
+    Get the first 30-minute candle OHLC for today
+    
+    Returns:
+        Dict with 'open', 'high', 'low', 'close' or None if not available
+    """
+    try:
+        # Fetch 30-minute candles for today
+        hist_data = kite.historical_data(
+            instrument_token=instrument_token,
+            from_date=today_date,
+            to_date=today_date,
+            interval="30minute"
+        )
+        
+        if hist_data and len(hist_data) > 0:
+            # Get the first candle (index 0) - this is the first 30-minute candle
+            first_candle = hist_data[0]
+            return {
+                "open": float(first_candle.get('open', 0)),
+                "high": float(first_candle.get('high', 0)),
+                "low": float(first_candle.get('low', 0)),
+                "close": float(first_candle.get('close', 0))
+            }
+    except Exception as e:
+        log_debug(f"[30min Candle] Error getting first 30min candle for token {instrument_token}: {e}")
+    return None
+
+
+def get_breaking_5min_candle_ohlc(kite, instrument_token: int, today_date, first_30min_ohlc: Optional[Dict]) -> Optional[Dict]:
+    """
+    Get the first 5-minute candle that breaks the 30-minute candle region
+    (either closes above 30min high or below 30min low)
+    
+    Args:
+        kite: Kite instance
+        instrument_token: Instrument token
+        today_date: Today's date
+        first_30min_ohlc: The first 30-minute candle OHLC data
+    
+    Returns:
+        Dict with 'open', 'high', 'low', 'close' or None if not available
+    """
+    if not first_30min_ohlc:
+        return None
+    
+    try:
+        # Fetch 5-minute candles for today
+        hist_data = kite.historical_data(
+            instrument_token=instrument_token,
+            from_date=today_date,
+            to_date=today_date,
+            interval="5minute"
+        )
+        
+        if not hist_data or len(hist_data) == 0:
+            return None
+        
+        # Get 30min candle boundaries
+        candle_30_high = first_30min_ohlc.get('high', 0)
+        candle_30_low = first_30min_ohlc.get('low', 0)
+        
+        if candle_30_high == 0 or candle_30_low == 0:
+            return None
+        
+        # Find the first 5min candle that breaks the 30min region
+        # Start from index 6 (9:45 candle - first candle after 30min)
+        # Look for a candle that closes above 30min high (bullish break) or below 30min low (bearish break)
+        
+        start_index = 6  # First 5min candle after 30min (9:45)
+        
+        for i in range(start_index, len(hist_data)):
+            candle = hist_data[i]
+            candle_close = float(candle.get('close', 0))
+            candle_high = float(candle.get('high', 0))
+            candle_low = float(candle.get('low', 0))
+            
+            if candle_close == 0:
+                continue
+            
+            # Check if this candle breaks the 30min region
+            # Bullish break: close above 30min high
+            # Bearish break: close below 30min low
+            if candle_close > candle_30_high or candle_close < candle_30_low:
+                # Get timestamp from candle
+                candle_date = candle.get('date')
+                timestamp = None
+                if isinstance(candle_date, datetime):
+                    timestamp = int(candle_date.timestamp())
+                elif candle_date:
+                    # Try to parse if it's a string
+                    try:
+                        if isinstance(candle_date, str):
+                            candle_date = datetime.fromisoformat(candle_date.replace('Z', '+00:00'))
+                        timestamp = int(candle_date.timestamp())
+                    except:
+                        pass
+                
+                return {
+                    "open": float(candle.get('open', 0)),
+                    "high": candle_high,
+                    "low": candle_low,
+                    "close": candle_close,
+                    "timestamp": timestamp,
+                    "date": candle_date.isoformat() if isinstance(candle_date, datetime) else str(candle_date) if candle_date else None
+                }
+        
+        # If no breaking candle found, return None
+        return None
+        
+    except Exception as e:
+        log_debug(f"[5min Candle] Error getting breaking 5min candle for token {instrument_token}: {e}")
+    return None
+
+
+def calculate_strategy_status(
+    gap_value: Optional[float],
+    first_30min_ohlc: Optional[Dict],
+    breaking_5min_ohlc: Optional[Dict],
+    previous_close: Optional[float]
+) -> Dict:
+    """
+    Calculate strategy status based on:
+    1. Gap up/down
+    2. 30min candle OHLC
+    3. 5min candle after 30min (closing above/below 30min candle)
+    4. Strength of 5min candle
+    
+    Returns:
+        Dict with 'status', 'direction', 'buy_price', 'sell_price', 'signal_strength'
+    """
+    result = {
+        "status": "WAITING",
+        "direction": None,
+        "buy_price": None,
+        "sell_price": None,
+        "signal_strength": None,
+        "message": "Waiting for candles to form"
+    }
+    
+    # Step 1: Check gap
+    if gap_value is None or previous_close is None:
+        result["message"] = "Gap data not available"
+        return result
+    
+    is_gap_up = gap_value > 0
+    is_gap_down = gap_value < 0
+    
+    # Step 2: Check if 30min candle is available
+    if not first_30min_ohlc:
+        result["message"] = "Waiting for 30min candle"
+        return result
+    
+    # Step 3: Check if breaking 5min candle is available
+    if not breaking_5min_ohlc:
+        result["message"] = "Waiting for 5min candle to break 30min region"
+        return result
+    
+    # Extract values
+    candle_30_open = first_30min_ohlc.get('open', 0)
+    candle_30_high = first_30min_ohlc.get('high', 0)
+    candle_30_low = first_30min_ohlc.get('low', 0)
+    candle_30_close = first_30min_ohlc.get('close', 0)
+    
+    candle_5_open = breaking_5min_ohlc.get('open', 0)
+    candle_5_high = breaking_5min_ohlc.get('high', 0)
+    candle_5_low = breaking_5min_ohlc.get('low', 0)
+    candle_5_close = breaking_5min_ohlc.get('close', 0)
+    
+    if not all([candle_30_close, candle_5_close, candle_30_high, candle_30_low]):
+        result["message"] = "Candle data incomplete"
+        return result
+    
+    # Step 3: Check if 5min candle broke above 30min high (bullish) or below 30min low (bearish)
+    candle_5_broke_above = candle_5_close > candle_30_high
+    candle_5_broke_below = candle_5_close < candle_30_low
+    
+    # Step 4: Calculate 5min candle strength
+    # Strength factors:
+    # - Body size (close - open) as percentage of range
+    # - Small wicks (high - max(open,close) and min(open,close) - low)
+    # - Close near high (for bullish) or near low (for bearish)
+    
+    candle_5_range = candle_5_high - candle_5_low
+    candle_5_body = abs(candle_5_close - candle_5_open)
+    
+    if candle_5_range == 0:
+        result["message"] = "Invalid candle range"
+        return result
+    
+    body_percentage = (candle_5_body / candle_5_range) * 100
+    
+    # Calculate wick sizes
+    upper_wick = candle_5_high - max(candle_5_open, candle_5_close)
+    lower_wick = min(candle_5_open, candle_5_close) - candle_5_low
+    total_wick = upper_wick + lower_wick
+    wick_percentage = (total_wick / candle_5_range) * 100 if candle_5_range > 0 else 0
+    
+    # Close position in range (0 = at low, 100 = at high)
+    close_position = ((candle_5_close - candle_5_low) / candle_5_range) * 100 if candle_5_range > 0 else 50
+    
+    # Determine strength (strong if: body > 60% of range, wicks < 30% of range)
+    is_strong_bullish = (
+        candle_5_close > candle_5_open and  # Bullish candle
+        body_percentage > 60 and  # Strong body
+        wick_percentage < 30 and  # Small wicks
+        close_position > 70  # Close near high
+    )
+    
+    is_strong_bearish = (
+        candle_5_close < candle_5_open and  # Bearish candle
+        body_percentage > 60 and  # Strong body
+        wick_percentage < 30 and  # Small wicks
+        close_position < 30  # Close near low
+    )
+    
+    # Step 5: Determine direction and prices
+    if candle_5_broke_above and is_strong_bullish:
+        # BUY signal - broke above 30min high
+        result["status"] = "BUY_SIGNAL"
+        result["direction"] = "BUY"
+        result["buy_price"] = round(candle_5_close, 2)
+        # Sell price: 30min high as target (already broken, so use 30min high + some buffer)
+        result["sell_price"] = round(candle_30_high, 2)  # Target
+        result["signal_strength"] = "STRONG"
+        result["message"] = f"Strong bullish 5min candle broke above 30min high"
+    elif candle_5_broke_below and is_strong_bearish:
+        # SELL signal - broke below 30min low
+        result["status"] = "SELL_SIGNAL"
+        result["direction"] = "SELL"
+        result["sell_price"] = round(candle_5_close, 2)
+        # Buy price: 30min low as target (already broken, so use 30min low)
+        result["buy_price"] = round(candle_30_low, 2)  # Target
+        result["signal_strength"] = "STRONG"
+        result["message"] = f"Strong bearish 5min candle broke below 30min low"
+    elif candle_5_broke_above:
+        # Weak bullish signal - broke above but weak strength
+        result["status"] = "WEAK_BUY"
+        result["direction"] = "BUY"
+        result["buy_price"] = round(candle_5_close, 2)
+        result["sell_price"] = round(candle_30_high, 2)
+        result["signal_strength"] = "WEAK"
+        result["message"] = f"5min candle broke above 30min high but weak strength"
+    elif candle_5_broke_below:
+        # Weak bearish signal - broke below but weak strength
+        result["status"] = "WEAK_SELL"
+        result["direction"] = "SELL"
+        result["sell_price"] = round(candle_5_close, 2)
+        result["buy_price"] = round(candle_30_low, 2)
+        result["signal_strength"] = "WEAK"
+        result["message"] = f"5min candle broke below 30min low but weak strength"
+    else:
+        # No clear signal (shouldn't happen if breaking candle is found, but safety check)
+        result["status"] = "NO_SIGNAL"
+        result["message"] = "5min candle did not break 30min region"
+    
+    return result
+
+
+@router.get("/kite-ticker/previous-close")
+async def get_previous_day_close(request: Request):
+    """
+    Get previous trading day's close price for subscribed instruments
+    Returns a map of instrument_token -> previous_close_price
+    """
+    try:
+        from utils.kite_websocket_ticker import get_kite_ticker_instance
+        from utils.kite_utils import get_kite_instance
+        from concurrent.futures import ThreadPoolExecutor
+        from datetime import datetime, timedelta
+        import asyncio
+        
+        # Run sync operations in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        
+        def get_previous_closes():
+            ticker = get_kite_ticker_instance()
+            if not ticker:
+                return {}, None
+            
+            kite = get_kite_instance()
+            previous_closes = {}
+            
+            # Get previous trading day (skip weekends)
+            today = datetime.now().date()
+            prev_date = today - timedelta(days=1)
+            # Skip weekends - go back to Friday if today is Monday
+            while prev_date.weekday() > 4:  # Saturday = 5, Sunday = 6
+                prev_date = prev_date - timedelta(days=1)
+            
+            # Try to get previous trading day's data
+            for token in ticker.instrument_tokens:
+                try:
+                    # Get daily candles for previous day
+                    hist_data = kite.historical_data(
+                        instrument_token=token,
+                        from_date=prev_date,
+                        to_date=prev_date + timedelta(days=1),
+                        interval="day"
+                    )
+                    
+                    if hist_data and len(hist_data) > 0:
+                        # Get the last candle's close (previous day close)
+                        prev_close = hist_data[-1].get('close', 0)
+                        if prev_close and prev_close > 0:
+                            previous_closes[token] = float(prev_close)
+                    else:
+                        # If no daily data, try to get last minute candle of previous day
+                        hist_data = kite.historical_data(
+                            instrument_token=token,
+                            from_date=prev_date,
+                            to_date=prev_date + timedelta(days=1),
+                            interval="minute"
+                        )
+                        if hist_data and len(hist_data) > 0:
+                            # Get the last candle before market close (15:30)
+                            last_candle = None
+                            for candle in reversed(hist_data):
+                                candle_time = candle.get('date')
+                                if isinstance(candle_time, datetime):
+                                    if candle_time.time() <= datetime.strptime("15:30", "%H:%M").time():
+                                        last_candle = candle
+                                        break
+                            
+                            if last_candle:
+                                prev_close = last_candle.get('close', 0)
+                                if prev_close and prev_close > 0:
+                                    previous_closes[token] = float(prev_close)
+                except Exception as e:
+                    log_error(f"[Previous Close] Error getting previous close for token {token}: {e}")
+                    continue
+            
+            return previous_closes, prev_date
+        
+        previous_closes, prev_date = await loop.run_in_executor(executor, get_previous_closes)
+        
+        return SuccessResponse(
+            data={
+                "previous_closes": previous_closes,
+                "previous_date": str(prev_date)
+            },
+            request_id=get_request_id(request)
+        )
+    
+    except Exception as e:
+        log_error(f"Error getting previous day close: {e}")
+        return ErrorResponse(
+            message=f"Error getting previous day close: {str(e)}",
+            request_id=get_request_id(request)
+        )
 
 
 # ============================================================================
