@@ -9,6 +9,7 @@ from datetime import datetime, time as dt_time
 from typing import Dict, Optional, List, Callable, Set
 from kiteconnect import KiteTicker
 from kiteconnect.exceptions import KiteException
+from zoneinfo import ZoneInfo
 
 from utils.kite_utils import get_kite_api_key, get_access_token
 from utils.logger import log_info, log_error, log_warning, log_debug
@@ -432,7 +433,8 @@ class KiteTickerListener:
             True if market is open, False otherwise
         """
         config = get_agent_config()
-        now = datetime.now()
+        # Always evaluate market hours in Indian Standard Time (IST) to avoid server timezone issues
+        now = datetime.now(ZoneInfo("Asia/Kolkata"))
         
         try:
             start_time = datetime.strptime(config.trading_start_time, "%H:%M").time()

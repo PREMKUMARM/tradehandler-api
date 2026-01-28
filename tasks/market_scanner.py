@@ -3,6 +3,7 @@ Background tasks for market scanning and order monitoring
 """
 import asyncio
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from agent.config import get_agent_config
 from agent.ws_manager import add_agent_log
@@ -24,8 +25,8 @@ async def live_market_scanner():
     
     while True:
         try:
-            # Only scan between market hours from config
-            now = datetime.now()
+            # Only scan between market hours from config (evaluate in Indian Standard Time)
+            now = datetime.now(ZoneInfo("Asia/Kolkata"))
             start_time = datetime.strptime(config.trading_start_time, "%H:%M").time()
             end_time = datetime.strptime(config.trading_end_time, "%H:%M").time()
             
