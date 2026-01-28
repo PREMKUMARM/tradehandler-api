@@ -73,6 +73,29 @@ _latest_binance_vwap_data = {}
 BINANCE_FUTURES_API = "https://fapi.binance.com"
 
 
+@router.get("/server-time")
+async def get_server_time(request: Request):
+    """
+    Simple endpoint to return current server time.
+    Used by frontend to show a live server clock.
+    """
+    try:
+        now = datetime.now()
+        return SuccessResponse(
+            data={
+                "server_time_iso": now.isoformat(),
+                "server_timestamp": int(now.timestamp())
+            },
+            request_id=get_request_id(request)
+        )
+    except Exception as e:
+        log_error(f"Error getting server time: {e}")
+        return ErrorResponse(
+            message=f"Error getting server time: {str(e)}",
+            request_id=get_request_id(request)
+        )
+
+
 @router.get("/candles/{instrument_token}/{interval}/{fromDate}/{toDate}")
 def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str, request: Request = None):
     """Get historical candle data"""
@@ -1021,9 +1044,16 @@ async def kite_ticker_websocket(websocket: WebSocket):
                             except Exception as e:
                                 log_debug(f"[Kite Ticker WS] Could not get instrument details: {e}")
                             
-                            await websocket.send_json(status_update)
-                            last_status_sent = current_time
-                            last_ticker_status = status_update
+                            # Only send status if WebSocket is still connected
+                            if websocket.client_state.name == 'CONNECTED':
+                                try:
+                                    await websocket.send_json(status_update)
+                                    last_status_sent = current_time
+                                    last_ticker_status = status_update
+                                except (RuntimeError, WebSocketDisconnect) as send_err:
+                                    # If close message already sent or socket closed, break the loop
+                                    log_debug(f"[Kite Ticker WS] Status send skipped/failed: {send_err}")
+                                    break
                     except Exception as e:
                         log_error(f"[Kite Ticker WS] Error sending status update: {e}")
                 
