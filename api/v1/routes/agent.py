@@ -127,9 +127,18 @@ async def agent_chat(
         # Run agent with hybrid routing (AlgoFeast + MCP)
         try:
             from utils.hybrid_agent import hybrid_agent
+            from utils.logger import log_info
+            log_info("Using hybrid agent for request processing")
             result = await hybrid_agent.process_prompt(chat_request.message, context)
-        except ImportError:
+            log_info(f"Hybrid agent result: source={result.get('source')}, tool={result.get('tool')}")
+        except ImportError as e:
+            from utils.logger import log_warning
+            log_warning(f"Hybrid agent not available, falling back to AlgoFeast: {e}")
             # Fallback to original AlgoFeast agent if hybrid not available
+            result = await run_agent(chat_request.message, context)
+        except Exception as e:
+            from utils.logger import log_error
+            log_error(f"Hybrid agent error, falling back to AlgoFeast: {e}")
             result = await run_agent(chat_request.message, context)
         
         # Extract response from hybrid result

@@ -149,6 +149,22 @@ async def agent_websocket_endpoint(websocket: WebSocket):
         log_error(f"[WS] Error: {e}")
         manager.disconnect(websocket)
 
+@app.websocket("/ws/multi-agent")
+async def multi_agent_websocket_endpoint(websocket: WebSocket):
+    """Multi-agent WebSocket endpoint for real-time updates"""
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive and handle client messages if needed
+            data = await websocket.receive_text()
+            # For now, we don't need to handle client -> server messages
+            # but we need to receive them to keep the connection open
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        log_error(f"[WS] Multi-agent Error: {e}")
+        manager.disconnect(websocket)
+
 # Helper to send agent updates - Redundant definition removed
 
 # Kite Connect credentials - All loaded from environment variables
