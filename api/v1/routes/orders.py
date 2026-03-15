@@ -10,6 +10,8 @@ from core.user_context import get_user_id_from_request
 from core.exceptions import ValidationError, ExternalAPIError, AlgoFeastException
 from schemas.orders import PlaceOrderRequest, ModifyOrderRequest, CancelOrderRequest, OrderResponse
 from utils.logger import log_error, log_info
+from utils.order_monitor import order_monitor
+from utils.trade_limits import trade_limits
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -23,6 +25,18 @@ async def place_order(req: Request, order_request: PlaceOrderRequest):
             user_id = get_user_id_from_request(req)
         except:
             pass
+        
+        # Check trade limits before placing order
+        investment_amount = 0
+        if order_request.price and order_request.quantity:
+            investment_amount = order_request.price * order_request.quantity
+        
+        can_trade, message = trade_limits.can_place_trade(investment_amount)
+        if not can_trade:
+            raise ValidationError(
+                message=message,
+                field="trade_limits"
+            )
         
         kite = get_kite_instance(user_id=user_id)
         
@@ -49,6 +63,21 @@ async def place_order(req: Request, order_request: PlaceOrderRequest):
         
         log_info(f"Placing order: {order_request.tradingsymbol} {order_request.transaction_type} {order_request.quantity}")
         order_id = kite.place_order(**kite_order_params)
+        
+        # Add to order monitor if stoploss or target is specified
+        if order_request.stoploss or order_request.target:
+            await order_monitor.add_order(
+                order_id=str(order_id),
+                symbol=order_request.tradingsymbol,
+                transaction_type=order_request.transaction_type,
+                quantity=order_request.quantity,
+                stoploss=order_request.stoploss,
+                target=order_request.target,
+                trailing_stoploss=order_request.trailing_stoploss
+            )
+        
+        # Record the trade
+        trade_limits.record_trade(investment_amount)
         
         return OrderResponse(
             order_id=str(order_id),

@@ -18,6 +18,10 @@ class PlaceOrderRequest(BaseModel):
     validity: Optional[str] = Field(default="DAY", description="Order validity")
     disclosed_quantity: Optional[int] = Field(None, ge=0, description="Disclosed quantity")
     tag: Optional[str] = Field(default="algofeast", description="Order tag")
+    # New fields for stoploss and target
+    stoploss: Optional[float] = Field(None, gt=0, description="Stoploss price for automatic exit")
+    target: Optional[float] = Field(None, gt=0, description="Target price for automatic exit")
+    trailing_stoploss: Optional[float] = Field(None, gt=0, description="Trailing stoploss amount")
 
     @validator("transaction_type")
     def validate_transaction_type(cls, v):

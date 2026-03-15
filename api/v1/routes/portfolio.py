@@ -4,6 +4,8 @@ Portfolio management API endpoints (balance, positions, orders, etc.)
 from fastapi import APIRouter, Request
 from core.exceptions import ExternalAPIError, AlgoFeastException, AuthenticationError
 from utils.logger import log_error, log_debug
+from utils.performance_monitor import monitor_performance
+from utils.cache_manager import cached
 
 from utils.kite_utils import (
     api_key,
@@ -17,7 +19,9 @@ router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
 
 
 @router.get("/balance")
-def get_balance(request: Request):
+@monitor_performance("portfolio_balance")
+@cached(ttl=30, key_prefix="portfolio_")  # Cache for 30 seconds
+async def get_balance(request: Request):
     """Get user margin/funds"""
     try:
         user_id = "default"
@@ -88,7 +92,9 @@ def get_balance(request: Request):
 
 
 @router.get("/positions")
-def get_positions(request: Request):
+@monitor_performance("portfolio_positions")
+@cached(ttl=10, key_prefix="portfolio_")  # Cache for 10 seconds
+async def get_positions(request: Request):
     """Get user positions"""
     try:
         user_id = "default"

@@ -179,6 +179,20 @@ app.add_middleware(
 async def startup_event():
     # Initialize database
     init_database()
+    
+    # Start order monitoring service
+    from utils.order_monitor import order_monitor
+    await order_monitor.start_monitoring()
+    
+    # Setup error handlers and performance monitoring
+    from utils.performance_monitor import performance_monitor, start_metrics_cleanup
+    from utils.error_handler import setup_error_handlers
+    setup_error_handlers(app)
+    
+    # Start background tasks
+    asyncio.create_task(start_metrics_cleanup())
+    
+    log_info("AlgoFeast API started successfully")
     add_agent_log("Database initialized successfully", "info", "system")
 
     # Initialize instruments cache
