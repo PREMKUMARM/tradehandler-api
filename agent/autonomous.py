@@ -52,10 +52,16 @@ async def run_autonomous_scan():
             
             # Resolve the group instruments
             instruments = INSTRUMENT_GROUPS.get(config.autonomous_target_group, [])
+            # Handle lambda functions for dynamic groups
+            if callable(instruments):
+                instruments = instruments()
+            
             if not instruments:
-                add_agent_log(f"Target group '{config.autonomous_target_group}' not found.", "warning")
+                add_agent_log(f"Target group '{config.autonomous_target_group}' not found or empty.", "warning")
                 await asyncio.sleep(60)
                 continue
+            
+            add_agent_log(f"Scanning {len(instruments)} instruments: {instruments[:5]}...")
 
             # Run the strategy tool on live data
             result = find_indicator_based_trading_opportunities.invoke({

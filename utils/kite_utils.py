@@ -1,4 +1,6 @@
 import os
+import time
+import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -27,6 +29,47 @@ def get_kite_api_key(user_id: str = "default"):
     return os.getenv('KITE_API_KEY', 'gle4opgggiing1ol')
 
 api_key = get_kite_api_key()
+
+# Rate limiting for Kite API calls
+_kite_rate_limits = {
+    "last_calls": {},
+    "max_calls_per_second": 3,
+    "max_calls_per_minute": 60
+}
+
+def _check_rate_limit(endpoint: str = "default"):
+    """Check if we're within rate limits"""
+    current_time = time.time()
+    
+    # Clean old calls (older than 1 minute)
+    _kite_rate_limits["last_calls"] = {
+        k: [t for t in calls if current_time - t < 60]
+        for k, calls in _kite_rate_limits["last_calls"].items()
+    }
+    
+    # Check per-second limit
+    recent_calls = _kite_rate_limits["last_calls"].get(endpoint, [])
+    calls_last_second = [t for t in recent_calls if current_time - t < 1]
+    
+    if len(calls_last_second) >= _kite_rate_limits["max_calls_per_second"]:
+        sleep_time = 1.0 - (current_time - calls_last_second[0])
+        if sleep_time > 0:
+            log_warning(f"Rate limit reached for {endpoint}, sleeping {sleep_time:.2f}s")
+            time.sleep(sleep_time)
+    
+    # Check per-minute limit
+    if len(recent_calls) >= _kite_rate_limits["max_calls_per_minute"]:
+        log_error(f"Rate limit exceeded for {endpoint}")
+        raise AlgoFeastException(
+            message="Rate limit exceeded. Please try again later.",
+            status_code=429,
+            error_code="RATE_LIMIT_EXCEEDED"
+        )
+    
+    # Record this call
+    if endpoint not in _kite_rate_limits["last_calls"]:
+        _kite_rate_limits["last_calls"][endpoint] = []
+    _kite_rate_limits["last_calls"][endpoint].append(current_time)
 
 def get_access_token():
     """Read access token from config file"""
@@ -98,6 +141,9 @@ def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_vali
         verbose: If True, log detailed information (default: False to reduce log noise)
         skip_validation: If True, skip token validation entirely (for performance)
     """
+    # Apply rate limiting to instance creation
+    _check_rate_limit("get_kite_instance")
+    
     access_token = get_access_token()
     if not access_token:
         # Note: In a production app, you might want to return None or handle this differently 

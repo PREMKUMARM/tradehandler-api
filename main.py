@@ -187,10 +187,24 @@ async def startup_event():
     # Setup error handlers and performance monitoring
     from utils.performance_monitor import performance_monitor, start_metrics_cleanup
     from utils.error_handler import setup_error_handlers
+    from utils.logger import log_info, log_error, log_warning
     setup_error_handlers(app)
     
     # Start background tasks
     asyncio.create_task(start_metrics_cleanup())
+    
+    # Start MCP server if available (disabled for now - using simulation)
+    try:
+        import mcp
+        log_info("MCP library available, using simulation mode")
+        # MCP server disabled for now - using simulation in hybrid agent
+        # asyncio.create_task(start_mcp_server())
+        log_info("MCP simulation mode enabled")
+    except ImportError as e:
+        log_warning(f"MCP library not available: {e}")
+        log_info("Hybrid agent will fallback to AlgoFeast for trading operations")
+    except Exception as e:
+        log_error(f"Error with MCP setup: {e}")
     
     log_info("AlgoFeast API started successfully")
     add_agent_log("Database initialized successfully", "info", "system")
@@ -650,4 +664,17 @@ async def agent_execute(req: Request):
             error_code="INTERNAL_ERROR"
         )
 
-# Legacy endpoint removed - use /api/v1/agent/status instead
+
+async def start_mcp_server():
+    """Start MCP server in background"""
+    try:
+        from mcp_server import main as mcp_main
+        log_info("Starting MCP server in background...")
+        await mcp_main()
+    except Exception as e:
+        log_error(f"Failed to start MCP server: {e}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

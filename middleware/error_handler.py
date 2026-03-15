@@ -19,7 +19,30 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         try:
             response = await call_next(request)
+            
+            # Handle case where no response is returned
+            if response is None:
+                from fastapi import status
+                from datetime import datetime
+                request_id = getattr(request.state, "request_id", "unknown")
+                
+                log_agent_activity(
+                    f"[{request_id}] No response returned from endpoint",
+                    "warning"
+                )
+                
+                return JSONResponse(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    content={
+                        "status": "error",
+                        "message": "Internal server error: No response generated",
+                        "request_id": request_id,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+            
             return response
+            
         except AlgoFeastException as e:
             # Handle custom exceptions
             request_id = getattr(request.state, "request_id", "unknown")

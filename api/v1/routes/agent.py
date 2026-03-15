@@ -31,6 +31,60 @@ def get_request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "unknown")
 
 
+def _format_mcp_response(result: Dict[str, Any]) -> str:
+    """Format MCP result into natural language response"""
+    
+    try:
+        tool = result.get("tool", "")
+        mcp_result = result.get("result", {})
+        
+        if tool == "place_order":
+            order_id = mcp_result.get("order_id")
+            return f"✅ Order placed successfully! Order ID: {order_id}"
+        
+        elif tool == "get_market_price":
+            symbol = mcp_result.get("symbol", "")
+            price = mcp_result.get("price", 0)
+            return f"💹 Current price of {symbol}: ₹{price}"
+        
+        elif tool == "get_portfolio":
+            positions = mcp_result.get("positions", [])
+            total_pnl = mcp_result.get("total_pnl", 0)
+            
+            if not positions:
+                return "📊 You have no open positions."
+            
+            response = f"📊 Your Portfolio (Total P&L: ₹{total_pnl}):\n"
+            for pos in positions:
+                symbol = pos.get("symbol", "")
+                quantity = pos.get("quantity", 0)
+                pnl = pos.get("pnl", 0)
+                pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+                response += f"• {pnl_emoji} {symbol}: {quantity} shares, P&L: ₹{pnl}\n"
+            
+            return response
+        
+        elif tool == "get_balance":
+            margins = mcp_result.get("balance", {})
+            equity = margins.get("equity", {})
+            available = equity.get("available", {})
+            return f"💰 Available margin: ₹{available}"
+        
+        elif tool == "cancel_order":
+            order_id = mcp_result.get("order_id")
+            return f"❌ Order {order_id} cancelled successfully"
+        
+        elif tool == "start_strategy":
+            strategy_id = mcp_result.get("strategy_id")
+            return f"🤖 Strategy started successfully! ID: {strategy_id}"
+        
+        else:
+            return f"✅ {mcp_result.get('message', 'Operation completed successfully')}"
+            
+    except Exception:
+        return "✅ Operation completed successfully"
+
+
 @router.post("/chat", response_model=APIResponse[ChatResponse])
 async def agent_chat(
     request: Request,
@@ -70,24 +124,39 @@ async def agent_chat(
         except Exception:
             pass  # Continue without context if auth fails
         
-        # Run agent
-        result = await run_agent(chat_request.message, context)
+        # Run agent with hybrid routing (AlgoFeast + MCP)
+        try:
+            from utils.hybrid_agent import hybrid_agent
+            result = await hybrid_agent.process_prompt(chat_request.message, context)
+        except ImportError:
+            # Fallback to original AlgoFeast agent if hybrid not available
+            result = await run_agent(chat_request.message, context)
+        
+        # Extract response from hybrid result
+        if isinstance(result, dict) and "result" in result:
+            if result.get("source") == "algofeast":
+                response_content = result["result"].get("response", "")
+            else:
+                # Format MCP result as natural response
+                response_content = _format_mcp_response(result)
+        else:
+            response_content = result.get("response", "")
         
         # Save assistant response to database
         assistant_message = ChatMessage(
             message_id=str(uuid.uuid4()),
             session_id=chat_request.session_id,
             role="assistant",
-            content=result.get("response", ""),
+            content=response_content,
             timestamp=datetime.now(),
-            metadata={"tool_calls": result.get("tool_calls", [])}
+            metadata={"source": result.get("source", "algofeast"), "tool_calls": result.get("tool_calls", [])}
         )
         chat_repo.save(assistant_message)
         
         return APIResponse(
             status="success",
             data=ChatResponse(
-                response=result.get("response", ""),
+                response=response_content,
                 session_id=chat_request.session_id,
                 metadata=result
             ),
