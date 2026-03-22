@@ -11,6 +11,7 @@ import asyncio
 
 from agents.agent_orchestrator import AgentOrchestrator
 from utils.logger import log_info, log_error
+from services.telegram_service import telegram_service
 
 router = APIRouter(prefix="/agent", tags=["agent-chat"])
 
@@ -78,6 +79,17 @@ async def chat_with_multi_agents(
         result = await orchestrator.process_user_request(multi_agent_request)
         
         processing_time = (datetime.now() - start_time).total_seconds()
+        
+        # Send additional Telegram notification for API access
+        await telegram_service.notify_system_event(
+            event_type="Chat API Access",
+            message=f"Chat request processed via API\n\n"
+                   f"**User Message:** {request.message[:100]}{'...' if len(request.message) > 100 else ''}\n"
+                   f"**Request Type:** {request.request_type}\n"
+                   f"**Processing Time:** {processing_time:.2f}s\n"
+                   f"**Agents Used:** {len(result.get('agents_used', []))}",
+            priority="low"
+        )
         
         # Create response
         response = ChatResponse(
@@ -209,7 +221,7 @@ async def save_chat_message(session_id: str, user_message: str, response_data: D
             content=user_message,
             timestamp=datetime.now()
         )
-        await chat_repo.save(user_message_obj)
+        chat_repo.save(user_message_obj)
         
         # Save assistant response
         assistant_message_obj = ChatMessage(
@@ -224,7 +236,7 @@ async def save_chat_message(session_id: str, user_message: str, response_data: D
                 "metadata": response_data.get("metadata", {})
             }
         )
-        await chat_repo.save(assistant_message_obj)
+        chat_repo.save(assistant_message_obj)
         
     except Exception as e:
         log_error(f"Failed to save chat message: {e}")

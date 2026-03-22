@@ -2,6 +2,10 @@ from typing import Union
 import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from core.exceptions import (

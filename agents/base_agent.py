@@ -72,7 +72,18 @@ class AgentTask:
 class BaseAgent(ABC):
     """Base class for all agents in the multi-agent system"""
     
-    def __init__(self, config: AgentConfig):
+    def __init__(self, config: AgentConfig = None, agent_id: str = None, name: str = None, **kwargs):
+        # Handle both config-based and parameter-based initialization
+        if config is None and agent_id and name:
+            # Create config from parameters
+            config = AgentConfig(
+                agent_id=agent_id,
+                name=name,
+                **kwargs
+            )
+        elif config is None:
+            raise ValueError("Either config or both agent_id and name must be provided")
+        
         self.config = config
         self.status = AgentStatus.IDLE
         self.current_tasks: List[AgentTask] = []

@@ -18,6 +18,7 @@ from .strategy_agent import StrategyAgent
 from .risk_agent import RiskAgent
 from .execution_agent import ExecutionAgent
 from .monitoring_agent import MonitoringAgent
+from services.telegram_service import telegram_service
 from .premium_strategy_agent import PremiumStrategyAgent
 from storage.agent_storage import AgentDataStore
 from utils.logger import log_info, log_error, log_warning, log_debug
@@ -92,7 +93,11 @@ class AgentOrchestrator:
                     continue
                 
                 # Create agent instance
-                agent = agent_class(config)
+                agent = agent_class(
+                    agent_id=config.agent_id,
+                    name=config.name,
+                    **config.__dict__
+                )
                 
                 # Initialize agent
                 await agent.initialize(self.communication_layer, self.data_store)
@@ -110,6 +115,13 @@ class AgentOrchestrator:
         
         log_info("Starting all agents")
         
+        # Send Telegram notification
+        await telegram_service.notify_system_event(
+            event_type="Agent System Start",
+            message="Multi-Agent Trading System is starting up...",
+            priority="normal"
+        )
+        
         # Start agents in dependency order
         start_order = self._get_agent_start_order()
         
@@ -118,18 +130,61 @@ class AgentOrchestrator:
                 try:
                     await self.agents[agent_id].start()
                     log_info(f"Agent {agent_id} started")
+                    
+                    # Send individual agent start notification
+                    agent_name = self.agents[agent_id].config.name
+                    await telegram_service.notify_agent_status(
+                        agent_id=agent_id,
+                        agent_name=agent_name,
+                        status="started",
+                        details="Agent successfully initialized and started"
+                    )
+                    
                 except Exception as e:
                     log_error(f"Failed to start agent {agent_id}: {e}")
+                    
+                    # Send error notification
+                    await telegram_service.notify_error(
+                        error_type="Agent Start Failed",
+                        error_message=str(e),
+                        context=f"Agent ID: {agent_id}"
+                    )
     
     async def stop_all_agents(self):
         """Stop all agents"""
         
         log_info("Stopping all agents")
         
+        # Send Telegram notification
+        await telegram_service.notify_system_event(
+            event_type="Agent System Stop",
+            message="Multi-Agent Trading System is shutting down...",
+            priority="normal"
+        )
+        
         for agent_id, agent in self.agents.items():
             try:
                 await agent.stop()
                 log_info(f"Agent {agent_id} stopped")
+                
+                # Send individual agent stop notification
+                agent_name = agent.config.name
+                await telegram_service.notify_agent_status(
+                    agent_id=agent_id,
+                    agent_name=agent_name,
+                    status="stopped",
+                    details="Agent successfully stopped"
+                )
+                
+            except Exception as e:
+                log_error(f"Failed to stop agent {agent_id}: {e}")
+                
+                # Send error notification
+                await telegram_service.notify_error(
+                    error_type="Agent Stop Failed",
+                    error_message=str(e),
+                    context=f"Agent ID: {agent_id}"
+                )
             except Exception as e:
                 log_error(f"Failed to stop agent {agent_id}: {e}")
         
@@ -187,6 +242,18 @@ class AgentOrchestrator:
             
             # Log the request and response
             await self._log_user_request(request, combined_result)
+            
+            # Send Telegram notification for chat interaction
+            if request_type == "chat" or request_type == "general":
+                agents_used = [agent.get("agent_name", "Unknown Agent") for agent in combined_result.get("agents_used", [])]
+                processing_time = combined_result.get("processing_time", 0)
+                
+                await telegram_service.notify_chat_message(
+                    user_message=user_message,
+                    agent_response=combined_result.get("summary", "No response generated"),
+                    agents_used=agents_used,
+                    processing_time=processing_time
+                )
             
             return combined_result
             
