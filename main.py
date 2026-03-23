@@ -213,7 +213,11 @@ async def startup_event():
     # Start background tasks
     asyncio.create_task(start_metrics_cleanup())
     
-    # Start MCP server if available (disabled for now - using simulation)
+    # Start Telegram notification scheduler
+    from services.telegram_scheduler import telegram_scheduler
+    await telegram_scheduler.start_scheduler()
+    
+    # Setup error handlers and performance monitoring
     try:
         import mcp
         log_info("MCP library available, using simulation mode")

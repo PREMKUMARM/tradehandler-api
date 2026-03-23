@@ -1,10 +1,15 @@
 """
-Database models for the trading agent application
+Database models for trading agent application
 """
+
 from datetime import datetime
 from typing import Optional, Dict, Any
 from pydantic import BaseModel
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, JSON, Float
+from sqlalchemy.ext.declarative import declarative_base
 
+# SQLAlchemy Base for database tables
+SQLAlchemyBase = declarative_base()
 
 class User(BaseModel):
     """Model for user information"""
@@ -16,7 +21,6 @@ class User(BaseModel):
     created_at: datetime
     last_login: Optional[datetime] = None
     is_active: bool = True
-
 
 class AgentApproval(BaseModel):
     """Model for agent approvals and trade decisions"""
@@ -45,16 +49,68 @@ class AgentApproval(BaseModel):
     sl_order_id: Optional[str] = None
     tp_order_id: Optional[str] = None
 
-
 class AgentLog(BaseModel):
     """Model for agent activity logs"""
-    id: Optional[int] = None
+    log_id: str
+    agent_id: str
+    agent_name: str
+    action: str
+    details: Dict[str, Any]
     timestamp: datetime
-    level: str  # DEBUG, INFO, WARNING, ERROR
-    message: str
-    component: str  # agent, tools, autonomous, etc.
+    level: str  # INFO, WARNING, ERROR
+
+class ToolExecution(BaseModel):
+    """Model for tracking tool executions"""
+    execution_id: str
+    tool_name: str
+    inputs: Dict[str, Any]
+    outputs: Dict[str, Any]
+    execution_time: float  # in seconds
+    success: bool
+    error_message: Optional[str] = None
+    timestamp: datetime
+
+class ChatMessage(BaseModel):
+    """Model for storing chat conversation history"""
+    message_id: str
+    session_id: str
+    role: str  # user, assistant
+    content: str
+    timestamp: datetime
     metadata: Optional[Dict[str, Any]] = None
 
+
+# SQLAlchemy Models for Scheduler
+class ScheduledTask(SQLAlchemyBase):
+    """Model for storing scheduled notification tasks"""
+    __tablename__ = 'scheduled_tasks'
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    schedule_type = Column(String, nullable=False)  # once, daily, weekly, monthly, interval, cron
+    operation_type = Column(String, nullable=False)  # custom_message, fetch_price, fetch_news, etc.
+    schedule_config = Column(JSON, nullable=False)  # Time, day, minutes, cron expression, etc.
+    operation_config = Column(JSON, nullable=False)  # Operation-specific parameters
+    enabled = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_run = Column(DateTime, nullable=True)
+    next_run = Column(DateTime, nullable=True)
+    run_count = Column(Integer, default=0, nullable=False)
+    timezone = Column(String, default='UTC', nullable=False)
+
+
+class TaskExecutionLog(SQLAlchemyBase):
+    """Model for logging task executions"""
+    __tablename__ = 'task_execution_logs'
+
+    id = Column(String, primary_key=True)
+    task_id = Column(String, nullable=False)
+    executed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    success = Column(Boolean, nullable=False)
+    error_message = Column(Text, nullable=True)
+    execution_time = Column(Float, nullable=True)  # Execution time in seconds
+    result_data = Column(JSON, nullable=True)  # Store operation results
 
 class AgentConfig(BaseModel):
     """Model for agent configuration settings"""
