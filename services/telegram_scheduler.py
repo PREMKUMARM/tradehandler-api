@@ -4,9 +4,12 @@ Allows scheduling of recurring notifications with configurable operations
 """
 
 import asyncio
+import calendar
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field
 from enum import Enum
 import croniter
@@ -16,6 +19,82 @@ import uuid
 
 from utils.logger import log_info, log_error, log_warning, log_debug
 from services.telegram_service import telegram_service, TelegramNotification
+
+
+def _utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Normalize datetimes for comparison (SQLite / API often yield naive times)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _zone_for_task(task: "ScheduledTask") -> ZoneInfo:
+    tz_name = (task.timezone or "UTC").strip() or "UTC"
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        log_warning(f"Invalid timezone '{tz_name}', using UTC")
+        return ZoneInfo("UTC")
+
+
+def _normalize_scheduler_symbol(symbol: str) -> str:
+    """Normalize UI symbols like NIFTY-50 → NIFTY 50 for Kite resolution."""
+    s = str(symbol).strip().upper().replace("-", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    compact = s.replace(" ", "")
+    if compact == "NIFTY50":
+        return "NIFTY 50"
+    if compact == "BANKNIFTY":
+        return "NIFTY BANK"
+    return s
+
+
+def _known_index_quote_key(normalized: str) -> Optional[str]:
+    """Direct Kite quote keys for common indices (avoids ambiguous instrument search)."""
+    u = normalized.upper().strip()
+    c = u.replace(" ", "")
+    if u == "NIFTY 50" or c == "NIFTY50":
+        return "NSE:NIFTY 50"
+    if u in ("NIFTY BANK", "BANK NIFTY") or c == "BANKNIFTY":
+        return "NSE:NIFTY BANK"
+    if u == "SENSEX":
+        return "BSE:SENSEX"
+    if u in ("INDIA VIX", "INDIAVIX", "VIX"):
+        return "NSE:INDIA VIX"
+    return None
+
+
+def _format_last_and_change(quote_data: Dict[str, Any]) -> tuple[bool, str, str]:
+    """
+    Build display strings from a Kite quote dict.
+    Returns (ok, last_price_str, change_str). ok is False if last_price is missing or not usable.
+    """
+    raw_last = quote_data.get("last_price")
+    if raw_last is None:
+        return False, "", "last_price missing in quote"
+    try:
+        last = float(raw_last)
+    except (TypeError, ValueError):
+        return False, "", "last_price not numeric"
+    if last <= 0:
+        return False, "", "last_price is zero or negative (live quote unavailable)"
+
+    ohlc = quote_data.get("ohlc") or {}
+    try:
+        close = float(ohlc.get("close") or 0)
+    except (TypeError, ValueError):
+        close = 0.0
+    last_str = f"{last:,.2f}"
+    if close > 0:
+        chg = last - close
+        pct = (chg / close) * 100.0
+        sign = "+" if chg >= 0 else ""
+        change_str = f"{sign}{chg:,.2f} ({sign}{pct:.2f}% vs prev. close)"
+    else:
+        change_str = "previous close not available (cannot compute day change)"
+    return True, last_str, change_str
 
 
 class ScheduleType(Enum):
@@ -37,6 +116,8 @@ class OperationType(Enum):
     MARKET_SUMMARY = "market_summary"
     PORTFOLIO_UPDATE = "portfolio_update"
     STRATEGY_ALERT = "strategy_alert"
+    INDICATOR_REPORT = "indicator_report"
+    STRATEGY_OVERVIEW = "strategy_overview"
 
 
 @dataclass
@@ -242,25 +323,26 @@ class TelegramScheduler:
         """Main scheduler loop"""
         while self.running:
             try:
-                current_time = datetime.now(self.timezone)
+                current_time = datetime.now(timezone.utc)
                 
                 # Check each task
                 for task in self.tasks.values():
                     if not task.enabled:
                         continue
                     
-                    if task.next_run and task.next_run <= current_time:
+                    nr = _utc_aware(task.next_run)
+                    if nr is not None and nr <= current_time:
                         await self._execute_task(task)
                 
-                # Sleep for 1 minute
-                await asyncio.sleep(60)
+                # Poll frequently enough to hit wall-clock schedules (was 60s; missed narrow windows)
+                await asyncio.sleep(15)
                 
             except asyncio.CancelledError:
                 log_info("Scheduler loop cancelled")
                 break
             except Exception as e:
                 log_error(f"Error in scheduler loop: {e}")
-                await asyncio.sleep(60)
+                await asyncio.sleep(15)
     
     def _task_from_row(self, task_data: Dict[str, Any]) -> ScheduledTask:
         """Build ScheduledTask from repository row dict."""
@@ -288,8 +370,8 @@ class TelegramScheduler:
             operation_config=task_data['operation_config'],
             enabled=task_data['enabled'],
             created_at=created if created else datetime.now(),
-            last_run=parse_dt(task_data.get('last_run')),
-            next_run=parse_dt(task_data.get('next_run')),
+            last_run=_utc_aware(parse_dt(task_data.get('last_run'))),
+            next_run=_utc_aware(parse_dt(task_data.get('next_run'))),
             run_count=task_data.get('run_count') or 0,
             timezone=task_data.get('timezone') or 'UTC'
         )
@@ -307,9 +389,52 @@ class TelegramScheduler:
         except Exception as e:
             log_error(f"refresh_task_from_db failed for {task_id}: {e}")
 
+    async def recalculate_next_run(self, task_id: str) -> None:
+        """Recompute next_run from current schedule and persist (after schedule/enabled changes)."""
+        try:
+            t = self.tasks.get(task_id)
+            if not t:
+                await self.refresh_task_from_db(task_id)
+                t = self.tasks.get(task_id)
+            if not t:
+                return
+            t.next_run = self._calculate_next_run(t)
+            if self.repo:
+                await self.repo.update_task_runtime_metadata(
+                    task_id=t.id,
+                    last_run=t.last_run,
+                    next_run=t.next_run,
+                    run_count=t.run_count,
+                )
+        except Exception as e:
+            log_error(f"recalculate_next_run failed for {task_id}: {e}")
+
     def remove_task_runtime(self, task_id: str) -> None:
         """Remove task from in-memory scheduler after DB delete."""
         self.tasks.pop(task_id, None)
+
+    def enrich_task_row_for_api(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Merge live scheduler state into a DB row for list/detail APIs.
+        GET /tasks used to return only SQLite columns, so next_run stayed null while
+        the in-memory task had the real schedule — UI showed 'Not scheduled'.
+        Also registers a DB-only task into self.tasks so the executor can run it.
+        """
+        tid = row.get("id")
+        try:
+            if tid and tid not in self.tasks:
+                st = self._task_from_row(row)
+                if st.enabled and st.next_run is None:
+                    st.next_run = self._calculate_next_run(st)
+                self.tasks[tid] = st
+            if tid and tid in self.tasks:
+                t = self.tasks[tid]
+                row["next_run"] = t.next_run.isoformat() if t.next_run else None
+                row["last_run"] = t.last_run.isoformat() if t.last_run else None
+                row["run_count"] = t.run_count
+        except Exception as e:
+            log_warning(f"enrich_task_row_for_api failed for {tid}: {e}")
+        return row
 
     async def _load_tasks_from_database(self):
         """Load existing tasks from database"""
@@ -347,7 +472,9 @@ class TelegramScheduler:
                 'schedule_config': task.schedule_config,
                 'operation_config': task.operation_config,
                 'enabled': task.enabled,
-                'timezone': task.timezone
+                'timezone': task.timezone,
+                'next_run': task.next_run,
+                'run_count': task.run_count,
             }
             
             return await self.repo.create_task(task_data)
@@ -378,7 +505,7 @@ class TelegramScheduler:
         
         finally:
             # Update task metadata
-            task.last_run = datetime.now(self.timezone)
+            task.last_run = datetime.now(timezone.utc)
             task.run_count += 1
             
             # Calculate next run time
@@ -447,6 +574,14 @@ class TelegramScheduler:
             elif task.operation_type == OperationType.STRATEGY_ALERT:
                 log_info(f"Sending strategy alert for task '{task.name}'")
                 await self._send_strategy_alert(task, operation_config)
+
+            elif task.operation_type == OperationType.INDICATOR_REPORT:
+                log_info(f"Indicator report for task '{task.name}'")
+                await self._send_indicator_report(task, operation_config)
+
+            elif task.operation_type == OperationType.STRATEGY_OVERVIEW:
+                log_info(f"Strategy overview for task '{task.name}'")
+                await self._send_strategy_overview(task, operation_config)
             
             else:
                 log_warning(f"Unknown operation type for task '{task.name}': {task.operation_type}")
@@ -456,6 +591,14 @@ class TelegramScheduler:
             log_error(f"Operation execution failed for task '{task.name}': {e}")
             raise
     
+    async def _notify_telegram(self, notification: TelegramNotification) -> None:
+        """Send via Telegram and warn once per attempt if delivery is skipped."""
+        ok = await telegram_service.send_notification(notification)
+        if not ok:
+            log_warning(
+                "Telegram notification was not sent. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env."
+            )
+
     async def _send_custom_message(self, task: ScheduledTask, config: Dict[str, Any]):
         """Send custom message"""
         message = config.get('message', 'Scheduled message')
@@ -467,171 +610,261 @@ class TelegramScheduler:
             category="system"
         )
         
-        await telegram_service.send_notification(notification)
+        await self._notify_telegram(notification)
     
     async def _fetch_price_data(self, task: ScheduledTask, config: Dict[str, Any]):
-        """Fetch price data and send to Telegram"""
+        """Fetch live last price from Zerodha Kite (same source as the rest of the app)."""
+        symbol_raw = config.get("symbol") or "NIFTY-50"
+        normalized = _normalize_scheduler_symbol(str(symbol_raw))
+
+        def _fetch_sync() -> tuple:
+            from utils.kite_utils import get_kite_instance
+            from agent.tools.instrument_resolver import resolve_instrument_name
+
+            kite = get_kite_instance(skip_validation=True)
+            quote_key = _known_index_quote_key(normalized)
+            if not quote_key:
+                info = resolve_instrument_name(normalized, exchange="NSE")
+                if not info:
+                    info = resolve_instrument_name(normalized, exchange="BSE")
+                if not info:
+                    raise ValueError(
+                        f"Could not resolve symbol '{symbol_raw}'. "
+                        "Use NIFTY-50, RELIANCE, or an exact NSE/BSE trading symbol."
+                    )
+                quote_key = f"{info['exchange']}:{info['tradingsymbol']}"
+
+            quotes = kite.quote([quote_key])
+            if quote_key not in quotes:
+                raise ValueError(f"No quote returned for {quote_key}")
+            return quote_key, quotes[quote_key]
+
         try:
-            symbol = config.get('symbol', 'NIFTY-50')
-            
-            # Mock price fetching - replace with actual API call
-            # This would integrate with your existing market data APIs
-            price_data = {
-                'symbol': symbol,
-                'price': '19,845.50',  # Mock price
-                'change': '+125.30 (+0.64%)',
-                'timestamp': datetime.now().isoformat()
-            }
-            
-            message = f"📈 **{symbol} Price Alert**\n\n"
-            message += f"**Current Price:** ₹{price_data['price']}\n"
-            message += f"**Change:** {price_data['change']}\n"
-            message += f"**Time:** {price_data['timestamp']}"
-            
-            notification = TelegramNotification(
-                title=f"Price Alert: {symbol}",
-                message=message,
-                priority="normal",
-                category="trading",
-                metadata=price_data
-            )
-            
-            await telegram_service.send_notification(notification)
-            
+            quote_key, q = await asyncio.to_thread(_fetch_sync)
         except Exception as e:
-            log_error(f"Failed to fetch price data: {e}")
+            log_error(f"Live price fetch failed for {symbol_raw}: {e}")
+            err = TelegramNotification(
+                title=f"Price fetch failed: {symbol_raw}",
+                message=(
+                    f"**Failed to fetch live price** from Zerodha Kite.\n\n"
+                    f"**Reason:** {e}\n\n"
+                    "Check Kite login / `config/access_token.txt` and that the symbol is valid."
+                ),
+                priority="high",
+                category="trading",
+                metadata=None,
+            )
+            await self._notify_telegram(err)
+            return
+
+        ok, price_fmt, change_str = _format_last_and_change(q)
+        if not ok:
+            log_error(f"Invalid quote payload for {symbol_raw} @ {quote_key}: {change_str}")
+            err = TelegramNotification(
+                title=f"Price fetch failed: {symbol_raw}",
+                message=(
+                    f"**Failed to fetch a usable live price** for `{quote_key}`.\n\n"
+                    f"**Detail:** {change_str}"
+                ),
+                priority="high",
+                category="trading",
+                metadata=None,
+            )
+            await self._notify_telegram(err)
+            return
+
+        message = (
+            f"**{symbol_raw}** (Kite: `{quote_key}`)\n\n"
+            f"**Last:** ₹{price_fmt}\n"
+            f"**Day change:** {change_str}"
+        )
+
+        notification = TelegramNotification(
+            title=f"Price: {symbol_raw}",
+            message=message,
+            priority="normal",
+            category="trading",
+            metadata=None,
+        )
+
+        await self._notify_telegram(notification)
     
     async def _fetch_news_data(self, task: ScheduledTask, config: Dict[str, Any]):
-        """Fetch news data and send to Telegram"""
-        try:
-            # Mock news fetching - replace with actual news API
-            news_items = [
-                {
-                    'title': 'Market Opens Positive',
-                    'summary': 'NIFTY opens 0.5% higher on positive global cues',
-                    'time': '2 hours ago'
-                },
-                {
-                    'title': 'Fed Decision Expected',
-                    'summary': 'Traders await Fed decision on interest rates',
-                    'time': '4 hours ago'
-                }
-            ]
-            
-            message = f"📰 **Market News Update**\n\n"
-            for news in news_items[:3]:  # Limit to 3 latest items
-                message += f"**{news['title']}**\n"
-                message += f"{news['summary']}\n"
-                message += f"_{news['time']}_\n\n"
-            
-            notification = TelegramNotification(
-                title="Market News Update",
+        """News: no external feed wired — send an honest status (no mock headlines)."""
+        message = (
+            "**Scheduled news**\n\n"
+            "**No news feed is configured.** This task does not fetch live headlines yet.\n\n"
+            "Remove this scheduled operation or integrate a news API later."
+        )
+        await self._notify_telegram(
+            TelegramNotification(
+                title="News unavailable",
                 message=message,
                 priority="normal",
                 category="system",
-                metadata={'news_count': len(news_items)}
+                metadata=None,
             )
-            
-            await telegram_service.send_notification(notification)
-            
-        except Exception as e:
-            log_error(f"Failed to fetch news data: {e}")
+        )
     
     async def _send_system_status(self, task: ScheduledTask, config: Dict[str, Any]):
-        """Send system status to Telegram"""
+        """Host metrics via psutil (no mock uptime/memory numbers)."""
+
+        def _metrics_sync() -> str:
+            try:
+                import psutil
+                import time as time_mod
+                boot = psutil.boot_time()
+                up_s = int(time_mod.time() - boot)
+                h, rem = divmod(up_s, 3600)
+                d, h = divmod(h, 24)
+                mem = psutil.virtual_memory()
+                disk = psutil.disk_usage("/")
+                lines = [
+                    "**System status** (this host)",
+                    "",
+                    f"**Uptime:** {d}d {h}h (approx.)",
+                    f"**Memory:** {mem.percent:.1f}% used ({mem.used // (1024**3)} / {mem.total // (1024**3)} GiB)",
+                    f"**Disk (/):** {disk.percent:.1f}% used, {disk.free // (1024**3)} GiB free",
+                    f"**CPU count:** {psutil.cpu_count(logical=True)}",
+                ]
+                return "\n".join(lines)
+            except Exception as ex:
+                return (
+                    "**System status**\n\n"
+                    f"**Failed to read host metrics:** {ex}\n"
+                    "(Install `psutil` or check permissions.)"
+                )
+
         try:
-            # Get system status
-            status_data = {
-                'server_status': 'Running',
-                'uptime': '2 days, 14 hours',
-                'active_agents': 3,
-                'memory_usage': '45%',
-                'disk_space': '78% free'
-            }
-            
-            message = f"🖥️ **System Status Report**\n\n"
-            message += f"**Server Status:** {status_data['server_status']}\n"
-            message += f"**Uptime:** {status_data['uptime']}\n"
-            message += f"**Active Agents:** {status_data['active_agents']}\n"
-            message += f"**Memory Usage:** {status_data['memory_usage']}\n"
-            message += f"**Disk Space:** {status_data['disk_space']}"
-            
-            notification = TelegramNotification(
-                title="System Status",
-                message=message,
-                priority="low",
-                category="system",
-                metadata=status_data
+            text = await asyncio.to_thread(_metrics_sync)
+            await self._notify_telegram(
+                TelegramNotification(
+                    title="System status",
+                    message=text,
+                    priority="low",
+                    category="system",
+                    metadata=None,
+                )
             )
-            
-            await telegram_service.send_notification(notification)
-            
         except Exception as e:
             log_error(f"Failed to send system status: {e}")
+            await self._notify_telegram(
+                TelegramNotification(
+                    title="System status failed",
+                    message=f"Could not send system status.\n\n**Reason:** {e}",
+                    priority="low",
+                    category="system",
+                    metadata=None,
+                )
+            )
     
     async def _send_market_summary(self, task: ScheduledTask, config: Dict[str, Any]):
-        """Send market summary to Telegram"""
+        """Index snapshot from Kite only (no mock volume/sector lines)."""
+
+        def _sync() -> str:
+            from utils.kite_utils import get_kite_instance
+
+            kite = get_kite_instance(skip_validation=True)
+            keys = ["NSE:NIFTY 50", "BSE:SENSEX"]
+            quotes = kite.quote(keys)
+            lines = ["**Market summary** (live Kite quotes)", ""]
+            for key, label in zip(keys, ("NIFTY 50", "SENSEX")):
+                if key not in quotes:
+                    lines.append(f"**{label}:** *Failed to fetch — no quote for `{key}`*")
+                    continue
+                ok, price, chg = _format_last_and_change(quotes[key])
+                if not ok:
+                    lines.append(f"**{label}:** *Failed — {chg}*")
+                else:
+                    lines.append(f"**{label}:** ₹{price}  ({chg})")
+            return "\n".join(lines)
+
         try:
-            # Mock market summary
-            summary = {
-                'nifty': {'close': '19,720.15', 'change': '+0.63%'},
-                'sensex': {'close': '65,234.56', 'change': '+0.48%'},
-                'volume': '₹2,45,678 Cr',
-                'advance_decline': '1,245:789',
-                'sector_performance': 'IT +2.1%, Banking -0.8%'
-            }
-            
-            message = f"📊 **Daily Market Summary**\n\n"
-            message += f"**NIFTY:** ₹{summary['nifty']['close']} ({summary['nifty']['change']})\n"
-            message += f"**SENSEX:** {summary['sensex']['close']} ({summary['sensex']['change']})\n"
-            message += f"**Volume:** {summary['volume']}\n"
-            message += f"**A/D:** {summary['advance_decline']}\n"
-            message += f"**Top Sector:** IT {summary['sector_performance'].split(',')[0]}"
-            
-            notification = TelegramNotification(
-                title="Market Summary",
-                message=message,
-                priority="normal",
-                category="trading",
-                metadata=summary
+            message = await asyncio.to_thread(_sync)
+            await self._notify_telegram(
+                TelegramNotification(
+                    title="Market summary",
+                    message=message,
+                    priority="normal",
+                    category="trading",
+                    metadata=None,
+                )
             )
-            
-            await telegram_service.send_notification(notification)
-            
         except Exception as e:
             log_error(f"Failed to send market summary: {e}")
+            await self._notify_telegram(
+                TelegramNotification(
+                    title="Market summary failed",
+                    message=(
+                        f"**Failed to fetch market summary from Kite.**\n\n"
+                        f"**Reason:** {e}"
+                    ),
+                    priority="normal",
+                    category="trading",
+                    metadata=None,
+                )
+            )
     
     async def _send_portfolio_update(self, task: ScheduledTask, config: Dict[str, Any]):
-        """Send portfolio update to Telegram"""
+        """Net positions + equity margin summary from Kite (no mock PnL)."""
+
+        def _sync() -> str:
+            from utils.kite_utils import get_kite_instance
+
+            kite = get_kite_instance(skip_validation=True)
+            pos = kite.positions()
+            net = pos.get("net") or []
+            lines = ["**Portfolio (Kite)**", ""]
+            open_rows = [p for p in net if abs(float(p.get("quantity") or 0)) > 0.0001]
+            if not open_rows:
+                lines.append("**Net positions:** None (flat).")
+            else:
+                total_pnl = 0.0
+                for p in open_rows[:25]:
+                    sym = p.get("tradingsymbol", "?")
+                    qty = p.get("quantity", 0)
+                    pnl = float(p.get("pnl") or 0)
+                    total_pnl += pnl
+                    lines.append(f"• {sym}  qty {qty}  P&L ₹{pnl:,.2f}")
+                if len(open_rows) > 25:
+                    lines.append(f"… and {len(open_rows) - 25} more")
+                lines.append("")
+                lines.append(f"**Day P&L (net listed):** ₹{total_pnl:,.2f}")
+            try:
+                margins = kite.margins()
+                eq = margins.get("equity", {}) if isinstance(margins, dict) else {}
+                if eq:
+                    lines.append("")
+                    lines.append(f"**Equity available:** ₹{float(eq.get('available', 0) or 0):,.2f}")
+            except Exception:
+                pass
+            return "\n".join(lines)
+
         try:
-            # Mock portfolio data
-            portfolio = {
-                'total_value': '₹12,45,678',
-                'daily_pnl': '+₹1,234 (+1.0%)',
-                'holdings': 15,
-                'top_gainer': 'TCS +3.2%',
-                'top_loser': 'RIL -2.1%'
-            }
-            
-            message = f"💼 **Portfolio Update**\n\n"
-            message += f"**Total Value:** {portfolio['total_value']}\n"
-            message += f"**Daily P&L:** {portfolio['daily_pnl']}\n"
-            message += f"**Holdings:** {portfolio['holdings']}\n"
-            message += f"**Top Gainer:** {portfolio['top_gainer']}\n"
-            message += f"**Top Loser:** {portfolio['top_loser']}"
-            
-            notification = TelegramNotification(
-                title="Portfolio Update",
-                message=message,
-                priority="normal",
-                category="trading",
-                metadata=portfolio
+            message = await asyncio.to_thread(_sync)
+            await self._notify_telegram(
+                TelegramNotification(
+                    title="Portfolio update",
+                    message=message,
+                    priority="normal",
+                    category="trading",
+                    metadata=None,
+                )
             )
-            
-            await telegram_service.send_notification(notification)
-            
         except Exception as e:
             log_error(f"Failed to send portfolio update: {e}")
+            await self._notify_telegram(
+                TelegramNotification(
+                    title="Portfolio fetch failed",
+                    message=(
+                        f"**Failed to load portfolio from Kite.**\n\n"
+                        f"**Reason:** {e}"
+                    ),
+                    priority="normal",
+                    category="trading",
+                    metadata=None,
+                )
+            )
     
     async def _send_strategy_alert(self, task: ScheduledTask, config: Dict[str, Any]):
         """Send strategy alert to Telegram"""
@@ -640,7 +873,7 @@ class TelegramScheduler:
             alert_type = config.get('alert_type', 'info')
             details = config.get('details', {})
             
-            message = f"🎯 **Strategy Alert: {strategy_name}**\n\n"
+            message = f"**Strategy Alert: {strategy_name}**\n\n"
             message += f"**Alert Type:** {alert_type}\n"
             
             if details:
@@ -655,86 +888,193 @@ class TelegramScheduler:
                 metadata={'strategy_name': strategy_name, 'alert_type': alert_type}
             )
             
-            await telegram_service.send_notification(notification)
+            await self._notify_telegram(notification)
             
         except Exception as e:
             log_error(f"Failed to send strategy alert: {e}")
+
+    async def _send_indicator_report(self, task: ScheduledTask, config: Dict[str, Any]):
+        """Technical indicator snapshot from Kite historical data."""
+        from services.scheduler_indicator_service import build_indicator_report_text, fetch_candles_sync
+        from utils.kite_utils import get_kite_instance
+        from agent.tools.instrument_resolver import resolve_instrument_name
+
+        symbol_raw = config.get("symbol") or "NIFTY-50"
+        interval = (config.get("interval") or "5minute").strip()
+        raw_inds = config.get("indicators") or ["rsi_14", "ema_9_21"]
+        if isinstance(raw_inds, str):
+            indicators = [i.strip() for i in raw_inds.split(",") if i.strip()]
+        else:
+            indicators = list(raw_inds)
+
+        def _sync() -> tuple:
+            normalized = _normalize_scheduler_symbol(str(symbol_raw))
+            kite = get_kite_instance(skip_validation=True)
+            info = resolve_instrument_name(normalized, exchange="NSE")
+            if not info:
+                info = resolve_instrument_name(normalized, exchange="BSE")
+            if not info:
+                raise ValueError(
+                    f"Could not resolve symbol '{symbol_raw}'. "
+                    "Use a valid NSE/BSE symbol (e.g. NIFTY-50, RELIANCE, SENSEX)."
+                )
+            quote_key = f"{info['exchange']}:{info['tradingsymbol']}"
+            token = info["instrument_token"]
+            if token is None:
+                raise ValueError(f"Could not resolve instrument token for {symbol_raw}")
+
+            candles = fetch_candles_sync(kite, int(token), interval)
+            text = build_indicator_report_text(
+                str(symbol_raw), quote_key, interval, candles, indicators
+            )
+            return text
+
+        try:
+            body = await asyncio.to_thread(_sync)
+            await self._notify_telegram(
+                TelegramNotification(
+                    title=f"Indicator report: {task.name}",
+                    message=body,
+                    priority="normal",
+                    category="trading",
+                    metadata=None,
+                )
+            )
+        except Exception as e:
+            log_error(f"Indicator report failed: {e}")
+            await self._notify_telegram(
+                TelegramNotification(
+                    title=f"Indicator report failed: {task.name}",
+                    message=f"**Failed to build indicator report.**\n\n**Reason:** {e}",
+                    priority="high",
+                    category="trading",
+                    metadata=None,
+                )
+            )
+
+    async def _send_strategy_overview(self, task: ScheduledTask, config: Dict[str, Any]):
+        """Summarize registered strategy modules and optional agent config."""
+        from services.scheduler_catalog import STRATEGY_DEFINITIONS
+
+        selected = config.get("strategy_ids")
+        if isinstance(selected, str):
+            selected = [s.strip() for s in selected.split(",") if s.strip()]
+        lines = [
+            "**Strategy & execution modules**",
+            "",
+        ]
+        for s in STRATEGY_DEFINITIONS:
+            if selected and s["id"] not in selected:
+                continue
+            lines.append(f"**{s['name']}** (`{s['id']}`)")
+            lines.append(s["description"])
+            if s.get("api"):
+                lines.append(f"Reference: `{s['api']}`")
+            lines.append("")
+        try:
+            from agent.config import get_agent_config
+
+            cfg = get_agent_config()
+            active = getattr(cfg, "active_strategies", None)
+            if active is not None and str(active).strip():
+                lines.append(f"**Agent active strategies:** {active}")
+            else:
+                lines.append("**Agent active strategies:** (none configured)")
+        except Exception:
+            lines.append("**Agent active strategies:** (not available)")
+        message = "\n".join(lines).strip()
+        await self._notify_telegram(
+            TelegramNotification(
+                title=f"Strategy overview: {task.name}",
+                message=message,
+                priority="low",
+                category="system",
+                metadata=None,
+            )
+        )
     
     def _calculate_next_run(self, task: ScheduledTask) -> Optional[datetime]:
-        """Calculate next run time for a task"""
+        """Calculate next run time for a task (stored as UTC-aware)."""
         if not task.enabled:
             return None
         
         try:
-            current_time = datetime.now(self.timezone)
+            tz = _zone_for_task(task)
+            now_local = datetime.now(tz)
+            now_utc = datetime.now(timezone.utc)
             schedule_config = task.schedule_config
             
             if task.schedule_type == ScheduleType.ONCE:
                 # One-time execution
                 run_time = schedule_config.get('run_time')
-                if run_time:
-                    target_time = datetime.fromisoformat(run_time).replace(tzinfo=self.timezone)
-                    if target_time > current_time:
-                        return target_time
+                if not run_time:
+                    return None
+                raw = datetime.fromisoformat(str(run_time).replace('Z', '+00:00'))
+                if raw.tzinfo is None:
+                    target_local = raw.replace(tzinfo=tz)
+                else:
+                    target_local = raw.astimezone(tz)
+                target_utc = target_local.astimezone(timezone.utc)
+                if target_utc > now_utc:
+                    return target_utc
                 return None
             
             elif task.schedule_type == ScheduleType.DAILY:
-                # Daily execution
                 time_str = schedule_config.get('time', '09:00')
                 hour, minute = map(int, time_str.split(':'))
-                next_run = current_time.replace(hour=hour, minute=minute)
-                if next_run <= current_time:
-                    next_run += timedelta(days=1)
-                return next_run
+                next_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if next_local <= now_local:
+                    next_local += timedelta(days=1)
+                return next_local.astimezone(timezone.utc)
             
             elif task.schedule_type == ScheduleType.WEEKLY:
-                # Weekly execution
                 time_str = schedule_config.get('time', '09:00')
-                day = schedule_config.get('day', 'monday')  # monday, tuesday, etc.
+                day = schedule_config.get('day', 'monday')
                 hour, minute = map(int, time_str.split(':'))
-                
-                # Find next occurrence of the specified day
                 days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
                 target_day = days.index(day.lower())
-                
-                next_run = current_time.replace(hour=hour, minute=minute)
-                while next_run.weekday() != target_day:
-                    next_run += timedelta(days=1)
-                
-                if next_run <= current_time:
-                    next_run += timedelta(weeks=1)
-                
-                return next_run
+                next_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                while next_local.weekday() != target_day:
+                    next_local += timedelta(days=1)
+                if next_local <= now_local:
+                    next_local += timedelta(weeks=1)
+                return next_local.astimezone(timezone.utc)
             
             elif task.schedule_type == ScheduleType.MONTHLY:
-                # Monthly execution
                 time_str = schedule_config.get('time', '09:00')
-                day = schedule_config.get('day', 1)
+                dom = int(schedule_config.get('day', 1))
                 hour, minute = map(int, time_str.split(':'))
-                
-                next_run = current_time.replace(hour=hour, minute=minute, day=day)
-                if next_run <= current_time:
-                    # Move to next month
-                    if current_time.month == 12:
-                        next_run = next_run.replace(year=current_time.year + 1, month=1)
+                y, m = now_local.year, now_local.month
+                _, last_day = calendar.monthrange(y, m)
+                safe_dom = min(dom, last_day)
+                candidate = now_local.replace(
+                    day=safe_dom, hour=hour, minute=minute, second=0, microsecond=0
+                )
+                if candidate <= now_local:
+                    if m == 12:
+                        y, m = y + 1, 1
                     else:
-                        next_run = next_run.replace(month=current_time.month + 1)
-                
-                return next_run
+                        m += 1
+                    _, last_day = calendar.monthrange(y, m)
+                    safe_dom = min(dom, last_day)
+                    candidate = now_local.replace(
+                        year=y, month=m, day=safe_dom,
+                        hour=hour, minute=minute, second=0, microsecond=0
+                    )
+                return candidate.astimezone(timezone.utc)
             
             elif task.schedule_type == ScheduleType.INTERVAL:
-                # Interval execution
                 minutes = schedule_config.get('minutes', 60)
-                next_run = current_time + timedelta(minutes=minutes)
-                return next_run
+                return now_utc + timedelta(minutes=minutes)
             
             elif task.schedule_type == ScheduleType.CRON:
-                # Cron expression
                 cron_expr = schedule_config.get('cron', '0 9 * * *')
-                cron = croniter.croniter(cron_expr, current_time)
+                # croniter uses naive local time if given naive start; anchor in UTC for consistency
+                cron = croniter.croniter(cron_expr, now_utc.replace(tzinfo=None))
                 try:
-                    return next(cron)
-                except StopIteration:
+                    nxt = cron.get_next(datetime)
+                    return nxt.replace(tzinfo=timezone.utc) if nxt.tzinfo is None else nxt.astimezone(timezone.utc)
+                except (StopIteration, KeyError, ValueError):
                     return None
             
             return None

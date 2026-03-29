@@ -914,7 +914,7 @@ def find_indicator_based_trading_opportunities(
                                     now = datetime.now()
                                     candle_age_minutes = (now - timestamp).total_seconds() / 60
                                     if candle_age_minutes > 10:  # If candle is more than 10 minutes old, skip
-                                        add_agent_log(f"⚠️ Skipping stale signal for {symbol} from {timestamp.strftime('%H:%M')} (candle is {candle_age_minutes:.1f} minutes old)", "warning")
+                                        add_agent_log(f"Warning: skipping stale signal for {symbol} from {timestamp.strftime('%H:%M')} (candle is {candle_age_minutes:.1f} minutes old)", "warning")
                                         continue
                                 
                                 add_agent_log(f"SIGNAL DETECTED! {signal_type} for {symbol} at {timestamp.strftime('%H:%M')}", "signal")

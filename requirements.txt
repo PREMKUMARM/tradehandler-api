@@ -27,3 +27,4 @@ python-binance>=1.0.19
 binance-sdk-derivatives-trading-usds-futures>=1.0.0
 kiteconnect>=4.2.0
 mcp>=1.0.0
+pytest>=7.0.0

@@ -33,7 +33,6 @@ async def send_telegram_notification(request: FrontendNotificationRequest):
             priority=notification_data.get("priority", "normal"),
             category=notification_data.get("category", "general"),
             metadata=notification_data.get("metadata"),
-            timestamp=notification_data.get("timestamp", datetime.now().isoformat())
         )
         
         # Send notification
@@ -85,7 +84,7 @@ async def test_telegram_notification():
     try:
         test_notification = TelegramNotification(
             title="Frontend Test",
-            message="🎉 Frontend Telegram notifications are working correctly!",
+            message="Telegram notifications are working correctly.",
             priority="normal",
             category="system"
         )

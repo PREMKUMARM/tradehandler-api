@@ -904,7 +904,7 @@ You can add a brief summary before and after the table."""
 
         # Add approval notice if needed
         if requires_approval:
-            agent_response += f"\n\n⚠️ This action requires your approval. Approval ID: {approval_id}"
+            agent_response += f"\n\nWarning: this action requires your approval. Approval ID: {approval_id}"
         
         state["agent_response"] = agent_response
         
@@ -973,7 +973,7 @@ You can add a brief summary before and after the table."""
                                 response_parts.append(f"| {i} | **{opp.get('signal_type')}** | {opp.get('suggested_quantity')} | {entry} | {exit} | {pnl} | {funds} |")
 
                             # Mention created approvals for group analysis
-                            response_parts.append(f"\n> 💡 **Simulation Note**: I have generated **{len(opportunities)} simulated approval requests** in the Approvals queue for this group. You can review the chronological sequence in the Approvals tab.")
+                            response_parts.append(f"\n> **Simulation note:** I have generated **{len(opportunities)} simulated approval requests** in the Approvals queue for this group. You can review the chronological sequence in the Approvals tab.")
 
                             response_parts.append("\n### Strategy Performance Summary")
                             response_parts.append(f"  • **Win Rate**: {summary.get('win_rate', 0):.1f}% ({summary.get('winning_trades', 0)} wins, {summary.get('losing_trades', 0)} losses)")
@@ -982,7 +982,7 @@ You can add a brief summary before and after the table."""
                             response_parts.append(f"  • **Avg Risk/Reward**: {summary.get('avg_risk_reward_ratio', 0):.2f}:1")
                             
                             # Mention created approvals
-                            response_parts.append(f"\n> 💡 **Simulation Note**: I have generated **{len(opportunities)} simulated approval requests** in the Approvals queue. You can review them to see exactly how these trades would have been presented in the live market.")
+                            response_parts.append(f"\n> **Simulation note:** I have generated **{len(opportunities)} simulated approval requests** in the Approvals queue. You can review them to see exactly how these trades would have been presented in the live market.")
                         else:
                             response_parts.append(summary.get("message", "No opportunities found"))
                 elif tool_name == "find_indicator_threshold_crossings":
@@ -1070,7 +1070,7 @@ You can add a brief summary before and after the table."""
                 response_parts.append(f"✗ {result.get('tool')} failed: {tool_result.get('error', 'Unknown error')}")
         
         if requires_approval:
-            response_parts.append(f"\n⚠️ Trade requires approval (ID: {approval_id})")
+            response_parts.append(f"\nWarning: trade requires approval (ID: {approval_id})")
         
         state["agent_response"] = "\n".join(response_parts) if response_parts else "No action taken"
         state["errors"] = state.get("errors", [])

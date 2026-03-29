@@ -8,6 +8,7 @@ import aiohttp
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import os
 from dataclasses import dataclass
 
@@ -42,26 +43,16 @@ class TelegramService:
             return False
         
         try:
-            # Format message based on priority
-            emoji = self._get_priority_emoji(notification.priority)
-            category_emoji = self._get_category_emoji(notification.category)
-            
-            formatted_message = f"""
-{emoji} *{notification.title}*
-
-{category_emoji} **Category:** {notification.category.replace('_', ' ').title()}
-📅 **Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-{notification.message}
-
----
-*Multi-Agent Trading System*
-            """.strip()
-            
-            # Add metadata if available
-            if notification.metadata:
-                for key, value in notification.metadata.items():
-                    formatted_message += "\n**" + key.replace('_', ' ').title() + ":** " + str(value)
+            cat_label = notification.category.replace("_", " ").title()
+            pri_label = notification.priority.replace("_", " ").title()
+            ts = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
+            body = (notification.message or "").strip()
+            formatted_message = (
+                f"*{notification.title}*\n\n"
+                f"{body}\n\n"
+                f"---\n"
+                f"_{cat_label} · Priority: {pri_label} · {ts} · AlgoFeast_"
+            )
             
             # Send message
             async with aiohttp.ClientSession() as session:
@@ -86,29 +77,6 @@ class TelegramService:
             log_error(f"Error sending Telegram notification: {e}")
             return False
     
-    def _get_priority_emoji(self, priority: str) -> str:
-        """Get emoji based on priority"""
-        priority_emojis = {
-            'low': '🔵',
-            'normal': '🟢', 
-            'high': '🟡',
-            'urgent': '🔴'
-        }
-        return priority_emojis.get(priority, '🟢')
-    
-    def _get_category_emoji(self, category: str) -> str:
-        """Get emoji based on category"""
-        category_emojis = {
-            'agent': '🤖',
-            'system': '⚙️',
-            'trading': '📈',
-            'user_action': '👤',
-            'error': '❌',
-            'chat': '💬',
-            'configuration': '⚙️'
-        }
-        return category_emojis.get(category, '📋')
-    
     async def notify_agent_status(self, agent_id: str, agent_name: str, status: str, details: str = "") -> bool:
         """Notify about agent status changes"""
         notification = TelegramNotification(
@@ -116,12 +84,6 @@ class TelegramService:
             message=f"Agent **{agent_name}** ({agent_id}) status changed to **{status}**" + (f"\n\n{details}" if details else ""),
             priority="normal" if status in ["running", "idle"] else "high",
             category="agent",
-            metadata={
-                "agent_id": agent_id,
-                "agent_name": agent_name,
-                "status": status,
-                "timestamp": datetime.now().isoformat()
-            }
         )
         return await self.send_notification(notification)
     
@@ -135,11 +97,6 @@ class TelegramService:
                    f"**Response:** {agent_response[:200]}{'...' if len(agent_response) > 200 else ''}",
             priority="normal",
             category="chat",
-            metadata={
-                "agents_count": len(agents_used),
-                "processing_time": processing_time,
-                "timestamp": datetime.now().isoformat()
-            }
         )
         return await self.send_notification(notification)
     
@@ -150,10 +107,6 @@ class TelegramService:
             message=message,
             priority=priority,
             category="system",
-            metadata={
-                "event_type": event_type,
-                "timestamp": datetime.now().isoformat()
-            }
         )
         return await self.send_notification(notification)
     
@@ -161,16 +114,13 @@ class TelegramService:
         """Notify about errors"""
         notification = TelegramNotification(
             title=f"Error: {error_type}",
-            message=f"**Error Type:** {error_type}\n\n"
-                   f"**Message:** {error_message}\n\n"
-                   f"**Context:** {context}" if context else "No context available",
+            message=(
+                f"**Error Type:** {error_type}\n\n"
+                f"**Message:** {error_message}\n\n"
+                f"**Context:** {context if context else '—'}"
+            ),
             priority="urgent",
             category="error",
-            metadata={
-                "error_type": error_type,
-                "context": context,
-                "timestamp": datetime.now().isoformat()
-            }
         )
         return await self.send_notification(notification)
     
@@ -182,11 +132,6 @@ class TelegramService:
                    f"**Details:** {self._format_trading_details(details)}",
             priority="high",
             category="trading",
-            metadata={
-                "action": action,
-                "details": details,
-                "timestamp": datetime.now().isoformat()
-            }
         )
         return await self.send_notification(notification)
     

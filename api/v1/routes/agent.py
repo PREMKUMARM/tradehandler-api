@@ -40,27 +40,27 @@ def _format_mcp_response(result: Dict[str, Any]) -> str:
         
         if tool == "place_order":
             order_id = mcp_result.get("order_id")
-            return f"✅ Order placed successfully! Order ID: {order_id}"
+            return f"Order placed successfully. Order ID: {order_id}"
         
         elif tool == "get_market_price":
             symbol = mcp_result.get("symbol", "")
             price = mcp_result.get("price", 0)
-            return f"💹 Current price of {symbol}: ₹{price}"
+            return f"Current price of {symbol}: INR {price}"
         
         elif tool == "get_portfolio":
             positions = mcp_result.get("positions", [])
             total_pnl = mcp_result.get("total_pnl", 0)
             
             if not positions:
-                return "📊 You have no open positions."
+                return "You have no open positions."
             
-            response = f"📊 Your Portfolio (Total P&L: ₹{total_pnl}):\n"
+            response = f"Your portfolio (total P&L: INR {total_pnl}):\n"
             for pos in positions:
                 symbol = pos.get("symbol", "")
                 quantity = pos.get("quantity", 0)
                 pnl = pos.get("pnl", 0)
-                pnl_emoji = "🟢" if pnl >= 0 else "🔴"
-                response += f"• {pnl_emoji} {symbol}: {quantity} shares, P&L: ₹{pnl}\n"
+                side = "P&L+" if pnl >= 0 else "P&L-"
+                response += f"- {symbol}: {quantity} shares, {side} INR {abs(pnl)}\n"
             
             return response
         
@@ -68,21 +68,21 @@ def _format_mcp_response(result: Dict[str, Any]) -> str:
             margins = mcp_result.get("balance", {})
             equity = margins.get("equity", {})
             available = equity.get("available", {})
-            return f"💰 Available margin: ₹{available}"
+            return f"Available margin: INR {available}"
         
         elif tool == "cancel_order":
             order_id = mcp_result.get("order_id")
-            return f"❌ Order {order_id} cancelled successfully"
+            return f"Order {order_id} cancelled successfully"
         
         elif tool == "start_strategy":
             strategy_id = mcp_result.get("strategy_id")
-            return f"🤖 Strategy started successfully! ID: {strategy_id}"
+            return f"Strategy started successfully. ID: {strategy_id}"
         
         else:
-            return f"✅ {mcp_result.get('message', 'Operation completed successfully')}"
+            return f"{mcp_result.get('message', 'Operation completed successfully')}"
             
     except Exception:
-        return "✅ Operation completed successfully"
+        return "Operation completed successfully"
 
 
 @router.post("/chat", response_model=APIResponse[ChatResponse])
@@ -541,7 +541,7 @@ async def approve_action(
                             
                             if gtt_result.get("status") == "success":
                                 gtt_trigger_id = str(gtt_result.get("trigger_id"))
-                                add_agent_log(f"[{request_id}] ✅ GTT OCO Order Placed: {gtt_trigger_id}", "info")
+                                add_agent_log(f"[{request_id}] GTT OCO order placed: {gtt_trigger_id}", "info")
                                 approval_queue.repo.update_order_ids(approval_id, sl_order_id=gtt_trigger_id)
                                 execution_msg += f" | GTT OCO: {gtt_trigger_id}"
                             else:

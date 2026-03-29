@@ -54,14 +54,13 @@ async def live_market_scanner():
                                 for tf_name, tf_min in [("1m", 1), ("5m", 5), ("15m", 15), ("1h", 60)]:
                                     tf_candles = aggregate_to_tf(nifty_candles_1m, tf_min)
                                     trend = analyze_trend(tf_candles)
-                                    # Add small indicator like 🟢 🔴 ⚪
-                                    icon = "🟢" if trend == "BULLISH" else "🔴" if trend == "BEARISH" else "⚪"
+                                    icon = "[+]" if trend == "BULLISH" else "[-]" if trend == "BEARISH" else "[=]"
                                     analysis_parts.append(f"{tf_name}: {icon} {trend}")
                                 
                                 # Fetch Day candle separately from Kite for accuracy
                                 day_hist = kite.historical_data(256265, now - timedelta(days=30), now, "day")
                                 day_trend = analyze_trend(day_hist)
-                                day_icon = "🟢" if day_trend == "BULLISH" else "🔴" if day_trend == "BEARISH" else "⚪"
+                                day_icon = "[+]" if day_trend == "BULLISH" else "[-]" if day_trend == "BEARISH" else "[=]"
                                 analysis_parts.append(f"DAY: {day_icon} {day_trend}")
                                 
                                 add_agent_log(f"ANALYSIS: " + " | ".join(analysis_parts), "info")
@@ -210,9 +209,9 @@ async def monitor_order_execution():
                             "variety": "regular"
                         })
                         if cancel_result.get("status") == "success":
-                            add_agent_log(f"✅ Auto-cancelled Target order {tp_order_id} (SL executed)", "info")
+                            add_agent_log(f"Auto-cancelled Target order {tp_order_id} (SL executed)", "info")
                         else:
-                            add_agent_log(f"⚠️ Failed to cancel Target order {tp_order_id}: {cancel_result.get('error')}", "warning")
+                            add_agent_log(f"Warning: failed to cancel Target order {tp_order_id}: {cancel_result.get('error')}", "warning")
                     except Exception as e:
                         add_agent_log(f"Error cancelling Target order: {e}", "error")
                 
@@ -224,9 +223,9 @@ async def monitor_order_execution():
                             "variety": "regular"
                         })
                         if cancel_result.get("status") == "success":
-                            add_agent_log(f"✅ Auto-cancelled Stop Loss order {sl_order_id} (Target executed)", "info")
+                            add_agent_log(f"Auto-cancelled Stop Loss order {sl_order_id} (Target executed)", "info")
                         else:
-                            add_agent_log(f"⚠️ Failed to cancel SL order {sl_order_id}: {cancel_result.get('error')}", "warning")
+                            add_agent_log(f"Warning: failed to cancel SL order {sl_order_id}: {cancel_result.get('error')}", "warning")
                     except Exception as e:
                         add_agent_log(f"Error cancelling SL order: {e}", "error")
                         

@@ -67,6 +67,7 @@ INSTRUMENT_ALIASES = {
     "ril": "RELIANCE",
     "nifty": "NIFTY 50",
     "nifty50": "NIFTY 50",
+    "nifty-50": "NIFTY 50",
     "nifty 50": "NIFTY 50",
     "banknifty": "NIFTY BANK",
     "nifty bank": "NIFTY BANK",

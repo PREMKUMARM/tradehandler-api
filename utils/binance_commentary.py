@@ -181,7 +181,7 @@ class CommentaryGenerator:
                     "symbol": symbol_upper,
                     "event_type": "condition_met",
                     "priority": "high",
-                    "message": f"✅ All BUY conditions met for {symbol_upper}! ({buy_conditions_met}/{buy_conditions_total})",
+                    "message": f"All BUY conditions met for {symbol_upper} ({buy_conditions_met}/{buy_conditions_total})",
                     "details": {
                         "conditions_met": buy_conditions_met,
                         "conditions_total": buy_conditions_total,
@@ -197,7 +197,7 @@ class CommentaryGenerator:
                     "symbol": symbol_upper,
                     "event_type": "condition_met",
                     "priority": "high",
-                    "message": f"✅ All SELL conditions met for {symbol_upper}! ({sell_conditions_met}/{sell_conditions_total})",
+                    "message": f"All SELL conditions met for {symbol_upper} ({sell_conditions_met}/{sell_conditions_total})",
                     "details": {
                         "conditions_met": sell_conditions_met,
                         "conditions_total": sell_conditions_total,
@@ -287,10 +287,7 @@ class CommentaryGenerator:
         reason = data.get('signal_reason', '')
         priority = data.get('signal_priority', 0)
         
-        signal_emoji = "🟢" if signal == "BUY" else "🔴"
-        priority_text = "Priority 1" if priority == 1 else f"Priority {priority}"
-        
-        message = f"{signal_emoji} {signal} signal generated for {symbol}!"
+        message = f"{signal} signal generated for {symbol} (priority {priority})."
         if pattern:
             message += f" Pattern: {pattern}."
         if reason:

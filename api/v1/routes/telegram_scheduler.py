@@ -10,10 +10,25 @@ from datetime import datetime
 import uuid
 
 from services.telegram_scheduler import telegram_scheduler, ScheduledTask, ScheduleType, OperationType
+from services.scheduler_catalog import get_catalog_payload
+from services.telegram_service import telegram_service
 from database.repositories_scheduler import get_scheduler_repository
 from utils.logger import log_info, log_error, log_warning
 
 router = APIRouter(prefix="/telegram-scheduler", tags=["telegram-scheduler"])
+
+# Human-readable labels for scheduler operation types (UI / OpenAPI consumers)
+OPERATION_TYPE_LABELS: Dict[str, str] = {
+    OperationType.CUSTOM_MESSAGE.value: "Custom message",
+    OperationType.FETCH_PRICE.value: "Fetch price",
+    OperationType.FETCH_NEWS.value: "Fetch news",
+    OperationType.SYSTEM_STATUS.value: "System status",
+    OperationType.MARKET_SUMMARY.value: "Market summary",
+    OperationType.PORTFOLIO_UPDATE.value: "Portfolio update",
+    OperationType.STRATEGY_ALERT.value: "Strategy alert",
+    OperationType.INDICATOR_REPORT.value: "Indicator report (Kite)",
+    OperationType.STRATEGY_OVERVIEW.value: "Strategy & modules overview",
+}
 
 
 class TaskCreateRequest(BaseModel):
@@ -81,6 +96,9 @@ async def get_tasks(enabled_only: bool = True):
     try:
         repo = get_scheduler_repository()
         tasks = await repo.get_tasks(enabled_only=enabled_only)
+        # Merge next_run / last_run / run_count from live scheduler (DB rows often have NULL next_run)
+        for i, t in enumerate(tasks):
+            tasks[i] = telegram_scheduler.enrich_task_row_for_api(t)
         
         return {
             "success": True,
@@ -104,7 +122,7 @@ async def get_task(task_id: str):
         if task:
             return {
                 "success": True,
-                "data": task,
+                "data": telegram_scheduler.enrich_task_row_for_api(task),
                 "timestamp": datetime.now().isoformat()
             }
         else:
@@ -139,6 +157,8 @@ async def update_task(task_id: str, request: TaskUpdateRequest):
         
         if success:
             await telegram_scheduler.refresh_task_from_db(task_id)
+            if request.schedule_config is not None or request.enabled is not None:
+                await telegram_scheduler.recalculate_next_run(task_id)
             return {
                 "success": True,
                 "message": "Task updated successfully",
@@ -199,11 +219,12 @@ async def toggle_task(task_id: str):
         
         if success:
             await telegram_scheduler.refresh_task_from_db(task_id)
+            await telegram_scheduler.recalculate_next_run(task_id)
             updated_task = await repo.get_task(task_id)
             return {
                 "success": True,
                 "message": f"Task {'enabled' if updated_task['enabled'] else 'disabled'} successfully",
-                "data": updated_task,
+                "data": telegram_scheduler.enrich_task_row_for_api(updated_task),
                 "timestamp": datetime.now().isoformat()
             }
         else:
@@ -279,6 +300,7 @@ async def get_scheduler_status():
             "success": True,
             "data": {
                 "running": telegram_scheduler.running,
+                "telegram_configured": telegram_service.enabled,
                 "total_tasks": len(await telegram_scheduler.get_tasks(enabled_only=False)),
                 "enabled_tasks": len(tasks),
                 "next_runs": [
@@ -313,12 +335,31 @@ async def get_schedule_types():
 
 @router.get("/operation-types")
 async def get_operation_types():
-    """Get available operation types"""
+    """Get available operation types with display labels."""
     return {
         "success": True,
         "data": [
-            {"value": op_type.value, "label": op_type.value.replace("_", " ").title()}
+            {
+                "value": op_type.value,
+                "label": OPERATION_TYPE_LABELS.get(
+                    op_type.value, op_type.value.replace("_", " ").title()
+                ),
+            }
             for op_type in OperationType
         ],
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+@router.get("/catalog")
+async def get_scheduler_catalog():
+    """
+    Enterprise catalog: registered strategy modules, supported indicators,
+    and Kite historical intervals for scheduled indicator reports.
+    """
+    payload = get_catalog_payload()
+    return {
+        "success": True,
+        "data": payload,
+        "timestamp": datetime.now().isoformat(),
     }

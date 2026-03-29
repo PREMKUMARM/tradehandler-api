@@ -16,7 +16,7 @@ from services.telegram_scheduler import telegram_scheduler, ScheduledTask, Sched
 
 async def test_scheduler():
     """Test the scheduler with a sample NIFTY-50 price notification"""
-    print("🚀 Testing Telegram Scheduler...")
+    print("Testing Telegram Scheduler...")
     
     # Create a test task for NIFTY-50 price notification at 9:16 AM daily
     test_task = ScheduledTask(
@@ -40,13 +40,13 @@ async def test_scheduler():
         success = await telegram_scheduler.add_task(test_task)
         
         if success:
-            print("✅ Test task created successfully!")
-            print(f"📅 Next run: {test_task.next_run}")
+            print("Test task created successfully.")
+            print(f"Next run: {test_task.next_run}")
             
             # Start the scheduler
             await telegram_scheduler.start_scheduler()
             
-            print("🔄 Scheduler started. Monitoring for next execution...")
+            print("Scheduler started. Monitoring for next execution...")
             
             # Monitor for a few minutes
             for i in range(5):  # Monitor for 5 minutes
@@ -54,19 +54,19 @@ async def test_scheduler():
                 
                 # Check if task executed
                 if test_task.last_run:
-                    print(f"✅ Task executed at: {test_task.last_run}")
-                    print(f"📅 Next run scheduled for: {test_task.next_run}")
+                    print(f"Task executed at: {test_task.last_run}")
+                    print(f"Next run scheduled for: {test_task.next_run}")
                     break
             
             # Stop the scheduler
             await telegram_scheduler.stop_scheduler()
-            print("⏹️ Scheduler stopped")
+            print("Scheduler stopped")
             
         else:
-            print("❌ Failed to create test task")
+            print("Failed to create test task")
             
     except Exception as e:
-        print(f"❌ Error during test: {e}")
+        print(f"Error during test: {e}")
 
 
 if __name__ == "__main__":

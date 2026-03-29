@@ -72,11 +72,13 @@ class SchedulerRepository:
             cursor = conn.cursor()
             
             task_id = task_data.get('id') or str(uuid.uuid4())
+            nr = task_data.get('next_run')
+            next_run_str = nr.isoformat() if nr is not None else None
             cursor.execute('''
                 INSERT INTO scheduled_tasks (
                     id, name, description, schedule_type, operation_type, 
-                    schedule_config, operation_config, enabled, timezone
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    schedule_config, operation_config, enabled, timezone, next_run, run_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 task_id,
                 task_data.get('name'),
@@ -86,7 +88,9 @@ class SchedulerRepository:
                 json.dumps(task_data.get('schedule_config')),
                 json.dumps(task_data.get('operation_config')),
                 1 if task_data.get('enabled', True) else 0,
-                task_data.get('timezone', 'UTC')
+                task_data.get('timezone', 'UTC'),
+                next_run_str,
+                int(task_data.get('run_count') or 0),
             ))
             
             conn.commit()
