@@ -138,6 +138,19 @@ def scheduler_api_app():
     return app
 
 
+def test_api_test_run_rejects_unknown_operation(scheduler_api_app):
+    from starlette.testclient import TestClient
+
+    client = TestClient(scheduler_api_app)
+    r = client.post(
+        "/api/v1/telegram-scheduler/test-run",
+        json={"operation_type": "not_a_real_operation_ever", "operation_config": {}},
+    )
+    assert r.status_code == 400
+    body = r.json()
+    assert "detail" in body
+
+
 def test_api_catalog_and_operation_types(scheduler_api_app):
     from starlette.testclient import TestClient
 
@@ -158,8 +171,10 @@ def test_api_catalog_and_operation_types(scheduler_api_app):
     values = {x["value"] for x in j["data"]}
     assert "indicator_report" in values
     assert "strategy_overview" in values
+    assert "scheduled_prompt" in values
     labels = {x["value"]: x["label"] for x in j["data"]}
     assert "Kite" in labels["indicator_report"] or "indicator" in labels["indicator_report"].lower()
+    assert "prompt" in labels["scheduled_prompt"].lower() or "AI" in labels["scheduled_prompt"]
 
 
 def test_send_strategy_overview_notification_content():
@@ -236,3 +251,67 @@ def test_send_strategy_overview_all_strategies_when_empty_filter():
     # Every catalog strategy should appear when filter is empty
     for s in STRATEGY_DEFINITIONS:
         assert s["id"] in msg or s["name"][:4] in msg
+
+
+def test_extract_hybrid_response_text_algofeast():
+    from services.telegram_scheduler import _extract_hybrid_response_text
+
+    t = _extract_hybrid_response_text(
+        {"source": "algofeast", "result": {"response": "Answer text"}}
+    )
+    assert t == "Answer text"
+
+
+def test_truncate_telegram_body():
+    from services.telegram_scheduler import _truncate_telegram_body
+
+    long = "x" * 5000
+    out = _truncate_telegram_body(long, max_len=200)
+    assert len(out) < len(long)
+    assert "truncated" in out.lower()
+
+
+def test_send_scheduled_prompt_mocks_hybrid():
+    from unittest.mock import AsyncMock, patch
+
+    from services.telegram_scheduler import (
+        TelegramScheduler,
+        ScheduledTask,
+        ScheduleType,
+        OperationType,
+    )
+
+    captured = []
+
+    async def capture(n):
+        captured.append(n)
+
+    sched = TelegramScheduler()
+    sched._notify_telegram = capture  # type: ignore[method-assign]
+
+    task = ScheduledTask(
+        id="prompt-task-1",
+        name="Morning brief",
+        description="d",
+        schedule_type=ScheduleType.DAILY,
+        operation_type=OperationType.SCHEDULED_PROMPT,
+        schedule_config={"time": "09:00"},
+        operation_config={"prompt": "Hi"},
+    )
+
+    async def run():
+        with patch(
+            "utils.hybrid_agent.hybrid_agent.process_prompt",
+            new=AsyncMock(
+                return_value={"source": "algofeast", "result": {"response": "AI says hi"}}
+            ),
+        ):
+            await sched._send_scheduled_prompt(
+                task, {"prompt": "Hello", "include_kite_context": False}
+            )
+
+    asyncio.run(run())
+
+    assert len(captured) == 1
+    assert "AI says hi" in captured[0].message
+    assert "Hello" in captured[0].message

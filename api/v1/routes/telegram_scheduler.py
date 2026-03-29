@@ -28,6 +28,7 @@ OPERATION_TYPE_LABELS: Dict[str, str] = {
     OperationType.STRATEGY_ALERT.value: "Strategy alert",
     OperationType.INDICATOR_REPORT.value: "Indicator report (Kite)",
     OperationType.STRATEGY_OVERVIEW.value: "Strategy & modules overview",
+    OperationType.SCHEDULED_PROMPT.value: "Scheduled AI prompt → Telegram",
 }
 
 
@@ -57,6 +58,40 @@ class TaskResponse(BaseModel):
     timestamp: str
 
 
+class TestRunRequest(BaseModel):
+    """Dry-run: execute operation once and send Telegram without saving a task."""
+    operation_type: str = Field(..., description="Operation type enum value")
+    operation_config: Dict[str, Any] = Field(default_factory=dict, description="Same shape as task operation_config")
+    label: Optional[str] = Field(
+        None,
+        description="Short label for Telegram titles; defaults to 'Test run'",
+    )
+
+
+@router.post("/test-run")
+async def test_run_scheduled_operation(request: TestRunRequest):
+    """Run the selected operation immediately (Telegram, etc.) without creating a task."""
+    try:
+        lbl = (request.label or "").strip() or "Test run"
+        await telegram_scheduler.test_run_operation(
+            request.operation_type,
+            request.operation_config,
+            label=lbl,
+        )
+        return {
+            "success": True,
+            "message": "Test run completed. Check Telegram for the message.",
+            "timestamp": datetime.now().isoformat(),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error(f"Test run failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/tasks", response_model=TaskResponse)
 async def create_task(request: TaskCreateRequest):
     """Create a new scheduled task"""
@@ -73,7 +108,7 @@ async def create_task(request: TaskCreateRequest):
         }
         
         success = await telegram_scheduler.add_task_from_data(task_data)
-        
+
         if success:
             return {
                 "success": True,
@@ -82,7 +117,10 @@ async def create_task(request: TaskCreateRequest):
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to create task")
-            
+
+    except ValueError as e:
+        # e.g. unknown operation_type — often fixed by restarting API after deploy
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

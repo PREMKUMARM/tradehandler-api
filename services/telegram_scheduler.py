@@ -39,6 +39,70 @@ def _zone_for_task(task: "ScheduledTask") -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+_TELEGRAM_BODY_MAX = 3800
+
+
+def _truncate_telegram_body(text: str, max_len: int = _TELEGRAM_BODY_MAX) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 50].rstrip() + "\n\n…(truncated for Telegram)"
+
+
+def _extract_hybrid_response_text(result: Dict[str, Any]) -> str:
+    """Format utils.hybrid_agent.hybrid_agent.process_prompt() result as plain text."""
+    if not isinstance(result, dict):
+        return str(result)
+    if result.get("source") == "error":
+        return f"Error: {result.get('error', 'unknown')}"
+    src = result.get("source")
+    if src == "algofeast":
+        inner = result.get("result")
+        if isinstance(inner, dict):
+            if inner.get("response"):
+                return str(inner["response"])
+            if inner.get("error"):
+                return f"Error: {inner['error']}"
+            return json.dumps(inner, default=str)[:2000]
+        return str(inner)
+    if src == "mcp":
+        tool = result.get("tool", "")
+        mcp_result = result.get("result", {})
+        if isinstance(mcp_result, dict):
+            if tool == "place_order":
+                oid = mcp_result.get("order_id")
+                return f"Order placed. Order ID: {oid}"
+            if tool == "get_market_price":
+                sym = mcp_result.get("symbol", "")
+                price = mcp_result.get("price", "")
+                return f"{sym}: ₹{price}"
+            if tool == "get_portfolio":
+                positions = mcp_result.get("positions", [])
+                total_pnl = mcp_result.get("total_pnl", 0)
+                if not positions:
+                    return "No open positions."
+                lines = [f"Portfolio (total P&L: ₹{total_pnl}):"]
+                for pos in positions[:40]:
+                    symbol = pos.get("symbol", pos.get("tradingsymbol", "?"))
+                    qty = pos.get("quantity", 0)
+                    pnl = pos.get("pnl", 0)
+                    lines.append(f"- {symbol} qty {qty} P&L ₹{pnl}")
+                return "\n".join(lines)
+            if tool == "get_balance":
+                margins = mcp_result.get("balance", {})
+                eq = margins.get("equity", {}) if isinstance(margins, dict) else {}
+                return f"Available margin: {eq.get('available', margins)}"
+            if tool == "cancel_order":
+                return f"Order cancelled: {mcp_result.get('order_id')}"
+            if tool == "start_strategy":
+                return f"Strategy started: {mcp_result.get('strategy_id')}"
+            msg = mcp_result.get("message")
+            if msg:
+                return str(msg)
+        return str(mcp_result)
+    return json.dumps(result, default=str)[:3000]
+
+
 def _normalize_scheduler_symbol(symbol: str) -> str:
     """Normalize UI symbols like NIFTY-50 → NIFTY 50 for Kite resolution."""
     s = str(symbol).strip().upper().replace("-", " ").replace("_", " ")
@@ -118,6 +182,24 @@ class OperationType(Enum):
     STRATEGY_ALERT = "strategy_alert"
     INDICATOR_REPORT = "indicator_report"
     STRATEGY_OVERVIEW = "strategy_overview"
+    SCHEDULED_PROMPT = "scheduled_prompt"
+
+
+def parse_operation_type(raw: Any) -> OperationType:
+    """
+    Resolve operation_type from API/DB (string). Strips whitespace.
+    Prefer this over OperationType(x) so errors list all valid values.
+    """
+    if isinstance(raw, OperationType):
+        return raw
+    s = str(raw).strip() if raw is not None else ""
+    if not s:
+        raise ValueError("operation_type is required")
+    for op in OperationType:
+        if op.value == s:
+            return op
+    valid = ", ".join(repr(o.value) for o in OperationType)
+    raise ValueError(f"Unknown operation_type {s!r}. Valid: {valid}")
 
 
 @dataclass
@@ -156,7 +238,7 @@ class TelegramScheduler:
                 name=task_data.get('name'),
                 description=task_data.get('description'),
                 schedule_type=ScheduleType(task_data.get('schedule_type')),
-                operation_type=OperationType(task_data.get('operation_type')),
+                operation_type=parse_operation_type(task_data.get('operation_type')),
                 schedule_config=task_data.get('schedule_config'),
                 operation_config=task_data.get('operation_config'),
                 enabled=task_data.get('enabled', True),
@@ -177,7 +259,10 @@ class TelegramScheduler:
                 log_info(f"Next run: {task.next_run}")
             
             return success
-            
+
+        except ValueError:
+            # Invalid schedule/operation payload — let API return 400 with detail
+            raise
         except Exception as e:
             log_error(f"Failed to add scheduled task {task_data.get('name')}: {e}")
             return False
@@ -365,7 +450,7 @@ class TelegramScheduler:
             name=task_data['name'],
             description=task_data['description'],
             schedule_type=ScheduleType(task_data['schedule_type']),
-            operation_type=OperationType(task_data['operation_type']),
+            operation_type=parse_operation_type(task_data['operation_type']),
             schedule_config=task_data['schedule_config'],
             operation_config=task_data['operation_config'],
             enabled=task_data['enabled'],
@@ -582,6 +667,10 @@ class TelegramScheduler:
             elif task.operation_type == OperationType.STRATEGY_OVERVIEW:
                 log_info(f"Strategy overview for task '{task.name}'")
                 await self._send_strategy_overview(task, operation_config)
+
+            elif task.operation_type == OperationType.SCHEDULED_PROMPT:
+                log_info(f"Scheduled AI prompt for task '{task.name}'")
+                await self._send_scheduled_prompt(task, operation_config)
             
             else:
                 log_warning(f"Unknown operation type for task '{task.name}': {task.operation_type}")
@@ -590,6 +679,31 @@ class TelegramScheduler:
         except Exception as e:
             log_error(f"Operation execution failed for task '{task.name}': {e}")
             raise
+
+    async def test_run_operation(
+        self,
+        operation_type: str,
+        operation_config: Dict[str, Any],
+        label: str = "Test run",
+    ) -> None:
+        """
+        Run the operation once (same code path as a scheduled execution) and send Telegram.
+        Does not create or update any persisted task.
+        """
+        op = parse_operation_type(operation_type)
+        name = (label or "Test run").strip()[:200] or "Test run"
+        task = ScheduledTask(
+            id=f"test-{uuid.uuid4()}",
+            name=name,
+            description="One-off test run (not saved)",
+            schedule_type=ScheduleType.DAILY,
+            operation_type=op,
+            schedule_config={},
+            operation_config=dict(operation_config or {}),
+            enabled=True,
+            timezone="UTC",
+        )
+        await self._execute_operation(task)
     
     async def _notify_telegram(self, notification: TelegramNotification) -> None:
         """Send via Telegram and warn once per attempt if delivery is skipped."""
@@ -992,6 +1106,69 @@ class TelegramScheduler:
                 metadata=None,
             )
         )
+
+    async def _send_scheduled_prompt(self, task: ScheduledTask, config: Dict[str, Any]):
+        """Run the hybrid AI agent with a user prompt and send the reply to Telegram."""
+        prompt_raw = config.get("prompt")
+        prompt = str(prompt_raw).strip() if prompt_raw is not None else ""
+        if not prompt:
+            raise ValueError("operation_config.prompt is required for scheduled_prompt")
+
+        include_ctx = config.get("include_kite_context", True)
+        if isinstance(include_ctx, str):
+            include_ctx = include_ctx.lower() in ("1", "true", "yes", "on")
+
+        context: Dict[str, Any] = {
+            "scheduled_task_id": task.id,
+            "scheduled_task_name": task.name,
+            "source": "telegram_scheduler",
+        }
+        if include_ctx:
+            try:
+                from utils.kite_utils import get_kite_instance
+
+                kite = get_kite_instance(skip_validation=True)
+                positions = kite.positions().get("net", [])
+                margins = kite.margins()
+                context["positions"] = positions
+                context["balance"] = margins.get("equity", {}) if isinstance(margins, dict) else {}
+            except Exception as ex:
+                log_warning(f"Scheduled prompt: Kite context unavailable: {ex}")
+
+        try:
+            from utils.hybrid_agent import hybrid_agent
+
+            result = await hybrid_agent.process_prompt(prompt, context)
+            body = _extract_hybrid_response_text(result)
+            body = _truncate_telegram_body(body)
+
+            prompt_preview = prompt if len(prompt) <= 600 else prompt[:597] + "..."
+            message = (
+                f"**Prompt**\n{prompt_preview}\n\n"
+                f"**Response**\n{body}"
+            )
+            message = _truncate_telegram_body(message, max_len=_TELEGRAM_BODY_MAX)
+
+            await self._notify_telegram(
+                TelegramNotification(
+                    title=f"Scheduled prompt: {task.name}",
+                    message=message,
+                    priority="normal",
+                    category="agent",
+                    metadata={"task_id": task.id, "operation": "scheduled_prompt"},
+                )
+            )
+        except Exception as e:
+            log_error(f"Scheduled prompt failed: {e}")
+            await self._notify_telegram(
+                TelegramNotification(
+                    title=f"Scheduled prompt failed: {task.name}",
+                    message=f"**Failed to run AI prompt.**\n\n**Reason:** {e}",
+                    priority="high",
+                    category="agent",
+                    metadata=None,
+                )
+            )
     
     def _calculate_next_run(self, task: ScheduledTask) -> Optional[datetime]:
         """Calculate next run time for a task (stored as UTC-aware)."""
