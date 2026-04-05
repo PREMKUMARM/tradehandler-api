@@ -259,6 +259,72 @@ class DatabaseConnection:
             ON kite_ticker_ticks(instrument_token, received_at DESC)
         ''')
 
+        # P2 execution audit
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS execution_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                actor TEXT,
+                action TEXT NOT NULL,
+                exchange TEXT,
+                tradingsymbol TEXT,
+                payload TEXT,
+                result TEXT,
+                paper INTEGER DEFAULT 0
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_execution_audit_created ON execution_audit_log(created_at DESC)
+        ''')
+
+        # P2 paper orders
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS paper_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                order_id TEXT UNIQUE NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT DEFAULT 'COMPLETE'
+            )
+        ''')
+
+        # P1 strategy definition / runs / fills (single source of truth seed)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS strategy_definitions (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS strategy_runs (
+                id TEXT PRIMARY KEY,
+                definition_id TEXT,
+                mode TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                meta_json TEXT,
+                FOREIGN KEY (definition_id) REFERENCES strategy_definitions(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS strategy_fills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT,
+                broker_order_id TEXT,
+                tradingsymbol TEXT,
+                side TEXT,
+                quantity INTEGER,
+                price REAL,
+                filled_at TEXT,
+                FOREIGN KEY (run_id) REFERENCES strategy_runs(id)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_strategy_runs_status ON strategy_runs(status)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_strategy_fills_run ON strategy_fills(run_id)')
+
         # Migration: Add order ID columns if they don't exist
         try:
             cursor.execute("ALTER TABLE agent_approvals ADD COLUMN entry_order_id TEXT")

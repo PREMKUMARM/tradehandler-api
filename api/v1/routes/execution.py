@@ -1,0 +1,113 @@
+"""Multi-leg and batch execution helpers (same gates as single REST place)."""
+import os
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, Request
+
+from core.exceptions import ValidationError, AlgoFeastException
+from core.user_context import get_user_id_from_request
+from kiteconnect.exceptions import KiteException
+from schemas.support_ops import BasketPlaceRequest
+from services.execution_audit import log_execution_audit
+from services.paper_trading import is_paper_mode, paper_place_order
+from services.risk_gate import check_order_allowed, record_order_placed
+from utils.kite_utils import get_kite_instance
+from utils.logger import log_error, log_info
+
+router = APIRouter(prefix="/execution", tags=["Execution"])
+
+
+@router.post("/basket")
+async def place_basket(request: Request, body: BasketPlaceRequest) -> Dict[str, Any]:
+    """Place multiple legs sequentially; each leg passes the risk gate."""
+    user_id = "default"
+    try:
+        user_id = get_user_id_from_request(request)
+    except Exception:
+        pass
+
+    skip_sess = os.getenv("SKIP_SESSION_CHECK_ON_REST", "").lower() in ("1", "true", "yes")
+    results: List[Dict[str, Any]] = []
+    kite = None
+    if not is_paper_mode():
+        kite = get_kite_instance(user_id=user_id)
+
+    for i, leg in enumerate(body.legs):
+        ex = leg.exchange.upper()
+        invest = float(leg.price or 0) * int(leg.quantity) if leg.price else 0.0
+        ok_r, msg_r = check_order_allowed(
+            ex,
+            leg.tradingsymbol,
+            leg.quantity,
+            leg.transaction_type,
+            invest,
+            skip_session_check=skip_sess,
+        )
+        if not ok_r:
+            raise ValidationError(message=f"Leg {i}: {msg_r}", field="risk_gate")
+
+        if is_paper_mode():
+            oid = paper_place_order(
+                {
+                    "basket_leg": i,
+                    "tradingsymbol": leg.tradingsymbol,
+                    "exchange": ex,
+                    "transaction_type": leg.transaction_type,
+                    "quantity": leg.quantity,
+                    "order_type": leg.order_type,
+                    "product": leg.product,
+                    "price": leg.price,
+                    "trigger_price": leg.trigger_price,
+                }
+            )
+            record_order_placed(invest)
+            log_execution_audit(
+                "BASKET_LEG",
+                actor=user_id,
+                exchange=ex,
+                tradingsymbol=leg.tradingsymbol,
+                payload={"leg": i, "paper": True},
+                result={"order_id": oid},
+                paper=True,
+            )
+            results.append({"leg": i, "order_id": oid, "status": "paper"})
+            continue
+
+        assert kite is not None
+        params: Dict[str, Any] = {
+            "variety": kite.VARIETY_REGULAR,
+            "exchange": ex,
+            "tradingsymbol": leg.tradingsymbol,
+            "transaction_type": leg.transaction_type,
+            "quantity": leg.quantity,
+            "product": leg.product,
+            "order_type": leg.order_type,
+            "validity": kite.VALIDITY_DAY,
+            "tag": "basket",
+        }
+        if leg.price is not None:
+            params["price"] = leg.price
+        if leg.trigger_price is not None:
+            params["trigger_price"] = leg.trigger_price
+        try:
+            order_id = kite.place_order(**params)
+        except KiteException as e:
+            log_error(f"Basket leg {i} Kite error: {e}")
+            raise AlgoFeastException(
+                message=f"Leg {i} failed: {e}",
+                status_code=502,
+                error_code="KITE_ERROR",
+            )
+        record_order_placed(invest)
+        log_execution_audit(
+            "BASKET_LEG",
+            actor=user_id,
+            exchange=ex,
+            tradingsymbol=leg.tradingsymbol,
+            result={"order_id": str(order_id)},
+            paper=False,
+        )
+        results.append({"leg": i, "order_id": str(order_id), "status": "live"})
+
+    log_info(f"Basket placed {len(results)} legs for user={user_id}")
+    return {"data": {"results": results}}

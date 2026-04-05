@@ -3,8 +3,9 @@ Automated strategy execution system
 """
 import asyncio
 import json
+import os
 from datetime import datetime, time
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass
 from enum import Enum
 
@@ -15,6 +16,9 @@ from utils.logger import log_info, log_error, log_warning
 from strategies.runner import run_strategy_on_candles
 from simulation.helpers import get_instrument_history, add_live_log
 from core.exceptions import ValidationError
+from services.risk_gate import check_order_allowed, record_order_placed
+from services.paper_trading import is_paper_mode, paper_place_order
+from services.execution_audit import log_execution_audit
 
 
 class StrategyType(Enum):
@@ -210,14 +214,19 @@ class StrategyExecutor:
             
             current_price = quote[config.symbol]["last_price"]
             
-            # Find ATM options
+            # Find ATM options (live chain from instrument master)
             from simulation.helpers import find_option
-            nifty_options = {}  # This would be populated from options chain
+            from services.nifty_option_chain import build_nifty_options_universe
+
+            trade_d = datetime.now().date()
+            nifty_options = [
+                o for o in build_nifty_options_universe(kite) if o.get("expiry") and o["expiry"] >= trade_d
+            ]
             date_str = datetime.now().strftime("%Y-%m-%d")
             current_strike = round(current_price / 50) * 50  # Round to nearest 50
-            
-            atm_ce = find_option(nifty_options, current_strike, "CE", date_str)
-            atm_pe = find_option(nifty_options, current_strike, "PE", date_str)
+
+            atm_ce = find_option(nifty_options, current_strike, "CE", trade_d)
+            atm_pe = find_option(nifty_options, current_strike, "PE", trade_d)
             
             if not atm_ce or not atm_pe:
                 return None
@@ -300,18 +309,69 @@ class StrategyExecutor:
         """Execute a trading signal"""
         try:
             kite = get_kite_instance()
-            
-            # Place order
-            order_id = kite.place_order(
-                variety=kite.VARIETY_REGULAR,
-                exchange=kite.EXCHANGE_NSE,  # Should be configurable
-                tradingsymbol=signal.symbol,
-                transaction_type=signal.action,
-                quantity=signal.quantity,
-                product=config.product,
-                order_type=config.order_type,
-                tag=f"auto-{config.strategy_type.value}"
+            exchange = (
+                kite.EXCHANGE_NFO if signal.option_type in ("CE", "PE") else kite.EXCHANGE_NSE
             )
+            investment_amount = float(signal.entry_price) * int(signal.quantity)
+
+            skip_sess = os.getenv("SKIP_SESSION_CHECK_ON_REST", "").lower() in ("1", "true", "yes")
+            ok_r, msg_r = check_order_allowed(
+                exchange,
+                signal.symbol,
+                signal.quantity,
+                signal.action,
+                investment_amount,
+                skip_session_check=skip_sess,
+            )
+            if not ok_r:
+                log_warning(f"[StrategyExecutor] risk gate: {msg_r}")
+                add_live_log(f"Auto trade blocked: {msg_r}", "error")
+                return
+
+            if is_paper_mode():
+                oid = paper_place_order(
+                    {
+                        "source": "strategy_executor",
+                        "strategy_id": strategy_id,
+                        "tradingsymbol": signal.symbol,
+                        "exchange": exchange,
+                        "transaction_type": signal.action,
+                        "quantity": signal.quantity,
+                        "order_type": config.order_type,
+                        "product": config.product,
+                    }
+                )
+                record_order_placed(investment_amount)
+                log_execution_audit(
+                    "AUTO_STRATEGY_ORDER",
+                    actor="strategy_executor",
+                    exchange=exchange,
+                    tradingsymbol=signal.symbol,
+                    payload={"paper": True, "strategy_id": strategy_id},
+                    result={"order_id": oid},
+                    paper=True,
+                )
+                order_id = oid
+            else:
+                order_id = kite.place_order(
+                    variety=kite.VARIETY_REGULAR,
+                    exchange=exchange,
+                    tradingsymbol=signal.symbol,
+                    transaction_type=signal.action,
+                    quantity=signal.quantity,
+                    product=config.product,
+                    order_type=config.order_type,
+                    tag=f"auto-{config.strategy_type.value}",
+                )
+                record_order_placed(investment_amount)
+                log_execution_audit(
+                    "AUTO_STRATEGY_ORDER",
+                    actor="strategy_executor",
+                    exchange=exchange,
+                    tradingsymbol=signal.symbol,
+                    result={"order_id": str(order_id)},
+                    paper=False,
+                )
             
             # Add to order monitor
             await order_monitor.add_order(
@@ -323,10 +383,6 @@ class StrategyExecutor:
                 target=signal.target,
                 trailing_stoploss=config.trailing_stoploss
             )
-            
-            # Record trade
-            investment_amount = signal.entry_price * signal.quantity
-            trade_limits.record_trade(investment_amount)
             
             # Track active trade
             self.active_trades[str(order_id)] = {

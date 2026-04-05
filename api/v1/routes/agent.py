@@ -477,17 +477,19 @@ async def approve_action(
                 transaction_type = details.get("type", "BUY")
                 quantity = int(details.get("qty", 1))
                 price = float(details.get("price", 0))
-                
-                add_agent_log(f"[{request_id}] Executing Approved Trade: {transaction_type} {quantity} {symbol}...", "signal")
-                
-                # Place entry order
+                exchange = (details.get("exchange") or "NSE").upper()
+                inst_key = f"{exchange}:{symbol}"
+
+                add_agent_log(f"[{request_id}] Executing Approved Trade: {transaction_type} {quantity} {symbol} @ {exchange}...", "signal")
+
+                # Place entry order (NFO for Nifty options, NSE for equity)
                 order_result = place_order_tool.invoke({
                     "tradingsymbol": symbol,
                     "transaction_type": transaction_type,
                     "quantity": quantity,
                     "order_type": "MARKET",
-                    "product": "MIS",
-                    "exchange": "NSE"
+                    "product": details.get("product") or "MIS",
+                    "exchange": exchange
                 })
                 
                 if order_result.get("status") == "success":
@@ -505,7 +507,7 @@ async def approve_action(
                     
                     product = details.get("product", "MIS")
                     use_gtt = False
-                    if config.use_gtt_orders:
+                    if config.use_gtt_orders and exchange == "NSE":
                         if product == "CNC" and config.gtt_for_positional:
                             use_gtt = True
                         elif product == "MIS" and config.gtt_for_intraday:
@@ -515,8 +517,8 @@ async def approve_action(
                         try:
                             from utils.kite_utils import get_kite_instance
                             kite = get_kite_instance()
-                            quote = kite.quote(f"NSE:{symbol}")
-                            instrument_key = f"NSE:{symbol}"
+                            quote = kite.quote(inst_key)
+                            instrument_key = inst_key
                             current_price = quote[instrument_key].get("last_price", price) if instrument_key in quote else price
                             
                             if transaction_type == "BUY":
@@ -528,7 +530,7 @@ async def approve_action(
                             
                             gtt_result = place_gtt_tool.invoke({
                                 "tradingsymbol": symbol,
-                                "exchange": "NSE",
+                                "exchange": exchange,
                                 "trigger_type": "two-leg",
                                 "trigger_prices": [sl_trigger, tp_trigger],
                                 "last_price": current_price,
@@ -550,8 +552,8 @@ async def approve_action(
                             add_agent_log(f"[{request_id}] GTT Error: {e}", "warning")
                             use_gtt = False
                     
-                    if not use_gtt:
-                        # Place regular SL-M and LIMIT orders
+                    if not use_gtt and exchange == "NSE":
+                        # Place regular SL-M and LIMIT orders (equity path; NFO legs often managed separately)
                         if sl_price > 0:
                             sl_result = place_order_tool.invoke({
                                 "tradingsymbol": symbol,
@@ -560,7 +562,7 @@ async def approve_action(
                                 "order_type": "SL-M",
                                 "trigger_price": round(sl_price, 1),
                                 "product": product,
-                                "exchange": "NSE"
+                                "exchange": exchange
                             })
                             if sl_result.get("status") == "success":
                                 sl_order_id = str(sl_result.get('order_id'))
@@ -574,7 +576,7 @@ async def approve_action(
                                 "order_type": "LIMIT",
                                 "price": round(tp_price, 1),
                                 "product": product,
-                                "exchange": "NSE"
+                                "exchange": exchange
                             })
                             if tp_result.get("status") == "success":
                                 tp_order_id = str(tp_result.get('order_id'))

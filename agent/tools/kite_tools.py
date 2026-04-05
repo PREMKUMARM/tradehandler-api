@@ -43,8 +43,60 @@ def place_order_tool(
         dict with order_id and status
     """
     try:
+        from services.risk_gate import check_order_allowed, record_order_placed
+        from services.paper_trading import is_paper_mode, paper_place_order
+        from services.execution_audit import log_execution_audit
+
+        est_value = float((price or 0) * max(quantity, 1))
+        ok, reason = check_order_allowed(
+            exchange, tradingsymbol, quantity, transaction_type, est_value
+        )
+        if not ok:
+            log_execution_audit(
+                "PLACE_ORDER_BLOCKED",
+                exchange=exchange,
+                tradingsymbol=tradingsymbol,
+                payload={
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "order_type": order_type,
+                },
+                result={"error": reason},
+            )
+            return {"status": "error", "error": reason}
+
+        order_payload = {
+            "tradingsymbol": tradingsymbol,
+            "exchange": exchange,
+            "transaction_type": transaction_type,
+            "quantity": quantity,
+            "order_type": order_type,
+            "product": product,
+            "price": price,
+            "trigger_price": trigger_price,
+            "validity": validity,
+        }
+
+        if is_paper_mode():
+            oid = paper_place_order(order_payload)
+            record_order_placed(est_value)
+            log_execution_audit(
+                "PLACE_ORDER",
+                exchange=exchange,
+                tradingsymbol=tradingsymbol,
+                payload=order_payload,
+                result={"order_id": oid, "paper": True},
+                paper=True,
+            )
+            return {
+                "status": "success",
+                "order_id": oid,
+                "paper": True,
+                "message": f"[PAPER] {transaction_type} {quantity} {tradingsymbol}",
+            }
+
         kite = get_kite_instance()
-        
+
         order_params = {
             "variety": kite.VARIETY_REGULAR,
             "exchange": exchange,
@@ -62,7 +114,17 @@ def place_order_tool(
             order_params["trigger_price"] = trigger_price
             
         order_id = kite.place_order(**order_params)
-        
+
+        record_order_placed(est_value)
+        log_execution_audit(
+            "PLACE_ORDER",
+            exchange=exchange,
+            tradingsymbol=tradingsymbol,
+            payload=order_payload,
+            result={"order_id": str(order_id)},
+            paper=False,
+        )
+
         return {
             "status": "success",
             "order_id": order_id,

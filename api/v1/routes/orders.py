@@ -12,6 +12,10 @@ from schemas.orders import PlaceOrderRequest, ModifyOrderRequest, CancelOrderReq
 from utils.logger import log_error, log_info
 from utils.order_monitor import order_monitor
 from utils.trade_limits import trade_limits
+from services.risk_gate import check_order_allowed, record_order_placed
+from services.paper_trading import is_paper_mode, paper_place_order
+from services.execution_audit import log_execution_audit
+import os
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -26,18 +30,47 @@ async def place_order(req: Request, order_request: PlaceOrderRequest):
         except:
             pass
         
-        # Check trade limits before placing order
-        investment_amount = 0
+        investment_amount = 0.0
         if order_request.price and order_request.quantity:
-            investment_amount = order_request.price * order_request.quantity
-        
-        can_trade, message = trade_limits.can_place_trade(investment_amount)
-        if not can_trade:
-            raise ValidationError(
-                message=message,
-                field="trade_limits"
+            investment_amount = float(order_request.price * order_request.quantity)
+
+        skip_sess = os.getenv("SKIP_SESSION_CHECK_ON_REST", "").lower() in ("1", "true", "yes")
+        ok_r, msg_r = check_order_allowed(
+            order_request.exchange,
+            order_request.tradingsymbol,
+            order_request.quantity,
+            order_request.transaction_type,
+            investment_amount,
+            skip_session_check=skip_sess,
+        )
+        if not ok_r:
+            raise ValidationError(message=msg_r, field="risk_gate")
+
+        if is_paper_mode():
+            oid = paper_place_order(
+                {
+                    "tradingsymbol": order_request.tradingsymbol,
+                    "exchange": order_request.exchange,
+                    "transaction_type": order_request.transaction_type,
+                    "quantity": order_request.quantity,
+                    "order_type": order_request.order_type,
+                    "product": order_request.product,
+                    "price": order_request.price,
+                    "trigger_price": order_request.trigger_price,
+                }
             )
-        
+            record_order_placed(investment_amount)
+            log_execution_audit(
+                "REST_PLACE_ORDER",
+                actor=user_id,
+                exchange=order_request.exchange,
+                tradingsymbol=order_request.tradingsymbol,
+                payload={"paper": True},
+                result={"order_id": oid},
+                paper=True,
+            )
+            return OrderResponse(order_id=oid, status="success", message="Paper order recorded")
+
         kite = get_kite_instance(user_id=user_id)
         
         # Map Pydantic model to Kite Connect format
@@ -76,9 +109,16 @@ async def place_order(req: Request, order_request: PlaceOrderRequest):
                 trailing_stoploss=order_request.trailing_stoploss
             )
         
-        # Record the trade
-        trade_limits.record_trade(investment_amount)
-        
+        record_order_placed(investment_amount)
+        log_execution_audit(
+            "REST_PLACE_ORDER",
+            actor=user_id,
+            exchange=order_request.exchange,
+            tradingsymbol=order_request.tradingsymbol,
+            result={"order_id": str(order_id)},
+            paper=False,
+        )
+
         return OrderResponse(
             order_id=str(order_id),
             status="success",

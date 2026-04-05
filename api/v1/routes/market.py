@@ -791,6 +791,39 @@ def get_nifty50_options():
         raise HTTPException(status_code=500, detail=f"Error getting Nifty50 options: {str(e)}")
 
 
+@router.get("/nifty-options-universe-summary")
+def nifty_options_universe_summary(request: Request):
+    """Lightweight chain stats for automation (expiry counts, ATM neighborhood size)."""
+    try:
+        try:
+            user_id = get_user_id_from_request(request)
+        except Exception:
+            user_id = "default"
+        kite = get_kite_instance(user_id)
+        from services.nifty_option_chain import build_nifty_options_universe
+
+        u = build_nifty_options_universe(kite)
+        by_exp: Dict[str, int] = {}
+        for o in u:
+            exp = o.get("expiry")
+            if exp is None:
+                continue
+            key = exp.isoformat() if hasattr(exp, "isoformat") else str(exp)
+            by_exp[key] = by_exp.get(key, 0) + 1
+        expiries_sorted = sorted(by_exp.keys())
+        return {
+            "data": {
+                "total_contracts": len(u),
+                "expiries": [{"expiry": e, "contracts": by_exp[e]} for e in expiries_sorted[:12]],
+                "note": "Full chain from NFO master; use /nifty50-options for quoted strikes.",
+            }
+        }
+    except KiteException as e:
+        raise HTTPException(status_code=400, detail=f"Kite API error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error building universe summary: {str(e)}")
+
+
 @router.get("/ws-nifty50-options")
 def get_nifty50_options_ws():
     """Get WebSocket URL for Nifty50 options streaming"""

@@ -23,9 +23,7 @@ async def backtest_nifty50_options(request: Request, backtest_request: Nifty50Op
         end_date = backtest_request.end_date
         strategy_type = backtest_request.strategy_type
         fund = backtest_request.fund
-        risk_pct = backtest_request.risk / 100
-        reward_pct = backtest_request.reward / 100
-        
+
         log_info(f"Starting Nifty50 options backtest: {start_date} to {end_date}, strategy: {strategy_type}")
         
         user_id = get_user_id_from_request(request)
@@ -61,32 +59,19 @@ async def backtest_nifty50_options(request: Request, backtest_request: Nifty50Op
                 details={"start_date": str(start_date), "end_date": str(end_date)}
             )
         
-        # Backtest results structure
-        backtest_results = {
-            "start_date": str(start_date),
-            "end_date": str(end_date),
-            "strategy_type": strategy_type,
-            "total_trading_days": len(trading_dates),
-            "trades": [],
-            "statistics": {
-                "total_trades": 0,
-                "winning_trades": 0,
-                "losing_trades": 0,
-                "total_pnl": 0.0,
-                "win_rate": 0.0,
-                "average_profit": 0.0,
-                "average_loss": 0.0,
-                "max_profit": 0.0,
-                "max_loss": 0.0
-            }
-        }
-        
-        # NOTE: Full backtest implementation was removed from main.py (~700 lines)
-        # This is a placeholder that returns the structure expected by the frontend
-        # The actual backtest logic should be implemented using the strategies/runner module
-        # or by importing from a dedicated backtest module
-        
-        return {"data": backtest_results}
+        from services.nifty_options_backtest import run_nifty50_options_backtest_async
+
+        out = await run_nifty50_options_backtest_async(
+            kite=kite,
+            start_date=start_date,
+            end_date=end_date,
+            strategy_type=strategy_type,
+            fund=float(fund),
+            risk_pct=float(backtest_request.risk),
+            reward_pct=float(backtest_request.reward),
+        )
+        out["data"]["total_trading_days"] = len(trading_dates)
+        return out
         
     except AlgoFeastException:
         raise

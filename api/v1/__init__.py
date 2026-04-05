@@ -7,7 +7,7 @@ from fastapi import APIRouter
 api_router = APIRouter(prefix="/api/v1", tags=["v1"])
 
 # Import and register route modules
-from .routes import agent, users, auth, strategies, market, orders, portfolio, simulation, stocks, trading, websocket, trade_limits, monitoring, multi_agent, agent_multi, telegram, telegram_scheduler
+from .routes import agent, users, auth, strategies, market, orders, portfolio, simulation, stocks, trading, websocket, trade_limits, monitoring, multi_agent, agent_multi, telegram, telegram_scheduler, risk, execution, strategy_runs
 from . import health
 
 # Register routers
@@ -17,6 +17,9 @@ api_router.include_router(auth.router)
 api_router.include_router(strategies.router)
 api_router.include_router(market.router)
 api_router.include_router(orders.router)
+api_router.include_router(risk.router)
+api_router.include_router(execution.router)
+api_router.include_router(strategy_runs.router)
 api_router.include_router(portfolio.router)
 api_router.include_router(simulation.router)
 api_router.include_router(stocks.router)

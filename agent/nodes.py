@@ -670,23 +670,27 @@ def approval_check_node(state: AgentState) -> AgentState:
 
 
 def execute_trade_node(state: AgentState) -> AgentState:
-    """Execute approved trades"""
+    """Graph step after risk/approval — live broker orders use the approval HTTP handler or tool calls."""
+    if state.get("intent") != "TRADE":
+        return state
+
     requires_approval = state.get("requires_approval", False)
     approval_id = state.get("approval_id")
-    
+    approval_queue = get_approval_queue()
+
     if requires_approval and approval_id:
-        # Check if approved
-        approval_queue = get_approval_queue()
         approval = approval_queue.get_approval(approval_id)
-        
-        if not approval or approval["status"] != "APPROVED":
-            state["agent_response"] = f"Trade pending approval (ID: {approval_id})"
+        if not approval or approval.get("status") != "APPROVED":
+            state["agent_response"] = (
+                f"Trade is waiting for approval (ID: {approval_id}). "
+                "Approve in the app or via the agent approve API to send the order."
+            )
             return state
-    
-    # Execute trade (would use place_order_tool)
-    # For now, just set response
-    state["agent_response"] = "Trade execution would happen here"
-    
+
+    state["agent_response"] = (
+        "Trade flow step complete. Broker orders from chat run inside tool calls above; "
+        "human-in-the-loop trades are placed when the pending approval is approved."
+    )
     return state
 
 
