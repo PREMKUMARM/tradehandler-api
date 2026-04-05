@@ -133,6 +133,16 @@ def _validate_kite_token_centralized(kite: KiteConnect, api_key: str, access_tok
                 log_debug(f"[Kite Auth] Profile check failed (non-auth error): {profile_error}")
             return None  # Unknown state
 
+
+def reset_kite_token_validation_cache():
+    """Clear cached token validation so the next API call re-validates (e.g. after saving a new access token)."""
+    global _global_validation_state
+    _global_validation_state["validated"] = False
+    _global_validation_state["is_valid"] = None
+    _global_validation_state["validation_token"] = None
+    _global_validation_state["validation_api_key"] = None
+
+
 def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_validation: bool = False):
     """Get authenticated KiteConnect instance
     

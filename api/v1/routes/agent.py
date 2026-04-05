@@ -818,7 +818,7 @@ async def get_agent_health(agent_id: str, request: Request):
             recent_logs = log_repo.get_recent(limit=10)
             recent_errors = [
                 {"message": log.message, "timestamp": log.timestamp.isoformat()}
-                for log in recent_logs if log.level == "error"
+                for log in recent_logs if str(log.level).upper() == "ERROR"
             ][:5]
         except Exception:
             pass

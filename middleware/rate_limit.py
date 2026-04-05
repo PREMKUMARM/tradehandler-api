@@ -23,8 +23,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not self.settings.rate_limit_enabled:
             return await call_next(request)
         
-        # Skip rate limiting for health checks
-        if request.url.path in ["/health", "/healthz", "/api/health"]:
+        # Skip rate limiting for health checks and TradingView webhooks (TV may share egress IPs)
+        if request.url.path in [
+            "/health",
+            "/healthz",
+            "/api/health",
+            "/api/v1/webhooks/tradingview/alert",
+        ]:
             return await call_next(request)
         
         # Get client identifier

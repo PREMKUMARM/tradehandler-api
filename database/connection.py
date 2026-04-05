@@ -241,6 +241,24 @@ class DatabaseConnection:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_tool_executions_tool ON tool_executions(tool_name)')
 
+        # Kite ticker tick history (persisted from live WebSocket ticks)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kite_ticker_ticks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instrument_token INTEGER NOT NULL,
+                last_price REAL,
+                volume_traded INTEGER,
+                change_amount REAL,
+                ohlc_json TEXT,
+                tick_timestamp TEXT,
+                received_at TEXT NOT NULL
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_kite_ticker_ticks_token_received
+            ON kite_ticker_ticks(instrument_token, received_at DESC)
+        ''')
+
         # Migration: Add order ID columns if they don't exist
         try:
             cursor.execute("ALTER TABLE agent_approvals ADD COLUMN entry_order_id TEXT")

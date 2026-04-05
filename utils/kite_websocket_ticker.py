@@ -1,12 +1,14 @@
 """
 Kite Connect WebSocket ticker listener for real-time market data
-Uses KiteTicker from kiteconnect library to maintain persistent connection
-Automatically starts when market opens and stops when market closes
+Uses KiteTicker from kiteconnect library to maintain a persistent connection
+while the backend is up and the access token is valid; persists ticks to SQLite.
 """
+import json
+import os
 import threading
 import time
 from datetime import datetime, time as dt_time
-from typing import Dict, Optional, List, Callable, Set
+from typing import Dict, Optional, List, Callable
 from kiteconnect import KiteTicker
 from kiteconnect.exceptions import KiteException
 from zoneinfo import ZoneInfo
@@ -220,7 +222,83 @@ class KiteTickerListener:
                 log_warning("[Kite Ticker] Using fallback hardcoded tokens")
         
         self.instrument_tokens = resolved_tokens
-        
+        # Throttle SQLite writes per instrument (seconds between inserts)
+        self._last_persist_by_token: Dict[int, float] = {}
+
+    def reload_credentials(self):
+        """Refresh API key and access token from config (call before connect / after token file changes)."""
+        self.api_key = get_kite_api_key()
+        self.access_token = get_access_token()
+
+    def _persist_ticks_to_db(self, ticks: List[Dict]):
+        """Insert throttled tick rows into algofeast.db (kite_ticker_ticks)."""
+        if not ticks:
+            return
+        try:
+            min_interval = float(os.getenv("KITE_TICKER_DB_MIN_INTERVAL_SEC", "1.0"))
+        except ValueError:
+            min_interval = 1.0
+        now = time.time()
+        rows = []
+        for tick in ticks:
+            token = tick.get("instrument_token")
+            if token is None:
+                continue
+            token = int(token)
+            last_t = self._last_persist_by_token.get(token, 0.0)
+            if now - last_t < min_interval:
+                continue
+            self._last_persist_by_token[token] = now
+
+            ohlc = tick.get("ohlc")
+            try:
+                ohlc_json = json.dumps(ohlc, default=str) if ohlc is not None else None
+            except TypeError:
+                ohlc_json = None
+
+            ts_raw = tick.get("exchange_timestamp") or tick.get("last_trade_time")
+            if hasattr(ts_raw, "isoformat"):
+                tick_ts = ts_raw.isoformat()
+            elif ts_raw is not None:
+                tick_ts = str(ts_raw)
+            else:
+                tick_ts = None
+
+            vol = tick.get("volume_traded")
+            chg = tick.get("change")
+            lp = tick.get("last_price")
+            rows.append(
+                (
+                    token,
+                    float(lp) if lp is not None else None,
+                    int(vol) if vol is not None else None,
+                    float(chg) if chg is not None else None,
+                    ohlc_json,
+                    tick_ts,
+                    datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(),
+                )
+            )
+
+        if not rows:
+            return
+
+        try:
+            from database.connection import get_database
+
+            db = get_database()
+            conn = db.get_connection()
+            conn.executemany(
+                """
+                INSERT INTO kite_ticker_ticks
+                (instrument_token, last_price, volume_traded, change_amount, ohlc_json, tick_timestamp, received_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+        except Exception as e:
+            log_error(f"[Kite Ticker] DB persist error: {e}")
+
     def _on_ticks(self, ws, ticks):
         """
         Callback when ticks are received from Kite
@@ -238,7 +316,9 @@ class KiteTickerListener:
                     instrument_token = tick.get('instrument_token')
                     if instrument_token:
                         self._latest_ticks[instrument_token] = tick
-            
+
+            self._persist_ticks_to_db(ticks)
+
             # Call user callback if provided (outside lock to avoid blocking)
             if self.callback:
                 try:
@@ -312,13 +392,23 @@ class KiteTickerListener:
         Returns:
             True if connection initiated successfully, False otherwise
         """
+        self.reload_credentials()
         if not self.api_key or not self.access_token:
             log_error("[Kite Ticker] API key or access token not found")
             return False
-        
-        # Don't reconnect if already running
-        if self.is_running and self.kws:
-            log_warning("[Kite Ticker] Already running, skipping connect")
+
+        # Replace stale client (running flag set but socket dropped)
+        if self.is_running and self.kws and not self.is_connected:
+            log_info("[Kite Ticker] Replacing stale WebSocket client")
+            try:
+                self.kws.close()
+            except Exception:
+                pass
+            self.kws = None
+            self.is_running = False
+
+        if self.is_running and self.kws and self.is_connected:
+            log_debug("[Kite Ticker] Already connected, skipping connect")
             return True
         
         try:
@@ -451,6 +541,26 @@ class KiteTickerListener:
 # Global listener instance
 _global_kite_ticker: Optional[KiteTickerListener] = None
 _ticker_thread: Optional[threading.Thread] = None
+_last_managed_token_fingerprint: Optional[str] = None
+_reconnect_requested = threading.Event()
+# After Kite rejects credentials, stop calling profile() until token/API key changes or user saves a new token.
+_paused_for_invalid_token: bool = False
+_invalid_token_fingerprint: Optional[str] = None
+
+
+def notify_kite_access_token_updated():
+    """Call after saving a new Kite access token so the listener reconnects on the next manager cycle."""
+    global _paused_for_invalid_token, _invalid_token_fingerprint
+
+    _paused_for_invalid_token = False
+    _invalid_token_fingerprint = None
+    _reconnect_requested.set()
+    try:
+        from utils.kite_utils import reset_kite_token_validation_cache
+
+        reset_kite_token_validation_cache()
+    except Exception:
+        pass
 
 
 def start_kite_ticker_listener(instrument_tokens: Optional[List[int]] = None, instrument_names: Optional[List[str]] = None, callback: Optional[Callable] = None) -> Optional[KiteTickerListener]:
@@ -514,64 +624,121 @@ def get_all_latest_kite_ticks() -> Dict[int, Dict]:
 
 async def manage_kite_ticker_market_hours():
     """
-    Background task to manage Kite ticker based on market hours
-    Starts ticker when market opens, stops when market closes
-    Runs in async context but calls sync KiteTicker methods (which run in their own threads)
+    Background task: keep KiteTicker connected whenever a valid access token exists.
+    Validates the session with kite.profile() before (re)connecting; disconnects if the token
+    is missing or rejected. Stays connected 24/7 until the token expires or the server stops.
     """
-    global _global_kite_ticker
-    
+    global _global_kite_ticker, _last_managed_token_fingerprint
+    global _paused_for_invalid_token, _invalid_token_fingerprint
+
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
-    
-    # Use thread pool executor for sync operations to avoid blocking event loop
+
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kite-ticker-manager")
-    
-    log_info("[Kite Ticker Manager] Starting market hours manager...")
-    
-    # Initial delay to let server fully start
+
+    log_info("[Kite Ticker Manager] Starting persistent ticker manager (token lifecycle)...")
+
     await asyncio.sleep(5)
-    
+
     while True:
+        sleep_sec = 30
         try:
-            await asyncio.sleep(60)  # Check every minute (non-blocking)
-            
-            # Run sync operations in thread pool to avoid blocking
+
             def check_and_manage_ticker():
-                global _global_kite_ticker  # Use global, not nonlocal
+                nonlocal sleep_sec
+                global _global_kite_ticker, _last_managed_token_fingerprint
+                global _paused_for_invalid_token, _invalid_token_fingerprint
+                from kiteconnect import KiteConnect
+
+                if _reconnect_requested.is_set():
+                    _reconnect_requested.clear()
+                    _last_managed_token_fingerprint = None
+                    _paused_for_invalid_token = False
+                    _invalid_token_fingerprint = None
+
+                token = get_access_token()
+                api_key_val = get_kite_api_key()
+
+                if not token or len(token) < 20:
+                    if _global_kite_ticker and (
+                        _global_kite_ticker.is_running or _global_kite_ticker.is_connected
+                    ):
+                        log_info("[Kite Ticker Manager] No access token — disconnecting ticker")
+                        _global_kite_ticker.disconnect()
+                    _global_kite_ticker = None
+                    _last_managed_token_fingerprint = None
+                    _paused_for_invalid_token = False
+                    _invalid_token_fingerprint = None
+                    return
+
+                fingerprint = f"{api_key_val}:{token}"
+
+                if _paused_for_invalid_token:
+                    if _invalid_token_fingerprint is not None and fingerprint == _invalid_token_fingerprint:
+                        sleep_sec = 300
+                        return
+                    _paused_for_invalid_token = False
+                    _invalid_token_fingerprint = None
+
+                sleep_sec = 30
+
                 try:
-                    if not _global_kite_ticker:
-                        # Create new instance (lightweight, shouldn't block)
-                        _global_kite_ticker = KiteTickerListener()
-                    
-                    is_market_open = _global_kite_ticker.is_market_open()
-                    
-                    if is_market_open:
-                        # Market is open - ensure ticker is running
-                        if not _global_kite_ticker.is_running or not _global_kite_ticker.is_connected:
-                            log_info("[Kite Ticker Manager] Market is open - starting ticker...")
-                            # connect() is non-blocking (runs in KiteTicker's thread)
-                            if _global_kite_ticker.connect():
-                                log_info("[Kite Ticker Manager] Ticker started successfully")
-                            else:
-                                log_warning("[Kite Ticker Manager] Failed to start ticker, will retry...")
-                    else:
-                        # Market is closed - stop ticker
-                        if _global_kite_ticker.is_running or _global_kite_ticker.is_connected:
-                            log_info("[Kite Ticker Manager] Market is closed - stopping ticker...")
-                            # disconnect() is non-blocking
-                            _global_kite_ticker.disconnect()
+                    k = KiteConnect(api_key=api_key_val)
+                    k.set_access_token(token)
+                    k.profile()
                 except Exception as e:
-                    log_error(f"[Kite Ticker Manager] Error in ticker management: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            # Run in thread pool to avoid blocking event loop
+                    err = str(e).lower()
+                    if any(
+                        s in err
+                        for s in (
+                            "invalid",
+                            "token",
+                            "unauthorized",
+                            "expired",
+                            "incorrect",
+                            "bad request",
+                            "api key",
+                        )
+                    ):
+                        log_warning(
+                            f"[Kite Ticker Manager] Access token invalid or expired — disconnecting. "
+                            f"Waiting for a new token (save via Kite login / set-token). Details: {e}"
+                        )
+                        if _global_kite_ticker:
+                            _global_kite_ticker.disconnect()
+                        _global_kite_ticker = None
+                        _last_managed_token_fingerprint = None
+                        _paused_for_invalid_token = True
+                        _invalid_token_fingerprint = fingerprint
+                        sleep_sec = 300
+                    else:
+                        log_debug(f"[Kite Ticker Manager] Token check failed (may be transient): {e}")
+                    return
+
+                if fingerprint != _last_managed_token_fingerprint:
+                    if _global_kite_ticker:
+                        log_info("[Kite Ticker Manager] API key or access token changed — recreating listener")
+                        _global_kite_ticker.disconnect()
+                    _global_kite_ticker = None
+                    _last_managed_token_fingerprint = fingerprint
+
+                if not _global_kite_ticker:
+                    _global_kite_ticker = KiteTickerListener()
+
+                if not _global_kite_ticker.is_running or not _global_kite_ticker.is_connected:
+                    log_info("[Kite Ticker Manager] Valid session — connecting KiteTicker WebSocket")
+                    _global_kite_ticker.reload_credentials()
+                    if not _global_kite_ticker.connect():
+                        log_warning("[Kite Ticker Manager] connect() failed; will retry")
+
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(executor, check_and_manage_ticker)
-                    
+
         except Exception as e:
-            log_error(f"[Kite Ticker Manager] Error in market hours manager: {e}")
+            log_error(f"[Kite Ticker Manager] Error: {e}")
             import traceback
+
             traceback.print_exc()
-            await asyncio.sleep(60)  # Wait before retrying
+
+        await asyncio.sleep(sleep_sec)
 

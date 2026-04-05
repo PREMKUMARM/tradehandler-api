@@ -553,6 +553,12 @@ async def set_token(req: Request):
             f.write(access_token.strip())
         
         log_info(f"Access token stored successfully in config/access_token.txt (length: {len(access_token)})")
+        try:
+            from utils.kite_websocket_ticker import notify_kite_access_token_updated
+
+            notify_kite_access_token_updated()
+        except Exception:
+            pass
         return {
             "status": "success", 
             "message": "Access token stored successfully",

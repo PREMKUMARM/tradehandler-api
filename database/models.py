@@ -50,14 +50,13 @@ class AgentApproval(BaseModel):
     tp_order_id: Optional[str] = None
 
 class AgentLog(BaseModel):
-    """Model for agent activity logs"""
-    log_id: str
-    agent_id: str
-    agent_name: str
-    action: str
-    details: Dict[str, Any]
+    """Model for agent activity logs (matches agent_logs table and AgentLogRepository)"""
+    id: Optional[int] = None  # SQLite AUTOINCREMENT when read back; omit on insert
     timestamp: datetime
     level: str  # INFO, WARNING, ERROR
+    message: str
+    component: str
+    metadata: Optional[Dict[str, Any]] = None
 
 class ToolExecution(BaseModel):
     """Model for tracking tool executions"""
