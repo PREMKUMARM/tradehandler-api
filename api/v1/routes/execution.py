@@ -78,11 +78,15 @@ def list_paper_orders(
     for r in cur.fetchall():
         d = {k: r[k] for k in r.keys()}
         raw = d.get("payload")
-        if isinstance(raw, str) and raw:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="replace")
+        if isinstance(raw, str) and raw.strip():
             try:
                 d["payload"] = _json.loads(raw)
             except Exception:
                 pass
+        elif isinstance(raw, dict):
+            d["payload"] = raw
         rows.append(d)
     meta = enrich_paper_orders_with_quotes(rows, fetch_quotes=enrich)
     return {"data": rows, "meta": meta}
