@@ -2,24 +2,53 @@
 Strategy backtest request/response schemas
 """
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator, validator
 from datetime import date
 
 
 class Nifty50OptionsBacktestRequest(BaseModel):
     """Request schema for Nifty50 options backtest"""
+    model_config = ConfigDict(populate_by_name=True)
+
     start_date: date = Field(..., description="Start date for backtest (YYYY-MM-DD)")
     end_date: date = Field(..., description="End date for backtest (YYYY-MM-DD)")
     strategy_type: str = Field(default="915_candle_break", description="Strategy type")
     fund: float = Field(default=200000, gt=0, description="Trading capital")
     risk: float = Field(default=1, gt=0, le=100, description="Risk percentage (1-100)")
     reward: float = Field(default=3, gt=0, description="Reward ratio")
+    contract_selection: str = Field(
+        default="front_week",
+        validation_alias=AliasChoices("contract_selection", "contractSelection"),
+        description=(
+            "front_week: nearest listed NIFTY expiry on/after each day (weekly chain as-of that session, "
+            "typically now-expired); next_week: second-nearest expiry (roll / next series test)"
+        ),
+    )
 
-    @validator("end_date")
-    def validate_date_range(cls, v, values):
-        if "start_date" in values and v < values["start_date"]:
-            raise ValueError("end_date must be after start_date")
-        return v
+    @field_validator("contract_selection")
+    @classmethod
+    def validate_contract_selection(cls, v: str) -> str:
+        allowed = ("front_week", "next_week")
+        x = (v or "").strip().lower()
+        if x not in allowed:
+            raise ValueError(f"contract_selection must be one of {allowed}")
+        return x
+
+    @model_validator(mode="after")
+    def validate_dates(self):
+        if self.end_date < self.start_date:
+            raise ValueError("end_date must be on or after start_date")
+        today = date.today()
+        if self.start_date > today:
+            raise ValueError(
+                f"start_date ({self.start_date}) is in the future. "
+                "Kite historical candles exist only for past market days."
+            )
+        if self.end_date > today:
+            raise ValueError(
+                f"end_date ({self.end_date}) is in the future. Use {today} or earlier."
+            )
+        return self
 
 
 class RangeBreakout30MinBacktestRequest(BaseModel):

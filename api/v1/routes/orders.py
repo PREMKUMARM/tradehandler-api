@@ -15,6 +15,7 @@ from utils.trade_limits import trade_limits
 from services.risk_gate import check_order_allowed, record_order_placed
 from services.paper_trading import is_paper_mode, paper_place_order
 from services.execution_audit import log_execution_audit
+from services.strategy_run_fills import record_strategy_fill_if_run
 import os
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
@@ -65,9 +66,17 @@ async def place_order(req: Request, order_request: PlaceOrderRequest):
                 actor=user_id,
                 exchange=order_request.exchange,
                 tradingsymbol=order_request.tradingsymbol,
-                payload={"paper": True},
+                payload={"paper": True, "strategy_run_id": order_request.strategy_run_id},
                 result={"order_id": oid},
                 paper=True,
+            )
+            record_strategy_fill_if_run(
+                order_request.strategy_run_id,
+                oid,
+                order_request.tradingsymbol,
+                order_request.transaction_type,
+                order_request.quantity,
+                order_request.price,
             )
             return OrderResponse(order_id=oid, status="success", message="Paper order recorded")
 
@@ -115,8 +124,17 @@ async def place_order(req: Request, order_request: PlaceOrderRequest):
             actor=user_id,
             exchange=order_request.exchange,
             tradingsymbol=order_request.tradingsymbol,
+            payload={"strategy_run_id": order_request.strategy_run_id},
             result={"order_id": str(order_id)},
             paper=False,
+        )
+        record_strategy_fill_if_run(
+            order_request.strategy_run_id,
+            str(order_id),
+            order_request.tradingsymbol,
+            order_request.transaction_type,
+            order_request.quantity,
+            order_request.price,
         )
 
         return OrderResponse(

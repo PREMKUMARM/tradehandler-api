@@ -1,7 +1,7 @@
 """Request bodies for risk, multi-leg execution, and strategy catalog APIs."""
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class KillSwitchUpdate(BaseModel):
@@ -17,6 +17,7 @@ class BasketLeg(BaseModel):
     product: str = "MIS"
     price: Optional[float] = None
     trigger_price: Optional[float] = None
+    strategy_run_id: Optional[str] = None
 
 
 class BasketPlaceRequest(BaseModel):
@@ -38,3 +39,19 @@ class StrategyRunIn(BaseModel):
 class RunStatusPatch(BaseModel):
     status: str
     ended: bool = True
+
+
+class StrategyFillIn(BaseModel):
+    broker_order_id: str
+    tradingsymbol: str
+    side: str
+    quantity: int = Field(..., gt=0)
+    price: Optional[float] = None
+
+    @field_validator("side")
+    @classmethod
+    def side_upper(cls, v: str) -> str:
+        u = (v or "").upper()
+        if u not in ("BUY", "SELL"):
+            raise ValueError("side must be BUY or SELL")
+        return u

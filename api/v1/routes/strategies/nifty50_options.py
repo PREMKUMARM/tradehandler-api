@@ -69,6 +69,7 @@ async def backtest_nifty50_options(request: Request, backtest_request: Nifty50Op
             fund=float(fund),
             risk_pct=float(backtest_request.risk),
             reward_pct=float(backtest_request.reward),
+            contract_selection=str(backtest_request.contract_selection),
         )
         out["data"]["total_trading_days"] = len(trading_dates)
         return out

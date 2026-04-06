@@ -19,6 +19,7 @@ from core.exceptions import ValidationError
 from services.risk_gate import check_order_allowed, record_order_placed
 from services.paper_trading import is_paper_mode, paper_place_order
 from services.execution_audit import log_execution_audit
+from services.strategy_run_fills import record_strategy_fill_if_run
 
 
 class StrategyType(Enum):
@@ -352,6 +353,14 @@ class StrategyExecutor:
                     paper=True,
                 )
                 order_id = oid
+                record_strategy_fill_if_run(
+                    os.getenv("STRATEGY_EXECUTOR_RUN_ID", "").strip() or None,
+                    str(order_id),
+                    signal.symbol,
+                    signal.action,
+                    signal.quantity,
+                    signal.entry_price,
+                )
             else:
                 order_id = kite.place_order(
                     variety=kite.VARIETY_REGULAR,
@@ -371,6 +380,14 @@ class StrategyExecutor:
                     tradingsymbol=signal.symbol,
                     result={"order_id": str(order_id)},
                     paper=False,
+                )
+                record_strategy_fill_if_run(
+                    os.getenv("STRATEGY_EXECUTOR_RUN_ID", "").strip() or None,
+                    str(order_id),
+                    signal.symbol,
+                    signal.action,
+                    signal.quantity,
+                    signal.entry_price,
                 )
             
             # Add to order monitor

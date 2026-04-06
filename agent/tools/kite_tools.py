@@ -24,6 +24,7 @@ def place_order_tool(
     price: Optional[float] = None,
     trigger_price: Optional[float] = None,
     validity: str = "DAY",
+    strategy_run_id: Optional[str] = None,
 ) -> dict:
     """
     Place a buy or sell order on Zerodha Kite.
@@ -46,6 +47,7 @@ def place_order_tool(
         from services.risk_gate import check_order_allowed, record_order_placed
         from services.paper_trading import is_paper_mode, paper_place_order
         from services.execution_audit import log_execution_audit
+        from services.strategy_run_fills import record_strategy_fill_if_run
 
         est_value = float((price or 0) * max(quantity, 1))
         ok, reason = check_order_allowed(
@@ -75,6 +77,7 @@ def place_order_tool(
             "price": price,
             "trigger_price": trigger_price,
             "validity": validity,
+            "strategy_run_id": strategy_run_id,
         }
 
         if is_paper_mode():
@@ -87,6 +90,9 @@ def place_order_tool(
                 payload=order_payload,
                 result={"order_id": oid, "paper": True},
                 paper=True,
+            )
+            record_strategy_fill_if_run(
+                strategy_run_id, oid, tradingsymbol, transaction_type, quantity, price
             )
             return {
                 "status": "success",
@@ -123,6 +129,9 @@ def place_order_tool(
             payload=order_payload,
             result={"order_id": str(order_id)},
             paper=False,
+        )
+        record_strategy_fill_if_run(
+            strategy_run_id, str(order_id), tradingsymbol, transaction_type, quantity, price
         )
 
         return {

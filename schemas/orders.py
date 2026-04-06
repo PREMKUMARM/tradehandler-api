@@ -22,6 +22,10 @@ class PlaceOrderRequest(BaseModel):
     stoploss: Optional[float] = Field(None, gt=0, description="Stoploss price for automatic exit")
     target: Optional[float] = Field(None, gt=0, description="Target price for automatic exit")
     trailing_stoploss: Optional[float] = Field(None, gt=0, description="Trailing stoploss amount")
+    strategy_run_id: Optional[str] = Field(
+        None,
+        description="Optional strategy run id — order id is recorded in strategy_fills for this run",
+    )
 
     @validator("transaction_type")
     def validate_transaction_type(cls, v):
