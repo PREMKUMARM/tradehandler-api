@@ -718,7 +718,7 @@ async def manage_kite_ticker_market_hours():
                 if fingerprint != _last_managed_token_fingerprint:
                     if _global_kite_ticker:
                         log_info("[Kite Ticker Manager] API key or access token changed — recreating listener")
-                            _global_kite_ticker.disconnect()
+                        _global_kite_ticker.disconnect()
                     _global_kite_ticker = None
                     _last_managed_token_fingerprint = fingerprint
 
