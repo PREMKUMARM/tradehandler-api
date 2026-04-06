@@ -1,7 +1,7 @@
 """Request bodies for risk, multi-leg execution, and strategy catalog APIs."""
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class KillSwitchUpdate(BaseModel):
@@ -13,27 +13,11 @@ class BasketLeg(BaseModel):
     tradingsymbol: str
     transaction_type: str
     quantity: int
-    order_type: str = "LIMIT"
+    order_type: str = "MARKET"
     product: str = "MIS"
     price: Optional[float] = None
     trigger_price: Optional[float] = None
     strategy_run_id: Optional[str] = None
-
-    @model_validator(mode="after")
-    def price_for_order_type(self):
-        ot = (self.order_type or "").upper()
-        if ot == "LIMIT":
-            if self.price is None or float(self.price) <= 0:
-                raise ValueError("price is required and must be > 0 for LIMIT orders")
-        if ot == "SL":
-            if self.price is None or float(self.price) <= 0:
-                raise ValueError("price is required for SL orders")
-            if self.trigger_price is None or float(self.trigger_price) <= 0:
-                raise ValueError("trigger_price is required for SL orders")
-        if ot == "SL-M":
-            if self.trigger_price is None or float(self.trigger_price) <= 0:
-                raise ValueError("trigger_price is required for SL-M orders")
-        return self
 
 
 class BasketPlaceRequest(BaseModel):

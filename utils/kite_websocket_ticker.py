@@ -298,7 +298,7 @@ class KiteTickerListener:
             conn.commit()
         except Exception as e:
             log_error(f"[Kite Ticker] DB persist error: {e}")
-
+        
     def _on_ticks(self, ws, ticks):
         """
         Callback when ticks are received from Kite
@@ -316,7 +316,7 @@ class KiteTickerListener:
                     instrument_token = tick.get('instrument_token')
                     if instrument_token:
                         self._latest_ticks[instrument_token] = tick
-
+            
             self._persist_ticks_to_db(ticks)
 
             # Call user callback if provided (outside lock to avoid blocking)
@@ -396,7 +396,7 @@ class KiteTickerListener:
         if not self.api_key or not self.access_token:
             log_error("[Kite Ticker] API key or access token not found")
             return False
-
+        
         # Replace stale client (running flag set but socket dropped)
         if self.is_running and self.kws and not self.is_connected:
             log_info("[Kite Ticker] Replacing stale WebSocket client")
@@ -630,20 +630,20 @@ async def manage_kite_ticker_market_hours():
     """
     global _global_kite_ticker, _last_managed_token_fingerprint
     global _paused_for_invalid_token, _invalid_token_fingerprint
-
+    
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
-
+    
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kite-ticker-manager")
-
+    
     log_info("[Kite Ticker Manager] Starting persistent ticker manager (token lifecycle)...")
-
+    
     await asyncio.sleep(5)
-
+    
     while True:
         sleep_sec = 30
         try:
-
+            
             def check_and_manage_ticker():
                 nonlocal sleep_sec
                 global _global_kite_ticker, _last_managed_token_fingerprint
@@ -718,7 +718,7 @@ async def manage_kite_ticker_market_hours():
                 if fingerprint != _last_managed_token_fingerprint:
                     if _global_kite_ticker:
                         log_info("[Kite Ticker Manager] API key or access token changed — recreating listener")
-                        _global_kite_ticker.disconnect()
+                            _global_kite_ticker.disconnect()
                     _global_kite_ticker = None
                     _last_managed_token_fingerprint = fingerprint
 
@@ -733,7 +733,7 @@ async def manage_kite_ticker_market_hours():
 
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(executor, check_and_manage_ticker)
-
+                    
         except Exception as e:
             log_error(f"[Kite Ticker Manager] Error: {e}")
             import traceback
