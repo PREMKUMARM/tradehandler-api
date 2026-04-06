@@ -10,7 +10,7 @@ from kiteconnect.exceptions import KiteException
 from schemas.support_ops import BasketPlaceRequest
 from services.execution_audit import log_execution_audit
 from services.strategy_run_fills import record_strategy_fill_if_run
-from services.paper_trading import is_paper_mode, paper_place_order
+from services.paper_trading import enrich_paper_orders_with_quotes, is_paper_mode, paper_place_order
 from services.risk_gate import check_order_allowed, record_order_placed
 from utils.kite_utils import get_kite_instance
 from utils.logger import log_error, log_info
@@ -51,8 +51,14 @@ def list_execution_audit_log(limit: int = Query(100, ge=1, le=500)):
 
 
 @router.get("/paper-orders")
-def list_paper_orders(limit: int = Query(200, ge=1, le=1000)):
-    """Recent synthetic orders when API is in paper trading mode."""
+def list_paper_orders(
+    limit: int = Query(200, ge=1, le=1000),
+    enrich: bool = Query(
+        True,
+        description="If true, fetch live LTP from Kite and compute unrealized PnL per row (needs valid session).",
+    ),
+):
+    """Recent synthetic orders with optional live quotes for paper-trading P&L view."""
     import json as _json
 
     from database.connection import get_database
@@ -78,7 +84,8 @@ def list_paper_orders(limit: int = Query(200, ge=1, le=1000)):
             except Exception:
                 pass
         rows.append(d)
-    return {"data": rows}
+    meta = enrich_paper_orders_with_quotes(rows, fetch_quotes=enrich)
+    return {"data": rows, "meta": meta}
 
 
 @router.post("/basket")
