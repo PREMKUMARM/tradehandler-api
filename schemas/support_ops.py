@@ -18,6 +18,9 @@ class BasketLeg(BaseModel):
     price: Optional[float] = None
     trigger_price: Optional[float] = None
     strategy_run_id: Optional[str] = None
+    stoploss: Optional[float] = Field(None, gt=0, description="Paper mode: stop-loss price for auto-exit")
+    target: Optional[float] = Field(None, gt=0, description="Paper mode: target price for auto-exit")
+    trailing_stoploss: Optional[float] = Field(None, gt=0, description="Paper mode: trailing amount")
 
 
 class BasketPlaceRequest(BaseModel):

@@ -58,6 +58,9 @@ async def place_order(req: Request, order_request: PlaceOrderRequest):
                     "product": order_request.product,
                     "price": order_request.price,
                     "trigger_price": order_request.trigger_price,
+                    "stoploss": order_request.stoploss,
+                    "target": order_request.target,
+                    "trailing_stoploss": order_request.trailing_stoploss,
                 }
             )
             record_order_placed(investment_amount)

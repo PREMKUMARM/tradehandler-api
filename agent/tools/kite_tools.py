@@ -25,6 +25,9 @@ def place_order_tool(
     trigger_price: Optional[float] = None,
     validity: str = "DAY",
     strategy_run_id: Optional[str] = None,
+    stoploss: Optional[float] = None,
+    target: Optional[float] = None,
+    trailing_stoploss: Optional[float] = None,
 ) -> dict:
     """
     Place a buy or sell order on Zerodha Kite.
@@ -78,6 +81,9 @@ def place_order_tool(
             "trigger_price": trigger_price,
             "validity": validity,
             "strategy_run_id": strategy_run_id,
+            "stoploss": stoploss,
+            "target": target,
+            "trailing_stoploss": trailing_stoploss,
         }
 
         if is_paper_mode():

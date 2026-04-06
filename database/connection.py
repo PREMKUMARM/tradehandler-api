@@ -277,14 +277,21 @@ class DatabaseConnection:
             CREATE INDEX IF NOT EXISTS idx_execution_audit_created ON execution_audit_log(created_at DESC)
         ''')
 
-        # P2 paper orders
+        # P2 paper orders (SL/target / exit columns added via migration for existing DBs)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS paper_orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at TEXT NOT NULL,
                 order_id TEXT UNIQUE NOT NULL,
                 payload TEXT NOT NULL,
-                status TEXT DEFAULT 'COMPLETE'
+                status TEXT DEFAULT 'COMPLETE',
+                stoploss REAL,
+                target REAL,
+                trailing_stoploss REAL,
+                exit_reason TEXT,
+                exit_price REAL,
+                exit_at TEXT,
+                exit_order_id TEXT
             )
         ''')
 
@@ -338,6 +345,20 @@ class DatabaseConnection:
             cursor.execute("ALTER TABLE agent_approvals ADD COLUMN tp_order_id TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+        for _col, _typ in (
+            ("stoploss", "REAL"),
+            ("target", "REAL"),
+            ("trailing_stoploss", "REAL"),
+            ("exit_reason", "TEXT"),
+            ("exit_price", "REAL"),
+            ("exit_at", "TEXT"),
+            ("exit_order_id", "TEXT"),
+        ):
+            try:
+                cursor.execute(f"ALTER TABLE paper_orders ADD COLUMN {_col} {_typ}")
+            except sqlite3.OperationalError:
+                pass
 
         conn.commit()
 

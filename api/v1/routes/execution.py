@@ -67,7 +67,9 @@ def list_paper_orders(
     conn = db.get_connection()
     cur = conn.execute(
         """
-        SELECT id, created_at, order_id, payload, status
+        SELECT id, created_at, order_id, payload, status,
+               stoploss, target, trailing_stoploss,
+               exit_reason, exit_price, exit_at, exit_order_id
         FROM paper_orders
         ORDER BY id DESC
         LIMIT ?
@@ -90,6 +92,37 @@ def list_paper_orders(
         rows.append(d)
     meta = enrich_paper_orders_with_quotes(rows, fetch_quotes=enrich)
     return {"data": rows, "meta": meta}
+
+
+@router.delete("/paper-orders/{order_id:path}")
+def delete_paper_order(order_id: str):
+    """Delete one paper order row by `order_id` (e.g. PAPER-ABC123)."""
+    from database.connection import get_database
+
+    db = get_database()
+    conn = db.get_connection()
+    cur = conn.execute("DELETE FROM paper_orders WHERE order_id = ?", (order_id,))
+    conn.commit()
+    if cur.rowcount == 0:
+        raise ValidationError(message=f"No paper order with id {order_id!r}", field="order_id")
+    return {"data": {"deleted": True, "order_id": order_id}}
+
+
+@router.delete("/paper-orders")
+def delete_all_paper_orders(confirm: bool = Query(False)):
+    """Clear all paper orders. Pass confirm=true."""
+    if not confirm:
+        raise ValidationError(
+            message="Refusing to delete all paper orders without confirm=true",
+            field="confirm",
+        )
+    from database.connection import get_database
+
+    db = get_database()
+    conn = db.get_connection()
+    cur = conn.execute("DELETE FROM paper_orders")
+    conn.commit()
+    return {"data": {"deleted": cur.rowcount}}
 
 
 @router.post("/basket")
@@ -134,6 +167,9 @@ async def place_basket(request: Request, body: BasketPlaceRequest) -> Dict[str, 
                     "product": leg.product,
                     "price": leg.price,
                     "trigger_price": leg.trigger_price,
+                    "stoploss": leg.stoploss,
+                    "target": leg.target,
+                    "trailing_stoploss": leg.trailing_stoploss,
                 }
             )
             record_order_placed(invest)

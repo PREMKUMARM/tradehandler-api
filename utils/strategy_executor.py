@@ -340,6 +340,9 @@ class StrategyExecutor:
                         "quantity": signal.quantity,
                         "order_type": config.order_type,
                         "product": config.product,
+                        "price": signal.entry_price,
+                        "stoploss": signal.stoploss,
+                        "target": signal.target,
                     }
                 )
                 record_order_placed(investment_amount)
@@ -390,16 +393,17 @@ class StrategyExecutor:
                     signal.entry_price,
                 )
             
-            # Add to order monitor
-            await order_monitor.add_order(
-                order_id=str(order_id),
-                symbol=signal.symbol,
-                transaction_type=signal.action,
-                quantity=signal.quantity,
-                stoploss=signal.stoploss,
-                target=signal.target,
-                trailing_stoploss=config.trailing_stoploss
-            )
+            # Live broker only — paper SL/target is handled by paper_order_monitor on DB rows
+            if not is_paper_mode():
+                await order_monitor.add_order(
+                    order_id=str(order_id),
+                    symbol=signal.symbol,
+                    transaction_type=signal.action,
+                    quantity=signal.quantity,
+                    stoploss=signal.stoploss,
+                    target=signal.target,
+                    trailing_stoploss=config.trailing_stoploss,
+                )
             
             # Track active trade
             self.active_trades[str(order_id)] = {

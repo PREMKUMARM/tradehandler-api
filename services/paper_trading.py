@@ -20,8 +20,21 @@ from zoneinfo import ZoneInfo
 from utils.logger import log_info, log_warning
 
 
+def _float_or_none(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_paper_fill_price(payload: Dict[str, Any]) -> Optional[float]:
     """Best-effort simulated fill: limit/trigger price, else live LTP from Kite."""
+    pre = _float_or_none(payload.get("paper_fill_price"))
+    if pre is not None:
+        return pre
     ot = str(payload.get("order_type") or "").upper()
     for key in ("price",):
         v = payload.get(key)
@@ -119,6 +132,7 @@ def enrich_paper_orders_with_quotes(
             row["quantity"] = None
             row["transaction_type"] = None
             row["unrealized_pnl"] = None
+            row["realized_pnl"] = None
             row.pop("_qk", None)
             continue
 
@@ -145,13 +159,28 @@ def enrich_paper_orders_with_quotes(
         entry = _entry_price_from_payload(p)
         row["entry_price"] = entry
 
-        if ltp is not None and entry is not None and qty_i and tt in ("BUY", "SELL"):
+        if p.get("paper_exit_leg"):
+            row["unrealized_pnl"] = None
+            row["realized_pnl"] = None
+        elif row.get("exit_reason") and row.get("exit_price") is not None and entry is not None and qty_i and tt in (
+            "BUY",
+            "SELL",
+        ):
+            ep = float(row["exit_price"])
+            if tt == "BUY":
+                row["realized_pnl"] = round((ep - entry) * qty_i, 2)
+            else:
+                row["realized_pnl"] = round((entry - ep) * qty_i, 2)
+            row["unrealized_pnl"] = None
+        elif ltp is not None and entry is not None and qty_i and tt in ("BUY", "SELL"):
+            row["realized_pnl"] = None
             if tt == "BUY":
                 row["unrealized_pnl"] = round((ltp - entry) * qty_i, 2)
             else:
                 row["unrealized_pnl"] = round((entry - ltp) * qty_i, 2)
         else:
             row["unrealized_pnl"] = None
+            row["realized_pnl"] = None
 
     return {"quotes_ok": quote_error is None, "quote_error": quote_error}
 
@@ -211,19 +240,34 @@ def paper_place_order(payload: Dict[str, Any]) -> str:
     if fp is not None:
         to_store["paper_fill_price"] = fp
 
+    sl = _float_or_none(to_store.get("stoploss"))
+    tgt = _float_or_none(to_store.get("target"))
+    trail = _float_or_none(to_store.get("trailing_stoploss"))
+    if to_store.get("paper_exit_leg"):
+        sl, tgt, trail = None, None, None
+
+    is_exit = bool(to_store.get("paper_exit_leg"))
+    status_row = "EXIT" if is_exit else "COMPLETE"
+
     oid = f"PAPER-{uuid.uuid4().hex[:12].upper()}"
     db = get_database()
     conn = db.get_connection()
     conn.execute(
         """
-        INSERT INTO paper_orders (created_at, order_id, payload, status)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO paper_orders (
+            created_at, order_id, payload, status,
+            stoploss, target, trailing_stoploss
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(),
             oid,
             json.dumps(to_store, default=str),
-            "COMPLETE",
+            status_row,
+            sl,
+            tgt,
+            trail,
         ),
     )
     conn.commit()
