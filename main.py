@@ -197,27 +197,34 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    # Initialize database
-    init_database()
-    
-    # Start order monitoring service
-    from utils.order_monitor import order_monitor
-    await order_monitor.start_monitoring()
-    
-    # Setup error handlers and performance monitoring
-    from utils.performance_monitor import performance_monitor, start_metrics_cleanup
-    from utils.error_handler import setup_error_handlers
     from utils.logger import log_info, log_error, log_warning
-    setup_error_handlers(app)
+
+    # Initialize database (required — if this fails, abort startup)
+    init_database()
+
+    # Order monitor — failure must not block API (otherwise nginx returns 502 for all routes)
+    try:
+        from utils.order_monitor import order_monitor
+        await order_monitor.start_monitoring()
+    except Exception as e:
+        log_error(f"[Startup] Order monitor failed (API still starting): {e}")
+
+    # Error handlers + metrics
+    try:
+        from utils.performance_monitor import start_metrics_cleanup
+        from utils.error_handler import setup_error_handlers
+        setup_error_handlers(app)
+        asyncio.create_task(start_metrics_cleanup())
+    except Exception as e:
+        log_error(f"[Startup] Error handler / metrics failed (API still starting): {e}")
+
+    # Telegram scheduler — DB / deps issues on EC2 should not take the whole API down
+    try:
+        from services.telegram_scheduler import telegram_scheduler
+        await telegram_scheduler.start_scheduler()
+    except Exception as e:
+        log_error(f"[Startup] Telegram scheduler failed (API still starting): {e}")
     
-    # Start background tasks
-    asyncio.create_task(start_metrics_cleanup())
-    
-    # Start Telegram notification scheduler
-    from services.telegram_scheduler import telegram_scheduler
-    await telegram_scheduler.start_scheduler()
-    
-    # Setup error handlers and performance monitoring
     try:
         import mcp
         log_info("MCP library available, using simulation mode")
