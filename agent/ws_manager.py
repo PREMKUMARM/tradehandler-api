@@ -5,6 +5,7 @@ from fastapi import WebSocket
 from utils.logger import log_agent_activity
 from database.repositories import get_log_repository
 from database.models import AgentLog
+from services.push.push_service import push_service
 
 class ConnectionManager:
     def __init__(self):
@@ -46,6 +47,15 @@ async def broadcast_agent_update(update_type: str, data: Any):
         "data": data
     })
 
+    # Mirror key UI notifications to mobile push (best-effort).
+    try:
+        if update_type == "NEW_APPROVAL":
+            title = "New approval required"
+            body = str(data.get("action") if isinstance(data, dict) else "Approval event")
+            asyncio.create_task(push_service.send_to_user(user_id="default", title=title, body=body))
+    except Exception:
+        pass
+
 def add_agent_log(message: str, log_type: str = "info", component: str = "agent", metadata: dict = None):
     """
     Unified logging function that saves to database, prints to console, and broadcasts to UI via WebSocket.
@@ -82,6 +92,16 @@ def add_agent_log(message: str, log_type: str = "info", component: str = "agent"
         loop = asyncio.get_event_loop()
         if loop.is_running():
             loop.create_task(broadcast_agent_update("LIVE_LOG", update))
+            # Push only higher-signal logs to mobile by default.
+            if log_type.lower() in ("error", "warning"):
+                loop.create_task(
+                    push_service.send_to_user(
+                        user_id="default",
+                        title=f"{component.upper()} {log_type.upper()}",
+                        body=message,
+                        data={"type": "LIVE_LOG", "level": log_type.lower()},
+                    )
+                )
     except Exception as e:
         print(f"Error broadcasting log: {e}")
 

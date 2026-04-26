@@ -8,6 +8,62 @@ from database.connection import get_database
 from database.models import AgentApproval, AgentLog, AgentConfig, SimulationResult, ToolExecution, ChatMessage
 
 
+class PushDeviceRepository:
+    """Repository for storing mobile push device tokens (FCM/APNs)."""
+
+    def upsert(
+        self,
+        *,
+        user_id: str,
+        token: str,
+        platform: str = "unknown",
+        device_id: Optional[str] = None,
+    ) -> bool:
+        try:
+            db = get_database()
+            now = datetime.utcnow().isoformat()
+            query = """
+                INSERT INTO push_devices (user_id, token, platform, device_id, created_at, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(token) DO UPDATE SET
+                    user_id=excluded.user_id,
+                    platform=excluded.platform,
+                    device_id=excluded.device_id,
+                    last_seen_at=excluded.last_seen_at
+            """
+            db.execute_query(query, (user_id, token, platform, device_id, now, now))
+            db.commit()
+            return True
+        except Exception as e:
+            print(f"Error upserting push device: {e}")
+            return False
+
+    def delete_by_token(self, token: str) -> bool:
+        try:
+            db = get_database()
+            db.execute_query("DELETE FROM push_devices WHERE token = ?", (token,))
+            db.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting push device: {e}")
+            return False
+
+    def list_tokens(self, user_id: str = "default") -> List[Dict[str, Any]]:
+        try:
+            db = get_database()
+            cursor = db.execute_query(
+                "SELECT * FROM push_devices WHERE user_id = ? ORDER BY last_seen_at DESC",
+                (user_id,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error listing push devices: {e}")
+            return []
+
+    def list_token_strings(self, user_id: str = "default") -> List[str]:
+        return [row["token"] for row in self.list_tokens(user_id)]
+
+
 class AgentApprovalRepository:
     """Repository for agent approvals"""
 
@@ -560,6 +616,7 @@ _config_repo: Optional[AgentConfigRepository] = None
 _simulation_repo: Optional[SimulationResultRepository] = None
 _tool_repo: Optional[ToolExecutionRepository] = None
 _chat_repo: Optional[ChatMessageRepository] = None
+_push_device_repo: Optional[PushDeviceRepository] = None
 
 
 def get_approval_repository() -> AgentApprovalRepository:
@@ -608,3 +665,10 @@ def get_chat_repository() -> ChatMessageRepository:
     if _chat_repo is None:
         _chat_repo = ChatMessageRepository()
     return _chat_repo
+
+
+def get_push_device_repository() -> PushDeviceRepository:
+    global _push_device_repo
+    if _push_device_repo is None:
+        _push_device_repo = PushDeviceRepository()
+    return _push_device_repo

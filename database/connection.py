@@ -221,6 +221,21 @@ class DatabaseConnection:
             )
         ''')
 
+        # Mobile push notification device tokens (FCM/APNs)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS push_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL DEFAULT 'default',
+                token TEXT NOT NULL UNIQUE,
+                platform TEXT NOT NULL, -- android/ios/web/unknown
+                device_id TEXT,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_push_devices_user_id ON push_devices(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_push_devices_last_seen ON push_devices(last_seen_at DESC)')
+
         # Chat Messages Table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chat_messages (
