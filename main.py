@@ -230,6 +230,14 @@ async def startup_event():
         await telegram_scheduler.start_scheduler()
     except Exception as e:
         log_error(f"[Startup] Telegram scheduler failed (API still starting): {e}")
+
+    # Weekday Kite login reminder (FCM) — off by KITE_PUSH_REMINDER_ENABLED=0
+    try:
+        from services.push.kite_login_reminder import run_kite_login_reminder_loop
+
+        asyncio.create_task(run_kite_login_reminder_loop())
+    except Exception as e:
+        log_error(f"[Startup] Kite login push reminder task failed (API still starting): {e}")
     
     try:
         import mcp

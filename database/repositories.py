@@ -63,6 +63,19 @@ class PushDeviceRepository:
     def list_token_strings(self, user_id: str = "default") -> List[str]:
         return [row["token"] for row in self.list_tokens(user_id)]
 
+    def list_distinct_user_ids(self) -> List[str]:
+        """All user_ids with at least one push device (for scheduled broadcasts)."""
+        try:
+            db = get_database()
+            cursor = db.execute_query(
+                "SELECT DISTINCT user_id FROM push_devices ORDER BY user_id",
+                (),
+            )
+            return [str(row["user_id"]) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error listing distinct user_ids for push: {e}")
+            return []
+
 
 class AgentApprovalRepository:
     """Repository for agent approvals"""
