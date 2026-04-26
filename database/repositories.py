@@ -77,6 +77,57 @@ class PushDeviceRepository:
             return []
 
 
+class KitePushReminderRepository:
+    """Single-row settings (id=1) for weekday Kite login FCM reminder."""
+
+    def get(self) -> Optional[Dict[str, Any]]:
+        try:
+            db = get_database()
+            cur = db.execute_query("SELECT * FROM kite_push_reminder_settings WHERE id = 1", ())
+            row = cur.fetchone()
+            if not row:
+                return None
+            return dict(row)
+        except Exception as e:
+            print(f"Error reading kite_push_reminder_settings: {e}")
+            return None
+
+    def save(
+        self,
+        *,
+        enabled: bool,
+        tz: str,
+        hour: int,
+        minute: int,
+        title: str,
+        body: str,
+    ) -> bool:
+        try:
+            db = get_database()
+            now = datetime.utcnow().isoformat()
+            db.execute_query(
+                """
+                INSERT INTO kite_push_reminder_settings
+                    (id, enabled, tz, hour, minute, title, body, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    enabled=excluded.enabled,
+                    tz=excluded.tz,
+                    hour=excluded.hour,
+                    minute=excluded.minute,
+                    title=excluded.title,
+                    body=excluded.body,
+                    updated_at=excluded.updated_at
+                """,
+                (1 if enabled else 0, tz, hour, minute, title, body, now),
+            )
+            db.commit()
+            return True
+        except Exception as e:
+            print(f"Error saving kite_push_reminder_settings: {e}")
+            return False
+
+
 class AgentApprovalRepository:
     """Repository for agent approvals"""
 
@@ -630,6 +681,7 @@ _simulation_repo: Optional[SimulationResultRepository] = None
 _tool_repo: Optional[ToolExecutionRepository] = None
 _chat_repo: Optional[ChatMessageRepository] = None
 _push_device_repo: Optional[PushDeviceRepository] = None
+_kite_push_reminder_repo: Optional["KitePushReminderRepository"] = None
 
 
 def get_approval_repository() -> AgentApprovalRepository:
@@ -685,3 +737,10 @@ def get_push_device_repository() -> PushDeviceRepository:
     if _push_device_repo is None:
         _push_device_repo = PushDeviceRepository()
     return _push_device_repo
+
+
+def get_kite_push_reminder_repository() -> KitePushReminderRepository:
+    global _kite_push_reminder_repo
+    if _kite_push_reminder_repo is None:
+        _kite_push_reminder_repo = KitePushReminderRepository()
+    return _kite_push_reminder_repo

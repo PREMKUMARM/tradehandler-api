@@ -236,6 +236,20 @@ class DatabaseConnection:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_push_devices_user_id ON push_devices(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_push_devices_last_seen ON push_devices(last_seen_at DESC)')
 
+        # Kite / Zerodha login FCM reminder (weekdays) — configurable via UI; single row id=1
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kite_push_reminder_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL DEFAULT 1,
+                tz TEXT NOT NULL,
+                hour INTEGER NOT NULL,
+                minute INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        ''')
+
         # Chat Messages Table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chat_messages (

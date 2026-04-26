@@ -184,6 +184,17 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" << EOF
     
     echo "📥 Pulling latest code from git..."
     git stash
+    # If someone copied a file onto the server without "git add", the same path may exist in
+    # a newer commit; git then aborts: "untracked working tree files would be overwritten".
+    # Remove *untracked* (not in index) non-ignored paths we know the repo now tracks.
+    for f in scripts/verify_fcm_service_account.py; do
+        if [ -e "\$f" ] && ! git ls-files --error-unmatch -- "\$f" >/dev/null 2>&1; then
+            if ! git check-ignore -q -- "\$f" 2>/dev/null; then
+                echo "  🧹 Removing untracked \$f so pull can add the tracked version..."
+                rm -f "\$f"
+            fi
+        fi
+    done
     git pull
     
     echo "🔧 Activating virtual environment..."
