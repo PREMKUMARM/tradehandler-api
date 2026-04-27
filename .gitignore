@@ -6,7 +6,7 @@ __pycache__/
 # C extensions
 *.so
 
-data
+data/
 
 # Distribution / packaging
 .Python
@@ -160,6 +160,7 @@ cython_debug/
 *.db
 
 access_token.txt
+config/access_token.txt
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

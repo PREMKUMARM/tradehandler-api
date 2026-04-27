@@ -18,7 +18,9 @@ import os
 import uuid
 
 from utils.logger import log_info, log_error, log_warning, log_debug
+
 from services.telegram_service import telegram_service, TelegramNotification
+from services.push.push_service import push_service
 
 
 def _utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
@@ -712,6 +714,34 @@ class TelegramScheduler:
             log_warning(
                 "Telegram notification was not sent. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env."
             )
+
+        # Mirror scheduled Telegram notifications to mobile push (best-effort).
+        # This is useful for "market open analysis" style scheduled messages.
+        try:
+            if os.getenv("TELEGRAM_MIRROR_PUSH_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on"):
+                if push_service.configured():
+                    user_id = os.getenv("TELEGRAM_MIRROR_PUSH_USER_ID", "default").strip() or "default"
+                    title = (notification.title or "AlgoFeast").strip()[:120] or "AlgoFeast"
+                    body_raw = (notification.message or "").strip()
+                    # Telegram uses Markdown; push should be plain text.
+                    body = re.sub(r"[*_`]", "", body_raw)
+                    # Keep within typical push payload sizes (client-side truncation also exists).
+                    if len(body) > 800:
+                        body = body[:797] + "..."
+                    asyncio.create_task(
+                        push_service.send_to_user(
+                            user_id=user_id,
+                            title=title,
+                            body=body or "(no message)",
+                            data={
+                                "type": "telegram_mirror",
+                                "category": str(getattr(notification, "category", "") or ""),
+                                "priority": str(getattr(notification, "priority", "") or ""),
+                            },
+                        )
+                    )
+        except Exception as e:
+            log_warning(f"Telegram->Push mirror skipped: {e}")
 
     async def _send_custom_message(self, task: ScheduledTask, config: Dict[str, Any]):
         """Send custom message"""
