@@ -238,6 +238,8 @@ async def startup_event():
         asyncio.create_task(run_kite_login_reminder_loop())
     except Exception as e:
         log_error(f"[Startup] Kite login push reminder task failed (API still starting): {e}")
+
+    # NIFTY50 5m upper-wick rejection alert is registered on ticker ticks below.
     
     try:
         import mcp
@@ -290,6 +292,14 @@ async def startup_event():
     # Start Kite ticker WebSocket listener (market hours aware)
     from utils.kite_websocket_ticker import manage_kite_ticker_market_hours
     asyncio.create_task(manage_kite_ticker_market_hours())
+
+    # NIFTY 5m candle alerts using ticker ticks (must be registered on main loop)
+    try:
+        from services.push.nifty_ticker_candle_alerts import register_nifty_5m_rejection_alerts
+
+        register_nifty_5m_rejection_alerts(asyncio.get_running_loop())
+    except Exception as e:
+        log_error(f"[Startup] NIFTY 5m tick candle alert registration failed: {e}")
 
 # Simulation state and helpers moved to simulation/ module
 

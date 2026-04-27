@@ -79,6 +79,15 @@ if [ -n "$FCM_SERVICE_ACCOUNT_JSON_VAL" ]; then
     fi
 fi
 
+# If you have generated a newer key file locally (different filename), you can point the deploy
+# at it and still keep the remote filename stable via FCM_SERVICE_ACCOUNT_JSON in .env.
+# This copies the CONTENTS of the new key to the server path expected by the API.
+FCM_JSON_LOCAL_SOURCE_PATH="$FCM_JSON_LOCAL_PATH"
+FCM_JSON_LOCAL_PREFERRED="$REPO_ROOT/algofeast-notify-firebase-adminsdk-fbsvc-1d9ac17cd0.json"
+if [ -f "$FCM_JSON_LOCAL_PREFERRED" ]; then
+    FCM_JSON_LOCAL_SOURCE_PATH="$FCM_JSON_LOCAL_PREFERRED"
+fi
+
 if [ -n "$FCM_SERVICE_ACCOUNT_JSON_VAL" ]; then
     if [ ! -f "$FCM_JSON_LOCAL_PATH" ]; then
         echo "  ⚠️  FCM service account JSON not found at: $FCM_JSON_LOCAL_PATH"
@@ -163,11 +172,11 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
 EOF
 
 # Copy Firebase service account JSON to EC2 (secret file; should NOT be in git)
-if [ -n "$FCM_JSON_LOCAL_PATH" ] && [ -f "$FCM_JSON_LOCAL_PATH" ]; then
+if [ -n "$FCM_JSON_LOCAL_SOURCE_PATH" ] && [ -f "$FCM_JSON_LOCAL_SOURCE_PATH" ]; then
     echo "📤 Uploading Firebase service account JSON to EC2..."
     REMOTE_JSON_DIR="$REMOTE_API_PATH/$(dirname "$FCM_SERVICE_ACCOUNT_JSON_FOR_REMOTE")"
     ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" "mkdir -p \"$REMOTE_JSON_DIR\""
-    scp -i "$PEM_FILE" "$FCM_JSON_LOCAL_PATH" "$EC2_USER@$EC2_IP:$REMOTE_API_PATH/$FCM_SERVICE_ACCOUNT_JSON_FOR_REMOTE"
+    scp -i "$PEM_FILE" "$FCM_JSON_LOCAL_SOURCE_PATH" "$EC2_USER@$EC2_IP:$REMOTE_API_PATH/$FCM_SERVICE_ACCOUNT_JSON_FOR_REMOTE"
     echo "  ✓ Uploaded $FCM_SERVICE_ACCOUNT_JSON_FOR_REMOTE to $REMOTE_API_PATH/"
 else
     echo "  ⚠️  Skipping Firebase service account JSON upload (missing local file or unset FCM_SERVICE_ACCOUNT_JSON)"

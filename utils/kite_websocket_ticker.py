@@ -319,10 +319,10 @@ class KiteTickerListener:
             
             self._persist_ticks_to_db(ticks)
 
-            # Call user callback if provided (outside lock to avoid blocking)
+            # Call callbacks (outside lock to avoid blocking)
+            _dispatch_tick_callbacks(ticks)
             if self.callback:
                 try:
-                    # Run callback in a way that won't block
                     self.callback(ticks)
                 except Exception as e:
                     log_error(f"[Kite Ticker] Callback error: {e}")
@@ -546,6 +546,34 @@ _reconnect_requested = threading.Event()
 # After Kite rejects credentials, stop calling profile() until token/API key changes or user saves a new token.
 _paused_for_invalid_token: bool = False
 _invalid_token_fingerprint: Optional[str] = None
+
+# Tick callback registry (used by other subsystems, e.g. push alerts)
+_tick_callbacks: List[Callable[[List[Dict]], None]] = []
+
+
+def register_tick_callback(cb: Callable[[List[Dict]], None]) -> None:
+    """Register a non-blocking callback to receive raw tick batches."""
+    if cb in _tick_callbacks:
+        return
+    _tick_callbacks.append(cb)
+
+
+def unregister_tick_callback(cb: Callable[[List[Dict]], None]) -> None:
+    try:
+        _tick_callbacks.remove(cb)
+    except ValueError:
+        pass
+
+
+def _dispatch_tick_callbacks(ticks: List[Dict]) -> None:
+    if not ticks or not _tick_callbacks:
+        return
+    # Defensive copy in case callbacks mutate registry
+    for cb in list(_tick_callbacks):
+        try:
+            cb(ticks)
+        except Exception as e:
+            log_error(f"[Kite Ticker] Tick callback error: {e}")
 
 
 def notify_kite_access_token_updated():

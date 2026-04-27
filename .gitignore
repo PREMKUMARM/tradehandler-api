@@ -130,6 +130,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Firebase service account keys (never commit)
+algofeast-notify-firebase-adminsdk-fbsvc-1d9ac17cd0.json
+
 # Spyder project settings
 .spyderproject
 .spyproject
