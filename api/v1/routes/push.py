@@ -10,6 +10,12 @@ from services.push.market_open_gap_alert import (
     next_run_info as market_open_gap_next_run_info,
     send_market_open_gap_alert,
 )
+from services.push.nifty_orb_signal import (
+    force_test_send as orb_force_test_send,
+    get_state_snapshot as orb_get_state_snapshot,
+    preview_signal as orb_preview_signal,
+    reset_day_state as orb_reset_day_state,
+)
 from services.push.push_service import push_service
 
 
@@ -210,4 +216,48 @@ async def test_market_open_gap() -> dict:
         raise HTTPException(status_code=503, detail="FCM is not configured on this server")
     result = await send_market_open_gap_alert(retries=1)
     return {"data": result}
+
+
+# --- NIFTY 15m Opening-Range-Breakout signal (push-only) ---
+
+
+class OrbTestRequest(BaseModel):
+    direction: str = Field(default="LONG", description="LONG or SHORT")
+
+
+@router.get("/orb-signal")
+async def get_orb_signal_state() -> dict:
+    """Today's ORB state + config + readiness info."""
+    return {"data": orb_get_state_snapshot()}
+
+
+@router.get("/orb-signal/preview")
+async def preview_orb_signal(direction: str = "LONG") -> dict:
+    """
+    Compose (but do NOT send) the would-be ORB push using current spot. If OR
+    hasn't been built yet, the preview synthesizes a plausible OR around spot
+    just so the UI can render the formatting.
+    """
+    return {"data": orb_preview_signal(direction_override=direction)}
+
+
+@router.post("/orb-signal/test")
+async def test_orb_signal(req: OrbTestRequest) -> dict:
+    """
+    Compose AND send a synthetic ORB push immediately to every registered user.
+    Useful to verify the end-to-end push pipeline.
+    """
+    if not push_service.configured():
+        raise HTTPException(status_code=503, detail="FCM is not configured on this server")
+    result = await orb_force_test_send(direction=req.direction)
+    return {"data": result}
+
+
+@router.post("/orb-signal/reset")
+async def reset_orb_signal_day() -> dict:
+    """
+    Manually reset today's ORB state (clears OR, signal-fired flag, etc.). Handy
+    while testing — does NOT cancel any past push.
+    """
+    return {"data": orb_reset_day_state()}
 

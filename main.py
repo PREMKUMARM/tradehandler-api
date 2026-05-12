@@ -311,6 +311,14 @@ async def startup_event():
     except Exception as e:
         log_error(f"[Startup] NIFTY 5m tick candle alert registration failed: {e}")
 
+    # NIFTY 15m Opening-Range-Breakout signal (push-only) — off by NIFTY_ORB_SIGNAL_ENABLED=0
+    try:
+        from services.push.nifty_orb_signal import register_nifty_orb_signal
+
+        register_nifty_orb_signal(asyncio.get_running_loop())
+    except Exception as e:
+        log_error(f"[Startup] NIFTY ORB signal registration failed: {e}")
+
 # Simulation state and helpers moved to simulation/ module
 
 # Legacy endpoint removed - use /api/v1/simulation/live-logs instead
