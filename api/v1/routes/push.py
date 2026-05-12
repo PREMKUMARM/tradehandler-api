@@ -5,6 +5,11 @@ from pydantic import BaseModel, Field
 
 from database.repositories import get_kite_push_reminder_repository, get_push_device_repository
 from services.push.kite_reminder_config import get_merged_config, next_run_payload
+from services.push.market_open_gap_alert import (
+    compute_gap_alert,
+    next_run_info as market_open_gap_next_run_info,
+    send_market_open_gap_alert,
+)
 from services.push.push_service import push_service
 
 
@@ -155,4 +160,54 @@ async def test_kite_reminder() -> dict:
         results["sent"] += r.get("sent", 0)
         results["failed"] += r.get("failed", 0)
     return {"data": results}
+
+
+# --- Market-open NIFTY gap alert (FCM) ---
+
+
+@router.get("/market-open-gap")
+async def get_market_open_gap_info() -> dict:
+    """
+    Schedule + readiness info for the market-open gap push alert.
+    Useful for surfacing 'next run' in the UI.
+    """
+    return {"data": market_open_gap_next_run_info()}
+
+
+@router.get("/market-open-gap/preview")
+async def preview_market_open_gap() -> dict:
+    """
+    Compute (but do NOT send) the current gap alert payload — handy for verifying
+    what a fresh push would look like at any time, including outside market hours
+    (in which case 'open' may be yesterday's open).
+    """
+    if not push_service.configured():
+        raise HTTPException(status_code=503, detail="FCM is not configured on this server")
+    result = await compute_gap_alert(retries=1)
+    if result is None:
+        return {
+            "data": {
+                "available": False,
+                "reason": "Quote/open price not available yet (likely holiday or pre-open).",
+            }
+        }
+    return {
+        "data": {
+            "available": True,
+            "title": result.title,
+            "body": result.body,
+            "payload": result.data,
+        }
+    }
+
+
+@router.post("/market-open-gap/test")
+async def test_market_open_gap() -> dict:
+    """
+    Trigger a market-open NIFTY gap push immediately to every registered user.
+    """
+    if not push_service.configured():
+        raise HTTPException(status_code=503, detail="FCM is not configured on this server")
+    result = await send_market_open_gap_alert(retries=1)
+    return {"data": result}
 

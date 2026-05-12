@@ -241,6 +241,14 @@ async def startup_event():
     except Exception as e:
         log_error(f"[Startup] Kite login push reminder task failed (API still starting): {e}")
 
+    # Weekday market-open NIFTY gap alert (FCM) — off by MARKET_OPEN_GAP_ALERT_ENABLED=0
+    try:
+        from services.push.market_open_gap_alert import run_market_open_gap_alert_loop
+
+        asyncio.create_task(run_market_open_gap_alert_loop())
+    except Exception as e:
+        log_error(f"[Startup] Market-open gap alert task failed (API still starting): {e}")
+
     # NIFTY50 5m upper-wick rejection alert is registered on ticker ticks below.
     
     try:
