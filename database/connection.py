@@ -296,9 +296,38 @@ class DatabaseConnection:
                 push_sent INTEGER DEFAULT 0,
                 push_failed INTEGER DEFAULT 0,
                 push_reason TEXT,
-                is_test INTEGER DEFAULT 0
+                is_test INTEGER DEFAULT 0,
+                order_placed INTEGER DEFAULT 0,
+                order_mode TEXT,
+                order_id TEXT,
+                sl_order_id TEXT,
+                target_order_id TEXT,
+                order_error TEXT,
+                order_skipped_reason TEXT
             )
         ''')
+
+        # Idempotent column additions so legacy DBs pick up the auto-trade columns
+        # without needing a fresh schema.
+        try:
+            cursor.execute("PRAGMA table_info(strategy_alerts)")
+            existing_cols = {row[1] for row in cursor.fetchall()}
+            for col_decl in (
+                "order_placed INTEGER DEFAULT 0",
+                "order_mode TEXT",
+                "order_id TEXT",
+                "sl_order_id TEXT",
+                "target_order_id TEXT",
+                "order_error TEXT",
+                "order_skipped_reason TEXT",
+            ):
+                col_name = col_decl.split()[0]
+                if col_name not in existing_cols:
+                    cursor.execute(f"ALTER TABLE strategy_alerts ADD COLUMN {col_decl}")
+        except Exception:
+            # If the table doesn't exist yet (very first boot) the CREATE above already
+            # added the columns — nothing else to do.
+            pass
 
         # Create indexes for better performance
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_agent_logs_timestamp ON agent_logs(timestamp)')

@@ -689,6 +689,8 @@ class StrategyAlertRepository:
         "risk_inr", "reward_inr", "lot_size", "num_lots",
         "confidence", "payload_json",
         "push_sent", "push_failed", "push_reason", "is_test",
+        "order_placed", "order_mode", "order_id", "sl_order_id",
+        "target_order_id", "order_error", "order_skipped_reason",
     )
 
     @staticmethod
@@ -719,6 +721,7 @@ class StrategyAlertRepository:
         push_failed: int = 0,
         push_reason: Optional[str] = None,
         is_test: bool = False,
+        order_result: Optional[Dict[str, Any]] = None,
     ) -> Optional[int]:
         """Insert one alert row. Returns the new row id, or None on error."""
         try:
@@ -728,6 +731,7 @@ class StrategyAlertRepository:
             # `data` payloads must all be strings).
             strategy = str(payload.get("strategy") or payload.get("type") or "unknown")
             direction = str(payload.get("direction") or "")
+            order_result = order_result or {}
             row = (
                 now,
                 strategy,
@@ -758,6 +762,13 @@ class StrategyAlertRepository:
                 int(push_failed),
                 push_reason,
                 1 if is_test else 0,
+                1 if order_result.get("placed") else 0,
+                str(order_result.get("mode") or "") or None,
+                str(order_result.get("order_id") or "") or None,
+                str(order_result.get("sl_order_id") or "") or None,
+                str(order_result.get("target_order_id") or "") or None,
+                str(order_result.get("error") or "") or None,
+                str(order_result.get("skipped_reason") or "") or None,
             )
             query = (
                 "INSERT INTO strategy_alerts "
@@ -768,8 +779,11 @@ class StrategyAlertRepository:
                 " entry_premium, sl_premium, target_premium, premium_estimated, "
                 " risk_inr, reward_inr, lot_size, num_lots, "
                 " confidence, payload_json, "
-                " push_sent, push_failed, push_reason, is_test) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " push_sent, push_failed, push_reason, is_test, "
+                " order_placed, order_mode, order_id, sl_order_id, "
+                " target_order_id, order_error, order_skipped_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             cur = db.execute_query(query, row)
             db.commit()

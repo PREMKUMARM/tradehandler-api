@@ -18,11 +18,53 @@ from database.repositories import get_strategy_alert_repository
 from utils.logger import log_warning
 
 
+def augment_payload_with_order(
+    payload: Dict[str, Any],
+    order_result: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Append broker order info to a composed push payload (``title/body/data``).
+
+    The strategy modules call this *after* :func:`place_strategy_order` so the
+    push message visible on the user's phone includes the broker order id and
+    mode (paper / live), and so the same fields end up on the audit row.
+    """
+    if not order_result or not isinstance(payload, dict):
+        return payload
+    if not order_result.get("placed"):
+        # Even when no order was placed, surface skipped_reason in the payload so
+        # the UI can show why (kill switch, auto_trade_disabled, etc.).
+        reason = order_result.get("skipped_reason") or order_result.get("error")
+        if reason:
+            new = dict(payload)
+            new_data = dict(new.get("data") or {})
+            new_data["auto_order_skipped"] = str(reason)
+            new["data"] = new_data
+            return new
+        return payload
+
+    new = dict(payload)
+    new_data = dict(new.get("data") or {})
+    new_data["order_id"] = str(order_result.get("order_id") or "")
+    new_data["order_mode"] = str(order_result.get("mode") or "")
+    if order_result.get("sl_order_id"):
+        new_data["sl_order_id"] = str(order_result["sl_order_id"])
+    if order_result.get("target_order_id"):
+        new_data["target_order_id"] = str(order_result["target_order_id"])
+    new["data"] = new_data
+
+    # Append a one-liner to the human-visible body so the push itself shows
+    # the broker order id.
+    suffix = f"\nOrder: {order_result.get('order_id')} ({order_result.get('mode')})"
+    new["body"] = (new.get("body") or "") + suffix
+    return new
+
+
 def save_strategy_alert(
     payload: Dict[str, Any],
     dispatch_result: Optional[Dict[str, Any]] = None,
     *,
     is_test: bool = False,
+    order_result: Optional[Dict[str, Any]] = None,
 ) -> Optional[int]:
     """Persist one alert and return the row id (or None on failure).
 
@@ -34,6 +76,11 @@ def save_strategy_alert(
             May be ``None`` if the alert was composed but never dispatched.
         is_test: ``True`` when the alert was triggered from the UI's
             "Send test push" button so it can be filtered out of live history.
+        order_result: optional output from
+            :func:`services.strategy_auto_trader.place_strategy_order` —
+            ``{placed, mode, order_id, sl_order_id, target_order_id, error,
+            skipped_reason}``. When provided it is persisted alongside the push
+            so the UI can show what (if anything) was actually traded.
     """
 
     try:
@@ -59,6 +106,7 @@ def save_strategy_alert(
             push_failed=failed,
             push_reason=reason,
             is_test=is_test,
+            order_result=order_result,
         )
     except Exception as e:  # noqa: BLE001
         log_warning(f"[StrategyAlertLogger] save failed: {e}")

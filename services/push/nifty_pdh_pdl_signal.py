@@ -32,7 +32,8 @@ from services.push.option_contract_resolver import (
     estimate_option_leg,
 )
 from services.push.push_service import push_service
-from services.push.strategy_alert_logger import save_strategy_alert
+from services.push.strategy_alert_logger import augment_payload_with_order, save_strategy_alert
+from services.strategy_auto_trader import place_strategy_order
 from utils.kite_utils import get_kite_instance
 from utils.logger import log_error, log_info, log_warning
 
@@ -522,10 +523,13 @@ def _on_ticks_batch(ticks: List[Dict]) -> None:
 
 
 async def _dispatch_push(p: Dict[str, Any], *, is_test: bool = False) -> Dict[str, Any]:
+    order_result = await place_strategy_order(p["data"], is_test=is_test)
+    p = augment_payload_with_order(p, order_result)
+
     if not push_service.configured():
         log_warning("[PDH/PDL] FCM not configured; skipping send.")
-        result = {"sent": 0, "failed": 0, "reason": "fcm_not_configured"}
-        alert_id = save_strategy_alert(p, result, is_test=is_test)
+        result = {"sent": 0, "failed": 0, "reason": "fcm_not_configured", "order": order_result}
+        alert_id = save_strategy_alert(p, result, is_test=is_test, order_result=order_result)
         if alert_id is not None:
             result["alert_id"] = alert_id
         return result
@@ -538,13 +542,25 @@ async def _dispatch_push(p: Dict[str, Any], *, is_test: bool = False) -> Dict[st
         user_ids = repo.list_distinct_user_ids() or []
     if not user_ids:
         log_info("[PDH/PDL] No registered devices.")
-        result = {"sent": 0, "failed": 0, "reason": "no_devices", "payload": p["data"]}
-        alert_id = save_strategy_alert(p, result, is_test=is_test)
+        result = {
+            "sent": 0,
+            "failed": 0,
+            "reason": "no_devices",
+            "payload": p["data"],
+            "order": order_result,
+        }
+        alert_id = save_strategy_alert(p, result, is_test=is_test, order_result=order_result)
         if alert_id is not None:
             result["alert_id"] = alert_id
         return result
 
-    totals: Dict[str, Any] = {"sent": 0, "failed": 0, "per_user": {}, "payload": p["data"]}
+    totals: Dict[str, Any] = {
+        "sent": 0,
+        "failed": 0,
+        "per_user": {},
+        "payload": p["data"],
+        "order": order_result,
+    }
     for uid in user_ids:
         try:
             r = await push_service.send_to_user(
@@ -561,7 +577,7 @@ async def _dispatch_push(p: Dict[str, Any], *, is_test: bool = False) -> Dict[st
         f"[PDH/PDL] dispatched: users={len(user_ids)} sent={totals['sent']} "
         f"failed={totals['failed']} title={p['title']!r}"
     )
-    alert_id = save_strategy_alert(p, totals, is_test=is_test)
+    alert_id = save_strategy_alert(p, totals, is_test=is_test, order_result=order_result)
     if alert_id is not None:
         totals["alert_id"] = alert_id
     return totals
