@@ -319,6 +319,22 @@ async def startup_event():
     except Exception as e:
         log_error(f"[Startup] NIFTY ORB signal registration failed: {e}")
 
+    # NIFTY 9-EMA Pullback signal (push-only) — off by NIFTY_EMA_SIGNAL_ENABLED=0
+    try:
+        from services.push.nifty_ema_pullback_signal import register_nifty_ema_signal
+
+        register_nifty_ema_signal(asyncio.get_running_loop())
+    except Exception as e:
+        log_error(f"[Startup] NIFTY 9-EMA pullback signal registration failed: {e}")
+
+    # NIFTY PDH/PDL Breakout signal (push-only) — off by NIFTY_PDH_PDL_SIGNAL_ENABLED=0
+    try:
+        from services.push.nifty_pdh_pdl_signal import register_nifty_pdh_pdl_signal
+
+        register_nifty_pdh_pdl_signal(asyncio.get_running_loop())
+    except Exception as e:
+        log_error(f"[Startup] NIFTY PDH/PDL signal registration failed: {e}")
+
 # Simulation state and helpers moved to simulation/ module
 
 # Legacy endpoint removed - use /api/v1/simulation/live-logs instead

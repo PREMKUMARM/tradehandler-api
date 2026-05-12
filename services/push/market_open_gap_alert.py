@@ -237,6 +237,7 @@ def _build_message(g: Dict[str, Any]) -> GapResult:
 
     data: Dict[str, str] = {
         "type": "market_open_gap_alert",
+        "strategy": "market_open_gap",
         "source": "algofeast_backend",
         "instrument": short_sym,
         "direction": direction,
@@ -351,11 +352,15 @@ async def compute_gap_alert(*, retries: Optional[int] = None) -> Optional[GapRes
     return None
 
 
-async def send_market_open_gap_alert(*, retries: Optional[int] = None) -> Dict[str, Any]:
+async def send_market_open_gap_alert(
+    *, retries: Optional[int] = None, is_test: bool = False
+) -> Dict[str, Any]:
     """
     Compose + fan-out the market-open gap push to every registered user.
     Safe to call manually (e.g. from the /test endpoint).
     """
+    from services.push.strategy_alert_logger import save_strategy_alert
+
     if not push_service.configured():
         log_warning("[GapAlert] FCM not configured; skipping send.")
         return {"sent": 0, "failed": 0, "reason": "fcm_not_configured"}
@@ -367,9 +372,18 @@ async def send_market_open_gap_alert(*, retries: Optional[int] = None) -> Dict[s
 
     repo = get_push_device_repository()
     user_ids: List[str] = repo.list_distinct_user_ids()
+    payload_for_audit = {
+        "title": result.title,
+        "body": result.body,
+        "data": result.data,
+    }
     if not user_ids:
         log_info("[GapAlert] No registered push devices; nothing to send.")
-        return {"sent": 0, "failed": 0, "reason": "no_devices", "result": result.data}
+        out = {"sent": 0, "failed": 0, "reason": "no_devices", "result": result.data}
+        alert_id = save_strategy_alert(payload_for_audit, out, is_test=is_test)
+        if alert_id is not None:
+            out["alert_id"] = alert_id
+        return out
 
     totals: Dict[str, Any] = {"sent": 0, "failed": 0, "per_user": {}, "result": result.data}
     for uid in user_ids:
@@ -391,6 +405,9 @@ async def send_market_open_gap_alert(*, retries: Optional[int] = None) -> Dict[s
         f"[GapAlert] dispatched: users={len(user_ids)} sent={totals['sent']} "
         f"failed={totals['failed']} title={result.title!r}"
     )
+    alert_id = save_strategy_alert(payload_for_audit, totals, is_test=is_test)
+    if alert_id is not None:
+        totals["alert_id"] = alert_id
     return totals
 
 

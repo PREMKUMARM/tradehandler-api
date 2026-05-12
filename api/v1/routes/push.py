@@ -3,12 +3,22 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from database.repositories import get_kite_push_reminder_repository, get_push_device_repository
+from database.repositories import (
+    get_kite_push_reminder_repository,
+    get_push_device_repository,
+    get_strategy_alert_repository,
+)
 from services.push.kite_reminder_config import get_merged_config, next_run_payload
 from services.push.market_open_gap_alert import (
     compute_gap_alert,
     next_run_info as market_open_gap_next_run_info,
     send_market_open_gap_alert,
+)
+from services.push.nifty_ema_pullback_signal import (
+    force_test_send as ema_force_test_send,
+    get_state_snapshot as ema_get_state_snapshot,
+    preview_signal as ema_preview_signal,
+    reset_day_state as ema_reset_day_state,
 )
 from services.push.nifty_orb_signal import (
     force_test_send as orb_force_test_send,
@@ -16,6 +26,13 @@ from services.push.nifty_orb_signal import (
     preview_signal as orb_preview_signal,
     reset_day_state as orb_reset_day_state,
 )
+from services.push.nifty_pdh_pdl_signal import (
+    force_test_send as pdh_pdl_force_test_send,
+    get_state_snapshot as pdh_pdl_get_state_snapshot,
+    preview_signal as pdh_pdl_preview_signal,
+    reset_day_state as pdh_pdl_reset_day_state,
+)
+from services.push.option_contract_resolver import cache_state as option_resolver_state
 from services.push.push_service import push_service
 
 
@@ -214,7 +231,7 @@ async def test_market_open_gap() -> dict:
     """
     if not push_service.configured():
         raise HTTPException(status_code=503, detail="FCM is not configured on this server")
-    result = await send_market_open_gap_alert(retries=1)
+    result = await send_market_open_gap_alert(retries=1, is_test=True)
     return {"data": result}
 
 
@@ -260,4 +277,136 @@ async def reset_orb_signal_day() -> dict:
     while testing — does NOT cancel any past push.
     """
     return {"data": orb_reset_day_state()}
+
+
+# --- NIFTY 9-EMA Pullback signal (push-only) ---
+
+
+class StrategyTestRequest(BaseModel):
+    direction: str = Field(default="LONG", description="LONG or SHORT")
+
+
+@router.get("/ema-signal")
+async def get_ema_signal_state() -> dict:
+    return {"data": ema_get_state_snapshot()}
+
+
+@router.get("/ema-signal/preview")
+async def preview_ema_signal(direction: str = "LONG") -> dict:
+    return {"data": ema_preview_signal(direction_override=direction)}
+
+
+@router.post("/ema-signal/test")
+async def test_ema_signal(req: StrategyTestRequest) -> dict:
+    if not push_service.configured():
+        raise HTTPException(status_code=503, detail="FCM is not configured on this server")
+    return {"data": await ema_force_test_send(direction=req.direction)}
+
+
+@router.post("/ema-signal/reset")
+async def reset_ema_signal_day() -> dict:
+    return {"data": ema_reset_day_state()}
+
+
+# --- NIFTY PDH/PDL Breakout signal (push-only) ---
+
+
+@router.get("/pdh-pdl-signal")
+async def get_pdh_pdl_signal_state() -> dict:
+    return {"data": pdh_pdl_get_state_snapshot()}
+
+
+@router.get("/pdh-pdl-signal/preview")
+async def preview_pdh_pdl_signal(direction: str = "LONG") -> dict:
+    return {"data": pdh_pdl_preview_signal(direction_override=direction)}
+
+
+@router.post("/pdh-pdl-signal/test")
+async def test_pdh_pdl_signal(req: StrategyTestRequest) -> dict:
+    if not push_service.configured():
+        raise HTTPException(status_code=503, detail="FCM is not configured on this server")
+    return {"data": await pdh_pdl_force_test_send(direction=req.direction)}
+
+
+@router.post("/pdh-pdl-signal/reset")
+async def reset_pdh_pdl_signal_day() -> dict:
+    return {"data": pdh_pdl_reset_day_state()}
+
+
+# --- Option-contract resolver introspection ---
+
+
+@router.get("/option-resolver")
+async def get_option_resolver_state() -> dict:
+    """
+    Returns the current state of the NIFTY ATM CE/PE option-contract resolver
+    (expiry being targeted, number of strikes loaded, etc.). Useful for
+    debugging stale instruments cache.
+    """
+    return {"data": option_resolver_state()}
+
+
+# --- Strategy alert audit / tracking ---
+
+
+@router.get("/alerts")
+async def list_strategy_alerts(
+    strategy: Optional[str] = None,
+    direction: Optional[str] = None,
+    since: Optional[str] = None,
+    include_tests: bool = True,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """
+    Return the most recent push-strategy alerts persisted in the DB.
+
+    Query params:
+        strategy: filter by strategy id (`nifty_15m_orb`, `nifty_9ema_pullback`,
+                  `nifty_pdh_pdl_break`, `market_open_gap`, ...).
+        direction: 'LONG' / 'SHORT' / 'UP' / 'DOWN' / 'FLAT'.
+        since: ISO timestamp; only alerts at/after this time.
+        include_tests: when False, exclude alerts triggered by the UI test buttons.
+        limit, offset: pagination (default 50 / 0).
+    """
+    repo = get_strategy_alert_repository()
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    return {
+        "data": {
+            "items": repo.list(
+                strategy=strategy,
+                direction=direction,
+                since=since,
+                include_tests=include_tests,
+                limit=limit,
+                offset=offset,
+            ),
+            "limit": limit,
+            "offset": offset,
+        }
+    }
+
+
+@router.get("/alerts/stats")
+async def strategy_alert_stats(since: Optional[str] = None) -> dict:
+    """Lightweight totals for the UI badge (since timestamp optional)."""
+    repo = get_strategy_alert_repository()
+    return {"data": repo.stats(since=since)}
+
+
+@router.get("/alerts/{alert_id}")
+async def get_strategy_alert(alert_id: int) -> dict:
+    repo = get_strategy_alert_repository()
+    row = repo.get(alert_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="alert not found")
+    return {"data": row}
+
+
+@router.delete("/alerts/{alert_id}")
+async def delete_strategy_alert(alert_id: int) -> dict:
+    repo = get_strategy_alert_repository()
+    ok = repo.delete(alert_id)
+    return {"data": {"ok": ok, "id": alert_id}}
 

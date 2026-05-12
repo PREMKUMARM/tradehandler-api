@@ -673,6 +673,214 @@ class ChatMessageRepository:
         )
 
 
+class StrategyAlertRepository:
+    """
+    Audit trail for intraday strategy push alerts (ORB, 9-EMA pullback,
+    PDH/PDL breakout, ...). One row per composed signal — regardless of
+    whether the FCM dispatch succeeded.
+    """
+
+    _FIELDS = (
+        "id", "created_at", "strategy", "direction", "title", "body",
+        "spot_entry", "spot_stop_loss", "spot_target",
+        "risk_points", "reward_points", "rr_ratio",
+        "atm_strike", "option_kind", "tradingsymbol", "expiry",
+        "entry_premium", "sl_premium", "target_premium", "premium_estimated",
+        "risk_inr", "reward_inr", "lot_size", "num_lots",
+        "confidence", "payload_json",
+        "push_sent", "push_failed", "push_reason", "is_test",
+    )
+
+    @staticmethod
+    def _to_float(v: Any) -> Optional[float]:
+        try:
+            if v is None or v == "":
+                return None
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _to_int(v: Any) -> Optional[int]:
+        try:
+            if v is None or v == "":
+                return None
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+
+    def save(
+        self,
+        *,
+        title: str,
+        body: str,
+        payload: Dict[str, Any],
+        push_sent: int = 0,
+        push_failed: int = 0,
+        push_reason: Optional[str] = None,
+        is_test: bool = False,
+    ) -> Optional[int]:
+        """Insert one alert row. Returns the new row id, or None on error."""
+        try:
+            db = get_database()
+            now = datetime.utcnow().isoformat()
+            # Pull standard fields from the strategy payload (string-typed since FCM
+            # `data` payloads must all be strings).
+            strategy = str(payload.get("strategy") or payload.get("type") or "unknown")
+            direction = str(payload.get("direction") or "")
+            row = (
+                now,
+                strategy,
+                direction,
+                title,
+                body,
+                self._to_float(payload.get("entry")),
+                self._to_float(payload.get("stop_loss")),
+                self._to_float(payload.get("target")),
+                self._to_float(payload.get("risk_points")),
+                self._to_float(payload.get("reward_points")),
+                self._to_float(payload.get("rr_ratio")),
+                self._to_int(payload.get("atm_strike")),
+                str(payload.get("option_kind") or "") or None,
+                str(payload.get("tradingsymbol") or "") or None,
+                str(payload.get("expiry") or "") or None,
+                self._to_float(payload.get("entry_premium")),
+                self._to_float(payload.get("sl_premium")),
+                self._to_float(payload.get("target_premium")),
+                1 if str(payload.get("premium_estimated") or "0") == "1" else 0,
+                self._to_float(payload.get("risk_inr")),
+                self._to_float(payload.get("reward_inr")),
+                self._to_int(payload.get("lot_size")),
+                self._to_int(payload.get("num_lots")),
+                self._to_int(payload.get("confidence")),
+                json.dumps(payload, default=str),
+                int(push_sent),
+                int(push_failed),
+                push_reason,
+                1 if is_test else 0,
+            )
+            query = (
+                "INSERT INTO strategy_alerts "
+                "(created_at, strategy, direction, title, body, "
+                " spot_entry, spot_stop_loss, spot_target, "
+                " risk_points, reward_points, rr_ratio, "
+                " atm_strike, option_kind, tradingsymbol, expiry, "
+                " entry_premium, sl_premium, target_premium, premium_estimated, "
+                " risk_inr, reward_inr, lot_size, num_lots, "
+                " confidence, payload_json, "
+                " push_sent, push_failed, push_reason, is_test) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            cur = db.execute_query(query, row)
+            db.commit()
+            return int(cur.lastrowid) if cur.lastrowid else None
+        except Exception as e:  # noqa: BLE001
+            print(f"Error saving strategy alert: {e}")
+            return None
+
+    def list(
+        self,
+        *,
+        strategy: Optional[str] = None,
+        direction: Optional[str] = None,
+        since: Optional[str] = None,
+        include_tests: bool = True,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        try:
+            db = get_database()
+            where: List[str] = []
+            params: List[Any] = []
+            if strategy:
+                where.append("strategy = ?")
+                params.append(strategy)
+            if direction:
+                where.append("direction = ?")
+                params.append(direction.upper())
+            if since:
+                where.append("created_at >= ?")
+                params.append(since)
+            if not include_tests:
+                where.append("is_test = 0")
+            sql = "SELECT * FROM strategy_alerts"
+            if where:
+                sql += " WHERE " + " AND ".join(where)
+            sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
+            cursor = db.execute_query(sql, tuple(params))
+            return [self._row_to_dict(r) for r in cursor.fetchall()]
+        except Exception as e:  # noqa: BLE001
+            print(f"Error listing strategy alerts: {e}")
+            return []
+
+    def get(self, alert_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            db = get_database()
+            cursor = db.execute_query(
+                "SELECT * FROM strategy_alerts WHERE id = ?", (int(alert_id),)
+            )
+            row = cursor.fetchone()
+            return self._row_to_dict(row) if row else None
+        except Exception as e:  # noqa: BLE001
+            print(f"Error fetching strategy alert: {e}")
+            return None
+
+    def delete(self, alert_id: int) -> bool:
+        try:
+            db = get_database()
+            db.execute_query(
+                "DELETE FROM strategy_alerts WHERE id = ?", (int(alert_id),)
+            )
+            db.commit()
+            return True
+        except Exception as e:  # noqa: BLE001
+            print(f"Error deleting strategy alert: {e}")
+            return False
+
+    def stats(self, *, since: Optional[str] = None) -> Dict[str, Any]:
+        """Lightweight rollup for the UI badge."""
+        try:
+            db = get_database()
+            where = "WHERE created_at >= ?" if since else ""
+            params = (since,) if since else ()
+            cursor = db.execute_query(
+                f"SELECT strategy, direction, COUNT(*) AS n, "
+                f" SUM(CASE WHEN is_test=1 THEN 1 ELSE 0 END) AS tests "
+                f"FROM strategy_alerts {where} GROUP BY strategy, direction",
+                params,
+            )
+            by_strategy_direction: List[Dict[str, Any]] = []
+            total = 0
+            tests = 0
+            for r in cursor.fetchall():
+                d = dict(r)
+                by_strategy_direction.append(d)
+                total += int(d.get("n") or 0)
+                tests += int(d.get("tests") or 0)
+            return {
+                "total": total,
+                "tests": tests,
+                "live": total - tests,
+                "by_strategy_direction": by_strategy_direction,
+            }
+        except Exception as e:  # noqa: BLE001
+            print(f"Error computing strategy alerts stats: {e}")
+            return {"total": 0, "tests": 0, "live": 0, "by_strategy_direction": []}
+
+    def _row_to_dict(self, row: Any) -> Dict[str, Any]:
+        d = dict(row)
+        # Parse payload_json so the UI can use a single dictionary.
+        if d.get("payload_json"):
+            try:
+                d["payload"] = json.loads(d["payload_json"])
+            except Exception:
+                d["payload"] = None
+        else:
+            d["payload"] = None
+        return d
+
+
 # Global repository instances
 _approval_repo: Optional[AgentApprovalRepository] = None
 _log_repo: Optional[AgentLogRepository] = None
@@ -682,6 +890,7 @@ _tool_repo: Optional[ToolExecutionRepository] = None
 _chat_repo: Optional[ChatMessageRepository] = None
 _push_device_repo: Optional[PushDeviceRepository] = None
 _kite_push_reminder_repo: Optional["KitePushReminderRepository"] = None
+_strategy_alert_repo: Optional["StrategyAlertRepository"] = None
 
 
 def get_approval_repository() -> AgentApprovalRepository:
@@ -744,3 +953,10 @@ def get_kite_push_reminder_repository() -> KitePushReminderRepository:
     if _kite_push_reminder_repo is None:
         _kite_push_reminder_repo = KitePushReminderRepository()
     return _kite_push_reminder_repo
+
+
+def get_strategy_alert_repository() -> StrategyAlertRepository:
+    global _strategy_alert_repo
+    if _strategy_alert_repo is None:
+        _strategy_alert_repo = StrategyAlertRepository()
+    return _strategy_alert_repo

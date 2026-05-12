@@ -262,6 +262,44 @@ class DatabaseConnection:
             )
         ''')
 
+        # Strategy push-alert audit trail (one row per signal that was composed,
+        # whether or not the FCM dispatch ultimately succeeded). Lets the UI track
+        # every ORB / 9-EMA / PDH-PDL alert the system has produced.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS strategy_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                spot_entry REAL,
+                spot_stop_loss REAL,
+                spot_target REAL,
+                risk_points REAL,
+                reward_points REAL,
+                rr_ratio REAL,
+                atm_strike INTEGER,
+                option_kind TEXT,
+                tradingsymbol TEXT,
+                expiry TEXT,
+                entry_premium REAL,
+                sl_premium REAL,
+                target_premium REAL,
+                premium_estimated INTEGER DEFAULT 0,
+                risk_inr REAL,
+                reward_inr REAL,
+                lot_size INTEGER,
+                num_lots INTEGER,
+                confidence INTEGER,
+                payload_json TEXT,
+                push_sent INTEGER DEFAULT 0,
+                push_failed INTEGER DEFAULT 0,
+                push_reason TEXT,
+                is_test INTEGER DEFAULT 0
+            )
+        ''')
+
         # Create indexes for better performance
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_agent_logs_timestamp ON agent_logs(timestamp)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_agent_logs_component ON agent_logs(component)')
@@ -269,6 +307,8 @@ class DatabaseConnection:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_agent_approvals_symbol ON agent_approvals(symbol)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_tool_executions_tool ON tool_executions(tool_name)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_strategy_alerts_created ON strategy_alerts(created_at DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_strategy_alerts_strategy ON strategy_alerts(strategy, created_at DESC)')
 
         # Kite ticker tick history (persisted from live WebSocket ticks)
         cursor.execute('''

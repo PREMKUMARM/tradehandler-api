@@ -1,22 +1,19 @@
 """
-NIFTY 50 — 15-minute Opening Range Breakout (ORB) signal, push-only.
+NIFTY 50 — Previous-Day High / Previous-Day Low (PDH/PDL) breakout signal.
 
-Strategy (deterministic, rule-based):
-  1. Build OR from the first 15 min of trading (09:15-09:30 IST).
-  2. Skip the day if OR-range is outside [MIN, MAX] points (too noisy / too quiet).
-  3. From OR-end until cutoff (default 13:30 IST), watch closing 5m candles.
-     LONG  signal: first 5m close > OR-high.
-     SHORT signal: first 5m close < OR-low.
-  4. Once a signal fires, no more signals that day.
-  5. Compose entry / SL / target on NIFTY spot using OR-range and the RR ratio.
-  6. Recommend an ATM weekly option leg (CE for LONG, PE for SHORT) and estimate
-     option premium move and ₹ P&L using a delta heuristic (default 0.5).
-  7. Send an FCM push to every registered device. NO ORDER IS PLACED.
+Strategy:
+  * On each new trading day, look up yesterday's daily candle and store PDH/PDL.
+  * After warm-up (default 09:30 IST), on every 5m candle close:
+      LONG : close > PDH AND body/range >= NIFTY_PDH_PDL_MIN_BODY_RATIO
+      SHORT: close < PDL AND body/range >= NIFTY_PDH_PDL_MIN_BODY_RATIO
+  * SL: PDH (long) / PDL (short) ± buffer.
+  * Target: RR × |entry - SL| (default 1.5).
+  * Once per direction per day (so you can still get a SHORT later in the day
+    if PDH bounce fails — but each direction only fires once).
+  * Cutoff (default 14:30 IST).
 
-This module hooks into the existing Kite ticker via `register_tick_callback(...)`,
-same pattern as `services/push/nifty_ticker_candle_alerts.py`. Tick callbacks run
-in the KiteTicker background thread, so all mutable state is guarded by a lock
-and the actual push send is scheduled onto the main asyncio loop.
+The push includes a real ATM CE/PE contract and live entry/SL/target premiums.
+No order is placed.
 """
 from __future__ import annotations
 
@@ -25,7 +22,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from zoneinfo import ZoneInfo
 
@@ -72,15 +69,13 @@ def _env_float(name: str, default: float) -> float:
 
 
 @dataclass(frozen=True)
-class OrbConfig:
+class PdhPdlConfig:
     enabled: bool
-    or_start: time
-    or_end: time
+    warmup: time
     cutoff: time
-    min_range_pts: float
-    max_range_pts: float
     rr_ratio: float
     sl_buffer_pts: float
+    min_body_ratio: float
     atm_step: int
     atm_delta: float
     lot_size: int
@@ -89,45 +84,33 @@ class OrbConfig:
     instrument_symbol: str
     user_id_override: Optional[str]
 
-    def or_start_dt(self, d: date) -> datetime:
-        return datetime.combine(d, self.or_start, tzinfo=IST)
 
-    def or_end_dt(self, d: date) -> datetime:
-        return datetime.combine(d, self.or_end, tzinfo=IST)
-
-    def cutoff_dt(self, d: date) -> datetime:
-        return datetime.combine(d, self.cutoff, tzinfo=IST)
-
-
-def _load_config() -> OrbConfig:
-    return OrbConfig(
-        enabled=_env_bool("NIFTY_ORB_SIGNAL_ENABLED", True),
-        or_start=time(
-            hour=_env_int("NIFTY_ORB_OR_START_HOUR", 9, 0, 23),
-            minute=_env_int("NIFTY_ORB_OR_START_MINUTE", 15, 0, 59),
-        ),
-        or_end=time(
-            hour=_env_int("NIFTY_ORB_OR_END_HOUR", 9, 0, 23),
-            minute=_env_int("NIFTY_ORB_OR_END_MINUTE", 30, 0, 59),
+def _load_config() -> PdhPdlConfig:
+    return PdhPdlConfig(
+        enabled=_env_bool("NIFTY_PDH_PDL_SIGNAL_ENABLED", True),
+        warmup=time(
+            hour=_env_int("NIFTY_PDH_PDL_WARMUP_HOUR", 9, 0, 23),
+            minute=_env_int("NIFTY_PDH_PDL_WARMUP_MINUTE", 30, 0, 59),
         ),
         cutoff=time(
-            hour=_env_int("NIFTY_ORB_CUTOFF_HOUR", 13, 0, 23),
-            minute=_env_int("NIFTY_ORB_CUTOFF_MINUTE", 30, 0, 59),
+            hour=_env_int("NIFTY_PDH_PDL_CUTOFF_HOUR", 14, 0, 23),
+            minute=_env_int("NIFTY_PDH_PDL_CUTOFF_MINUTE", 30, 0, 59),
         ),
-        min_range_pts=_env_float("NIFTY_ORB_MIN_RANGE_POINTS", 25.0),
-        max_range_pts=_env_float("NIFTY_ORB_MAX_RANGE_POINTS", 180.0),
-        rr_ratio=max(0.5, _env_float("NIFTY_ORB_RR_RATIO", 1.5)),
-        sl_buffer_pts=max(0.0, _env_float("NIFTY_ORB_SL_BUFFER_POINTS", 2.0)),
-        atm_step=_env_int("NIFTY_ORB_ATM_STEP", 50, 5, 500),
-        atm_delta=min(0.99, max(0.05, _env_float("NIFTY_ORB_ATM_DELTA", 0.5))),
-        lot_size=_env_int("NIFTY_ORB_LOT_SIZE", 75, 1, 10000),
-        num_lots=_env_int("NIFTY_ORB_NUM_LOTS", 1, 1, 1000),
-        instrument_token=_env_int("NIFTY_ORB_INSTRUMENT_TOKEN", 256265, 1, 2_000_000_000),
+        rr_ratio=max(0.5, _env_float("NIFTY_PDH_PDL_RR_RATIO", 1.5)),
+        sl_buffer_pts=max(0.0, _env_float("NIFTY_PDH_PDL_SL_BUFFER_POINTS", 3.0)),
+        min_body_ratio=min(0.95, max(0.0, _env_float("NIFTY_PDH_PDL_MIN_BODY_RATIO", 0.4))),
+        atm_step=_env_int("NIFTY_PDH_PDL_ATM_STEP", 50, 5, 500),
+        atm_delta=min(0.99, max(0.05, _env_float("NIFTY_PDH_PDL_ATM_DELTA", 0.5))),
+        lot_size=_env_int("NIFTY_PDH_PDL_LOT_SIZE", 75, 1, 10000),
+        num_lots=_env_int("NIFTY_PDH_PDL_NUM_LOTS", 1, 1, 1000),
+        instrument_token=_env_int(
+            "NIFTY_PDH_PDL_INSTRUMENT_TOKEN", 256265, 1, 2_000_000_000
+        ),
         instrument_symbol=(
-            os.getenv("NIFTY_ORB_INSTRUMENT_SYMBOL", "NSE:NIFTY 50").strip()
+            os.getenv("NIFTY_PDH_PDL_INSTRUMENT_SYMBOL", "NSE:NIFTY 50").strip()
             or "NSE:NIFTY 50"
         ),
-        user_id_override=(os.getenv("NIFTY_ORB_USER_ID") or "").strip() or None,
+        user_id_override=(os.getenv("NIFTY_PDH_PDL_USER_ID") or "").strip() or None,
     )
 
 
@@ -170,35 +153,33 @@ class Candle5m:
 @dataclass
 class DayState:
     day: Optional[date] = None
-    or_high: Optional[float] = None
-    or_low: Optional[float] = None
-    or_range: Optional[float] = None
-    or_built: bool = False
-    signal_fired: bool = False
-    signal_direction: Optional[str] = None  # 'LONG' | 'SHORT'
-    or_skip_reason: Optional[str] = None
-    last_price: Optional[float] = None
+    pdh: Optional[float] = None
+    pdl: Optional[float] = None
+    pdh_pdl_loaded: bool = False
+    pdh_pdl_loading: bool = False
+    pdh_pdl_error: Optional[str] = None
     cur_candle: Optional[Candle5m] = None
-    closed_candles_today: List[Candle5m] = field(default_factory=list)
+    closed_candles: int = 0
+    last_price: Optional[float] = None
+    fired_directions: Set[str] = field(default_factory=set)
 
 
 @dataclass
-class OrbSignal:
-    direction: str  # 'LONG' | 'SHORT'
+class PdhPdlSignal:
+    direction: str
     entry: float
     stop_loss: float
     target: float
     risk_points: float
     reward_points: float
     rr_ratio: float
-    or_high: float
-    or_low: float
-    or_range: float
+    pdh: float
+    pdl: float
     breakout_candle_start: datetime
     breakout_candle_close: float
-    confidence: int
+    body_ratio: float
     atm_strike: int
-    option_kind: str          # 'CE' | 'PE'
+    option_kind: str
     option_leg: OptionLegEstimate
     lot_size: int
     num_lots: int
@@ -213,100 +194,132 @@ _registered = False
 # ----------------------------- helpers -----------------------------
 
 
-def _ensure_day_state(now_ist: datetime, cfg: OrbConfig) -> None:
-    """Reset state at the start of a new trading day."""
+def _ensure_day_state(now_ist: datetime) -> bool:
     today = now_ist.astimezone(IST).date()
-    if _state.day != today:
+    new_day = _state.day != today
+    if new_day:
         _state.day = today
-        _state.or_high = None
-        _state.or_low = None
-        _state.or_range = None
-        _state.or_built = False
-        _state.signal_fired = False
-        _state.signal_direction = None
-        _state.or_skip_reason = None
-        _state.last_price = None
+        _state.pdh = None
+        _state.pdl = None
+        _state.pdh_pdl_loaded = False
+        _state.pdh_pdl_loading = False
+        _state.pdh_pdl_error = None
         _state.cur_candle = None
-        _state.closed_candles_today = []
-
-
-def _confidence_score(
-    *,
-    or_range: float,
-    breakout_time_ist: datetime,
-    breakout_candle: Candle5m,
-    direction: str,
-) -> int:
-    """Heuristic 'AI confidence' 1..10."""
-    score = 2  # base
-
-    # OR-range sweet spot
-    if 35 <= or_range <= 90:
-        score += 3
-    elif 25 <= or_range <= 150:
-        score += 1
-
-    # Time of breakout (earlier = stronger trend day potential)
-    hh = breakout_time_ist.hour
-    mm = breakout_time_ist.minute
-    minutes = hh * 60 + mm
-    if minutes <= 11 * 60:  # by 11:00
-        score += 3
-    elif minutes <= 12 * 60 + 30:  # by 12:30
-        score += 2
-    else:
-        score += 1
-
-    # Body strength of the breakout candle (close - open) vs range
-    rng = max(1e-6, breakout_candle.high - breakout_candle.low)
-    body = abs(breakout_candle.close - breakout_candle.open)
-    body_ratio = body / rng
-    if body_ratio >= 0.6:
-        score += 2
-    elif body_ratio >= 0.35:
-        score += 1
-
-    # Direction-consistent close (close on the right side of mid)
-    mid = (breakout_candle.high + breakout_candle.low) / 2.0
-    if direction == "LONG" and breakout_candle.close >= mid:
-        score += 1
-    elif direction == "SHORT" and breakout_candle.close <= mid:
-        score += 1
-
-    return max(1, min(10, int(score)))
+        _state.closed_candles = 0
+        _state.last_price = None
+        _state.fired_directions = set()
+    return new_day
 
 
 def _round_to_step(x: float, step: int) -> int:
     return int(round(x / step) * step)
 
 
+def _fetch_pdh_pdl_sync(cfg: PdhPdlConfig) -> Optional[Dict[str, float]]:
+    """
+    Pull yesterday's high/low via kite.historical_data() daily candles.
+    """
+    try:
+        kite = get_kite_instance()
+        end_date = date.today()
+        start_date = end_date - timedelta(days=10)
+        bars = kite.historical_data(
+            instrument_token=cfg.instrument_token,
+            from_date=start_date,
+            to_date=end_date,
+            interval="day",
+        ) or []
+    except Exception as e:  # noqa: BLE001
+        log_warning(f"[PDH/PDL] historical_data failed: {e}")
+        return None
+
+    today = date.today()
+    completed = []
+    for b in bars:
+        d = b.get("date")
+        if isinstance(d, datetime):
+            bd = d.date()
+        elif isinstance(d, date):
+            bd = d
+        else:
+            continue
+        if bd < today:
+            completed.append((bd, b))
+    if not completed:
+        return None
+    completed.sort(key=lambda t: t[0])
+    last_bar = completed[-1][1]
+    try:
+        return {
+            "pdh": float(last_bar.get("high") or 0.0),
+            "pdl": float(last_bar.get("low") or 0.0),
+            "prev_close": float(last_bar.get("close") or 0.0),
+            "prev_date": completed[-1][0].isoformat(),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+async def _load_pdh_pdl_async(cfg: PdhPdlConfig) -> None:
+    res = await asyncio.to_thread(_fetch_pdh_pdl_sync, cfg)
+    with _state_lock:
+        if res is None:
+            _state.pdh_pdl_loaded = False
+            _state.pdh_pdl_loading = False
+            _state.pdh_pdl_error = "yesterday's bar unavailable"
+            log_warning("[PDH/PDL] couldn't load PDH/PDL for today")
+            return
+        _state.pdh = res["pdh"]
+        _state.pdl = res["pdl"]
+        _state.pdh_pdl_loaded = True
+        _state.pdh_pdl_loading = False
+        _state.pdh_pdl_error = None
+        log_info(
+            f"[PDH/PDL] loaded for {_state.day}: PDH={_state.pdh:.2f} PDL={_state.pdl:.2f}"
+        )
+
+
+def _kick_pdh_pdl_load(cfg: PdhPdlConfig) -> None:
+    """Schedule the PDH/PDL fetch on the main loop (idempotent per day)."""
+    if _state.pdh_pdl_loaded or _state.pdh_pdl_loading:
+        return
+    if _loop is None:
+        return
+    _state.pdh_pdl_loading = True
+    try:
+        asyncio.run_coroutine_threadsafe(_load_pdh_pdl_async(cfg), _loop)
+    except Exception as e:  # noqa: BLE001
+        _state.pdh_pdl_loading = False
+        log_error(f"[PDH/PDL] failed to schedule load: {e}")
+
+
 def _build_signal(
     *,
-    cfg: OrbConfig,
+    cfg: PdhPdlConfig,
     direction: str,
-    or_high: float,
-    or_low: float,
+    pdh: float,
+    pdl: float,
     breakout_candle: Candle5m,
-) -> OrbSignal:
+) -> PdhPdlSignal:
     entry = breakout_candle.close
-    or_range = or_high - or_low
-
     if direction == "LONG":
-        stop_loss = or_low - cfg.sl_buffer_pts
+        stop_loss = pdh - cfg.sl_buffer_pts
         risk_pts = max(1e-6, entry - stop_loss)
         target = entry + cfg.rr_ratio * risk_pts
         option_kind = "CE"
     else:
-        stop_loss = or_high + cfg.sl_buffer_pts
+        stop_loss = pdl + cfg.sl_buffer_pts
         risk_pts = max(1e-6, stop_loss - entry)
         target = entry - cfg.rr_ratio * risk_pts
         option_kind = "PE"
 
-    reward_pts = abs(target - entry)
+    rng = max(1e-6, breakout_candle.high - breakout_candle.low)
+    body = abs(breakout_candle.close - breakout_candle.open)
+    body_ratio = body / rng
 
+    reward_pts = abs(target - entry)
     atm_strike = _round_to_step(entry, cfg.atm_step)
 
-    # Resolve the actual ATM CE/PE for this signal and project its SL/Target premium.
     option_leg = estimate_option_leg(
         spot_entry=entry,
         spot_stop_loss=stop_loss,
@@ -319,14 +332,7 @@ def _build_signal(
         name="NIFTY",
     )
 
-    confidence = _confidence_score(
-        or_range=or_range,
-        breakout_time_ist=breakout_candle.start.astimezone(IST),
-        breakout_candle=breakout_candle,
-        direction=direction,
-    )
-
-    return OrbSignal(
+    return PdhPdlSignal(
         direction=direction,
         entry=entry,
         stop_loss=stop_loss,
@@ -334,12 +340,11 @@ def _build_signal(
         risk_points=risk_pts,
         reward_points=reward_pts,
         rr_ratio=cfg.rr_ratio,
-        or_high=or_high,
-        or_low=or_low,
-        or_range=or_range,
+        pdh=pdh,
+        pdl=pdl,
         breakout_candle_start=breakout_candle.start,
         breakout_candle_close=breakout_candle.close,
-        confidence=confidence,
+        body_ratio=body_ratio,
         atm_strike=atm_strike,
         option_kind=option_kind,
         option_leg=option_leg,
@@ -348,11 +353,11 @@ def _build_signal(
     )
 
 
-def _compose_push(sig: OrbSignal) -> Dict[str, Any]:
+def _compose_push(sig: PdhPdlSignal) -> Dict[str, Any]:
     arrow = "▲" if sig.direction == "LONG" else "▼"
     title = (
-        f"NIFTY 15m ORB {sig.direction} {arrow} · "
-        f"conf {sig.confidence}/10 · R:R 1:{sig.rr_ratio:g}"
+        f"NIFTY {('PDH' if sig.direction == 'LONG' else 'PDL')} break {sig.direction} {arrow} · "
+        f"R:R 1:{sig.rr_ratio:g}"
     )
     leg = sig.option_leg
     qty = sig.lot_size * sig.num_lots
@@ -368,7 +373,7 @@ def _compose_push(sig: OrbSignal) -> Dict[str, Any]:
     lines = [
         f"Spot: Entry {_fmt_level(sig.entry)} · SL {_fmt_level(sig.stop_loss)} · Tgt {_fmt_level(sig.target)}",
         f"Spot risk {sig.risk_points:.0f} pts | reward {sig.reward_points:.0f} pts",
-        f"OR {_fmt_level(sig.or_low)}–{_fmt_level(sig.or_high)} ({sig.or_range:.0f} pts)",
+        f"PDH {_fmt_level(sig.pdh)} · PDL {_fmt_level(sig.pdl)} · body {sig.body_ratio:.0%}",
         f"Option leg (not placed): {option_label}",
         (
             f"Premium{est_tag}: Entry ₹{leg.entry_premium:.1f} · "
@@ -383,22 +388,20 @@ def _compose_push(sig: OrbSignal) -> Dict[str, Any]:
     body = "\n".join(lines)
 
     data: Dict[str, str] = {
-        "type": "nifty_orb_signal",
+        "type": "nifty_pdh_pdl_signal",
         "source": "algofeast_backend",
-        "strategy": "nifty_15m_orb",
+        "strategy": "nifty_pdh_pdl_break",
         "direction": sig.direction,
-        "confidence": str(sig.confidence),
         "rr_ratio": f"{sig.rr_ratio:.2f}",
         "entry": f"{sig.entry:.2f}",
         "stop_loss": f"{sig.stop_loss:.2f}",
         "target": f"{sig.target:.2f}",
         "risk_points": f"{sig.risk_points:.2f}",
         "reward_points": f"{sig.reward_points:.2f}",
-        "or_high": f"{sig.or_high:.2f}",
-        "or_low": f"{sig.or_low:.2f}",
-        "or_range": f"{sig.or_range:.2f}",
+        "pdh": f"{sig.pdh:.2f}",
+        "pdl": f"{sig.pdl:.2f}",
+        "body_ratio": f"{sig.body_ratio:.4f}",
         "breakout_close": f"{sig.breakout_candle_close:.2f}",
-        "breakout_candle_start": sig.breakout_candle_start.astimezone(IST).isoformat(),
         "atm_strike": str(sig.atm_strike),
         "option_kind": sig.option_kind,
         "lot_size": str(sig.lot_size),
@@ -411,60 +414,30 @@ def _compose_push(sig: OrbSignal) -> Dict[str, Any]:
 # ----------------------------- tick processing -----------------------------
 
 
-def _process_closed_candle(closed: Candle5m, cfg: OrbConfig) -> Optional[Dict[str, Any]]:
-    """
-    Called whenever a 5m candle has just *closed*. Updates OR if we're still in
-    OR-window, otherwise checks for breakout against an already-built OR.
-    Returns a composed-push dict on signal, else None.
-    """
+def _process_closed_candle(
+    closed: Candle5m, cfg: PdhPdlConfig
+) -> Optional[Dict[str, Any]]:
     cs = closed.start.astimezone(IST)
     today = cs.date()
-    or_start = cfg.or_start_dt(today)
-    or_end = cfg.or_end_dt(today)
-    cutoff = cfg.cutoff_dt(today)
+    warmup = datetime.combine(today, cfg.warmup, tzinfo=IST)
+    cutoff = datetime.combine(today, cfg.cutoff, tzinfo=IST)
+    _state.closed_candles += 1
 
-    # During OR window (candles whose start time is in [or_start, or_end))
-    if or_start <= cs < or_end:
-        _state.closed_candles_today.append(closed)
+    if cs < warmup or cs >= cutoff:
+        return None
+    if not _state.pdh_pdl_loaded or _state.pdh is None or _state.pdl is None:
         return None
 
-    # First call AFTER the OR window — build OR if not yet built
-    if not _state.or_built and cs >= or_end:
-        bars = [c for c in _state.closed_candles_today if or_start <= c.start.astimezone(IST) < or_end]
-        if bars:
-            _state.or_high = max(b.high for b in bars)
-            _state.or_low = min(b.low for b in bars)
-            _state.or_range = _state.or_high - _state.or_low
-            _state.or_built = True
-            if _state.or_range < cfg.min_range_pts:
-                _state.or_skip_reason = (
-                    f"OR range {_state.or_range:.1f} < min {cfg.min_range_pts:.1f} — skipping day"
-                )
-                log_info(f"[ORB] {_state.or_skip_reason}")
-            elif _state.or_range > cfg.max_range_pts:
-                _state.or_skip_reason = (
-                    f"OR range {_state.or_range:.1f} > max {cfg.max_range_pts:.1f} — skipping day"
-                )
-                log_info(f"[ORB] {_state.or_skip_reason}")
-            else:
-                log_info(
-                    f"[ORB] OR built for {today}: high={_state.or_high:.2f} "
-                    f"low={_state.or_low:.2f} range={_state.or_range:.2f}"
-                )
-
-    # If OR not built or skipped, no further action this candle
-    if not _state.or_built or _state.or_skip_reason or _state.signal_fired:
+    rng = max(1e-6, closed.high - closed.low)
+    body = abs(closed.close - closed.open)
+    body_ratio = body / rng
+    if body_ratio < cfg.min_body_ratio:
         return None
 
-    # Past cutoff?
-    if cs >= cutoff:
-        return None
-
-    # Look for a breakout on this just-closed candle
     direction: Optional[str] = None
-    if _state.or_high is not None and closed.close > _state.or_high:
+    if closed.close > _state.pdh and "LONG" not in _state.fired_directions:
         direction = "LONG"
-    elif _state.or_low is not None and closed.close < _state.or_low:
+    elif closed.close < _state.pdl and "SHORT" not in _state.fired_directions:
         direction = "SHORT"
 
     if direction is None:
@@ -473,17 +446,15 @@ def _process_closed_candle(closed: Candle5m, cfg: OrbConfig) -> Optional[Dict[st
     sig = _build_signal(
         cfg=cfg,
         direction=direction,
-        or_high=float(_state.or_high or 0.0),
-        or_low=float(_state.or_low or 0.0),
+        pdh=float(_state.pdh or 0.0),
+        pdl=float(_state.pdl or 0.0),
         breakout_candle=closed,
     )
-    _state.signal_fired = True
-    _state.signal_direction = direction
+    _state.fired_directions.add(direction)
     return _compose_push(sig)
 
 
-def _update_candle(tick: Dict[str, Any], cfg: OrbConfig) -> Optional[Candle5m]:
-    """Aggregate ticks into 5m candles. Returns the *just-closed* candle if any."""
+def _update_candle(tick: Dict[str, Any], cfg: PdhPdlConfig) -> Optional[Candle5m]:
     ts = _tick_time(tick)
     lp = tick.get("last_price")
     if ts is None or lp is None:
@@ -494,7 +465,6 @@ def _update_candle(tick: Dict[str, Any], cfg: OrbConfig) -> Optional[Candle5m]:
         return None
 
     _state.last_price = price
-
     start = _floor_5m(ts)
     if _state.cur_candle is None:
         _state.cur_candle = Candle5m(start=start, open=price, high=price, low=price, close=price)
@@ -513,13 +483,8 @@ def _update_candle(tick: Dict[str, Any], cfg: OrbConfig) -> Optional[Candle5m]:
 
 
 def _on_ticks_batch(ticks: List[Dict]) -> None:
-    """
-    Runs in the KiteTicker thread — must not block. We update state under a lock,
-    then schedule the push send onto the main asyncio loop.
-    """
     if _loop is None:
         return
-
     cfg = _load_config()
     if not cfg.enabled:
         return
@@ -527,7 +492,10 @@ def _on_ticks_batch(ticks: List[Dict]) -> None:
     pushes: List[Dict[str, Any]] = []
     with _state_lock:
         now_ist = datetime.now(IST)
-        _ensure_day_state(now_ist, cfg)
+        _ensure_day_state(now_ist)
+        # Kick the PDH/PDL fetch ASAP on a new day.
+        if not _state.pdh_pdl_loaded and not _state.pdh_pdl_loading:
+            _kick_pdh_pdl_load(cfg)
 
         for t in ticks:
             try:
@@ -535,7 +503,6 @@ def _on_ticks_batch(ticks: List[Dict]) -> None:
                     continue
             except (TypeError, ValueError):
                 continue
-
             closed = _update_candle(t, cfg)
             if closed is None:
                 continue
@@ -548,7 +515,7 @@ def _on_ticks_batch(ticks: List[Dict]) -> None:
             fut = asyncio.run_coroutine_threadsafe(_dispatch_push(p), _loop)
             fut.add_done_callback(lambda f: f.exception())
         except Exception as e:  # noqa: BLE001
-            log_error(f"[ORB] failed to dispatch push: {e}")
+            log_error(f"[PDH/PDL] failed to dispatch push: {e}")
 
 
 # ----------------------------- push dispatch -----------------------------
@@ -556,7 +523,7 @@ def _on_ticks_batch(ticks: List[Dict]) -> None:
 
 async def _dispatch_push(p: Dict[str, Any], *, is_test: bool = False) -> Dict[str, Any]:
     if not push_service.configured():
-        log_warning("[ORB] FCM not configured; skipping send.")
+        log_warning("[PDH/PDL] FCM not configured; skipping send.")
         result = {"sent": 0, "failed": 0, "reason": "fcm_not_configured"}
         alert_id = save_strategy_alert(p, result, is_test=is_test)
         if alert_id is not None:
@@ -569,34 +536,30 @@ async def _dispatch_push(p: Dict[str, Any], *, is_test: bool = False) -> Dict[st
     else:
         repo = get_push_device_repository()
         user_ids = repo.list_distinct_user_ids() or []
-
     if not user_ids:
-        log_info("[ORB] No registered devices; nothing to send.")
+        log_info("[PDH/PDL] No registered devices.")
         result = {"sent": 0, "failed": 0, "reason": "no_devices", "payload": p["data"]}
         alert_id = save_strategy_alert(p, result, is_test=is_test)
         if alert_id is not None:
             result["alert_id"] = alert_id
         return result
 
-    title = p["title"]
-    body = p["body"]
-    data = p["data"]
-
-    totals: Dict[str, Any] = {"sent": 0, "failed": 0, "per_user": {}, "payload": data}
+    totals: Dict[str, Any] = {"sent": 0, "failed": 0, "per_user": {}, "payload": p["data"]}
     for uid in user_ids:
         try:
-            r = await push_service.send_to_user(user_id=uid, title=title, body=body, data=data)
+            r = await push_service.send_to_user(
+                user_id=uid, title=p["title"], body=p["body"], data=p["data"]
+            )
             totals["per_user"][uid] = r
             totals["sent"] += int(r.get("sent", 0))
             totals["failed"] += int(r.get("failed", 0))
         except Exception as e:  # noqa: BLE001
-            log_error(f"[ORB] send failed for user_id={uid!r}: {e}")
+            log_error(f"[PDH/PDL] send failed for user_id={uid!r}: {e}")
             totals["failed"] += 1
             totals["per_user"][uid] = {"sent": 0, "failed": 1, "errors": [str(e)]}
-
     log_info(
-        f"[ORB] dispatched: users={len(user_ids)} sent={totals['sent']} "
-        f"failed={totals['failed']} title={title!r}"
+        f"[PDH/PDL] dispatched: users={len(user_ids)} sent={totals['sent']} "
+        f"failed={totals['failed']} title={p['title']!r}"
     )
     alert_id = save_strategy_alert(p, totals, is_test=is_test)
     if alert_id is not None:
@@ -607,43 +570,45 @@ async def _dispatch_push(p: Dict[str, Any], *, is_test: bool = False) -> Dict[st
 # ----------------------------- public API -----------------------------
 
 
-def register_nifty_orb_signal(loop: asyncio.AbstractEventLoop) -> None:
-    """Register the tick callback into the existing Kite ticker system."""
+def register_nifty_pdh_pdl_signal(loop: asyncio.AbstractEventLoop) -> None:
     global _registered, _loop
     if _registered:
         return
     cfg = _load_config()
     if not cfg.enabled:
-        log_info("[ORB] disabled via NIFTY_ORB_SIGNAL_ENABLED=0")
+        log_info("[PDH/PDL] disabled via NIFTY_PDH_PDL_SIGNAL_ENABLED=0")
         _registered = True
         return
-
     _loop = loop
     from utils.kite_websocket_ticker import register_tick_callback
 
     register_tick_callback(_on_ticks_batch)
     _registered = True
+    # Prime today's PDH/PDL eagerly so the first tick can act if it's a breakout.
+    try:
+        with _state_lock:
+            _ensure_day_state(datetime.now(IST))
+            _kick_pdh_pdl_load(cfg)
+    except Exception as e:  # noqa: BLE001
+        log_warning(f"[PDH/PDL] initial PDH/PDL load kick failed: {e}")
     log_info(
-        f"[ORB] registered tick handler for token={cfg.instrument_token} "
-        f"OR={cfg.or_start.isoformat()}–{cfg.or_end.isoformat()} cutoff={cfg.cutoff.isoformat()}"
+        f"[PDH/PDL] registered tick handler for token={cfg.instrument_token} "
+        f"warmup={cfg.warmup.isoformat()} cutoff={cfg.cutoff.isoformat()}"
     )
 
 
 def get_state_snapshot() -> Dict[str, Any]:
-    """JSON-friendly snapshot for the /info endpoint and UI."""
     cfg = _load_config()
     with _state_lock:
         s = _state
         return {
             "enabled": cfg.enabled,
             "config": {
-                "or_start": cfg.or_start.isoformat(),
-                "or_end": cfg.or_end.isoformat(),
+                "warmup": cfg.warmup.isoformat(),
                 "cutoff": cfg.cutoff.isoformat(),
-                "min_range_pts": cfg.min_range_pts,
-                "max_range_pts": cfg.max_range_pts,
                 "rr_ratio": cfg.rr_ratio,
                 "sl_buffer_pts": cfg.sl_buffer_pts,
+                "min_body_ratio": cfg.min_body_ratio,
                 "atm_step": cfg.atm_step,
                 "atm_delta": cfg.atm_delta,
                 "lot_size": cfg.lot_size,
@@ -652,60 +617,54 @@ def get_state_snapshot() -> Dict[str, Any]:
                 "instrument_symbol": cfg.instrument_symbol,
             },
             "day": s.day.isoformat() if s.day else None,
-            "or_built": s.or_built,
-            "or_high": s.or_high,
-            "or_low": s.or_low,
-            "or_range": s.or_range,
-            "or_skip_reason": s.or_skip_reason,
-            "signal_fired": s.signal_fired,
-            "signal_direction": s.signal_direction,
+            "pdh": s.pdh,
+            "pdl": s.pdl,
+            "pdh_pdl_loaded": s.pdh_pdl_loaded,
+            "pdh_pdl_error": s.pdh_pdl_error,
+            "fired_directions": sorted(list(s.fired_directions)),
             "last_price": s.last_price,
-            "closed_candles_today": len(s.closed_candles_today),
+            "closed_candles_today": s.closed_candles,
             "fcm_configured": push_service.configured(),
         }
 
 
 def _fetch_current_spot() -> Optional[float]:
-    """Best-effort spot price via kite.quote() — for preview/force-test outside ticks."""
     cfg = _load_config()
     try:
         kite = get_kite_instance()
-        quotes = kite.quote(cfg.instrument_symbol) or {}
-        q = quotes.get(cfg.instrument_symbol) or {}
-        lp = q.get("last_price")
+        q = kite.quote(cfg.instrument_symbol) or {}
+        row = q.get(cfg.instrument_symbol) or {}
+        lp = row.get("last_price")
         if lp is None:
-            ohlc = q.get("ohlc") or {}
+            ohlc = row.get("ohlc") or {}
             lp = ohlc.get("open") or ohlc.get("close")
         return float(lp) if lp is not None else None
     except Exception as e:  # noqa: BLE001
-        log_warning(f"[ORB] _fetch_current_spot failed: {e}")
+        log_warning(f"[PDH/PDL] _fetch_current_spot failed: {e}")
         return None
 
 
 def preview_signal(*, direction_override: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Build a *would-be* signal payload using current state for inspection only.
-    Useful from the UI / API to verify formatting without waiting for a breakout.
-    Direction: 'LONG' (default) or 'SHORT'.
-    """
     cfg = _load_config()
-
     with _state_lock:
-        or_high = _state.or_high
-        or_low = _state.or_low
         last_price = _state.last_price
-
+        pdh = _state.pdh
+        pdl = _state.pdl
     if last_price is None:
         last_price = _fetch_current_spot()
     if last_price is None:
         return {"available": False, "reason": "spot price unavailable"}
 
-    if or_high is None or or_low is None:
-        # Synthesize a plausible OR around current spot for the preview
-        synth_range = max(cfg.min_range_pts + 10.0, min(60.0, cfg.max_range_pts - 10.0))
-        or_high = last_price + synth_range / 2.0
-        or_low = last_price - synth_range / 2.0
-        synthesized = True
+    if pdh is None or pdl is None:
+        # Try to fetch synchronously; tolerate failure with a synthetic context.
+        snap = _fetch_pdh_pdl_sync(cfg)
+        if snap:
+            pdh, pdl = snap["pdh"], snap["pdl"]
+            synthesized = False
+        else:
+            pdh = last_price + 60.0
+            pdl = last_price - 60.0
+            synthesized = True
     else:
         synthesized = False
 
@@ -713,15 +672,14 @@ def preview_signal(*, direction_override: Optional[str] = None) -> Dict[str, Any
     if direction not in ("LONG", "SHORT"):
         direction = "LONG"
 
-    # Place breakout 5 pts beyond OR in the direction asked
     if direction == "LONG":
-        close = max(last_price, or_high + 5.0)
+        close = max(last_price, pdh + 10.0)
     else:
-        close = min(last_price, or_low - 5.0)
-    open_ = close - 4.0 if direction == "LONG" else close + 4.0
+        close = min(last_price, pdl - 10.0)
+    open_ = close - 6.0 if direction == "LONG" else close + 6.0
     high = max(open_, close) + 2.0
     low = min(open_, close) - 2.0
-    breakout_candle = Candle5m(
+    breakout = Candle5m(
         start=_floor_5m(datetime.now(IST)),
         open=open_,
         high=high,
@@ -732,14 +690,14 @@ def preview_signal(*, direction_override: Optional[str] = None) -> Dict[str, Any
     sig = _build_signal(
         cfg=cfg,
         direction=direction,
-        or_high=or_high,
-        or_low=or_low,
-        breakout_candle=breakout_candle,
+        pdh=float(pdh),
+        pdl=float(pdl),
+        breakout_candle=breakout,
     )
     p = _compose_push(sig)
     return {
         "available": True,
-        "synthesized_or": synthesized,
+        "synthesized": synthesized,
         "title": p["title"],
         "body": p["body"],
         "payload": p["data"],
@@ -747,16 +705,11 @@ def preview_signal(*, direction_override: Optional[str] = None) -> Dict[str, Any
 
 
 async def force_test_send(*, direction: str = "LONG") -> Dict[str, Any]:
-    """
-    Compose a signal using `preview_signal()` and dispatch it as a real push.
-    """
     if not push_service.configured():
         return {"sent": 0, "failed": 0, "reason": "fcm_not_configured"}
-
     prev = preview_signal(direction_override=direction)
     if not prev.get("available"):
         return {"sent": 0, "failed": 0, "reason": prev.get("reason", "preview_unavailable")}
-
     return await _dispatch_push(
         {"title": prev["title"], "body": prev["body"], "data": prev["payload"]},
         is_test=True,
@@ -764,18 +717,16 @@ async def force_test_send(*, direction: str = "LONG") -> Dict[str, Any]:
 
 
 def reset_day_state() -> Dict[str, Any]:
-    """Manually reset today's state (useful for re-testing)."""
     with _state_lock:
         _state.day = None
-        _state.or_high = None
-        _state.or_low = None
-        _state.or_range = None
-        _state.or_built = False
-        _state.signal_fired = False
-        _state.signal_direction = None
-        _state.or_skip_reason = None
-        _state.last_price = None
+        _state.pdh = None
+        _state.pdl = None
+        _state.pdh_pdl_loaded = False
+        _state.pdh_pdl_loading = False
+        _state.pdh_pdl_error = None
         _state.cur_candle = None
-        _state.closed_candles_today = []
-    log_info("[ORB] day state reset")
+        _state.closed_candles = 0
+        _state.last_price = None
+        _state.fired_directions = set()
+    log_info("[PDH/PDL] day state reset")
     return {"ok": True}
