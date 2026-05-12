@@ -13,7 +13,7 @@ from kiteconnect import KiteTicker
 from kiteconnect.exceptions import KiteException
 from zoneinfo import ZoneInfo
 
-from utils.kite_utils import get_kite_api_key, get_access_token
+from utils.kite_utils import get_kite_api_key, get_access_token, close_kite_http_session
 from utils.logger import log_info, log_error, log_warning, log_debug
 from agent.config import get_agent_config
 from agent.ws_manager import add_agent_log
@@ -710,6 +710,7 @@ async def manage_kite_ticker_market_hours():
 
                 sleep_sec = 30
 
+                k = None
                 try:
                     k = KiteConnect(api_key=api_key_val)
                     k.set_access_token(token)
@@ -742,6 +743,8 @@ async def manage_kite_ticker_market_hours():
                     else:
                         log_debug(f"[Kite Ticker Manager] Token check failed (may be transient): {e}")
                     return
+                finally:
+                    close_kite_http_session(k)
 
                 if fingerprint != _last_managed_token_fingerprint:
                     if _global_kite_ticker:

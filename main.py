@@ -31,7 +31,9 @@ from utils.kite_utils import (
     api_key,
     get_access_token,
     get_kite_instance,
-    calculate_trend_and_suggestions
+    calculate_trend_and_suggestions,
+    close_kite_http_session,
+    invalidate_kite_client_cache,
 )
 
 # Agent imports
@@ -321,8 +323,7 @@ def get_access_token_endpoint():
             try:
                 from utils.kite_utils import get_kite_api_key
                 api_key = get_kite_api_key()
-                kite = KiteConnect(api_key=api_key)
-                kite.set_access_token(token)
+                kite = get_kite_instance(skip_validation=True)
                 kite.profile()  # Quick validation
                 token_info["status"] = "valid"
                 token_info["api_key_used"] = api_key[:10] + "..." if api_key and len(api_key) > 10 else "NOT SET"
@@ -363,8 +364,11 @@ def delete_access_token():
     """Delete the stored access token (useful for clearing invalid tokens)"""
     try:
         token_path = Path("config/access_token.txt")
-        if token_path.exists():
+        existed = token_path.exists()
+        if existed:
             token_path.unlink()
+        invalidate_kite_client_cache()
+        if existed:
             return {"status": "success", "message": "Access token deleted successfully"}
         return {"status": "success", "message": "No access token file found"}
     except Exception as e:
@@ -390,7 +394,10 @@ def get_login_url():
             )
         
         kite = KiteConnect(api_key=current_api_key)
-        login_url = kite.login_url()
+        try:
+            login_url = kite.login_url()
+        finally:
+            close_kite_http_session(kite)
         log_info(f"Generated login URL with redirect_uri: {redirect_uri}")
         return {
             "login_url": login_url,
@@ -536,6 +543,8 @@ async def set_token(req: Request):
                     status_code=500,
                     error_code="INTERNAL_ERROR"
                 )
+            finally:
+                close_kite_http_session(kite)
         else:
             # No request_token provided, use access-token from request body
             access_token = access_token_from_request

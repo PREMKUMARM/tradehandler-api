@@ -1,9 +1,10 @@
 import os
 import time
 import asyncio
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 from kiteconnect import KiteConnect
 from core.exceptions import AuthenticationError, ValidationError, AlgoFeastException
 from utils.logger import log_info, log_error, log_warning, log_debug
@@ -143,6 +144,30 @@ def reset_kite_token_validation_cache():
     _global_validation_state["validation_api_key"] = None
 
 
+_kite_client_lock = threading.Lock()
+_cached_kite: Optional[KiteConnect] = None
+_cached_identity: Optional[Tuple[str, str, str]] = None  # (user_id, api_key, access_token)
+
+
+def close_kite_http_session(kite: Optional[KiteConnect]) -> None:
+    """Close the underlying requests.Session on a KiteConnect instance (releases sockets / file descriptors)."""
+    if kite is None:
+        return
+    try:
+        kite.reqsession.close()
+    except Exception:
+        pass
+
+
+def invalidate_kite_client_cache() -> None:
+    """Close and drop the cached KiteConnect. Call when the access token file is removed or on process shutdown."""
+    global _cached_kite, _cached_identity
+    with _kite_client_lock:
+        close_kite_http_session(_cached_kite)
+        _cached_kite = None
+        _cached_identity = None
+
+
 def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_validation: bool = False):
     """Get authenticated KiteConnect instance
     
@@ -151,9 +176,6 @@ def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_vali
         verbose: If True, log detailed information (default: False to reduce log noise)
         skip_validation: If True, skip token validation entirely (for performance)
     """
-    # Apply rate limiting to instance creation
-    _check_rate_limit("get_kite_instance")
-    
     access_token = get_access_token()
     if not access_token:
         # Note: In a production app, you might want to return None or handle this differently 
@@ -177,10 +199,21 @@ def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_vali
     
     # Get user-specific API key
     current_api_key = get_kite_api_key(user_id=user_id)
-    
-    kite = KiteConnect(api_key=current_api_key)
-    kite.set_access_token(access_token)
-    
+    identity = (user_id, current_api_key, access_token)
+
+    global _cached_kite, _cached_identity
+    with _kite_client_lock:
+        if _cached_kite is not None and _cached_identity == identity:
+            kite = _cached_kite
+        else:
+            if _cached_kite is not None:
+                close_kite_http_session(_cached_kite)
+            _check_rate_limit("get_kite_instance")
+            kite = KiteConnect(api_key=current_api_key)
+            kite.set_access_token(access_token)
+            _cached_kite = kite
+            _cached_identity = identity
+
     # Check if this is the first validation call
     is_first_validation = not _global_validation_state["validated"]
     

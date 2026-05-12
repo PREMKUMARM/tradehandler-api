@@ -19,7 +19,13 @@ from database.user_repository import get_user_repository
 from database.models import User
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import KiteException
-from utils.kite_utils import get_kite_api_key, get_access_token
+from utils.kite_utils import (
+    get_kite_api_key,
+    get_access_token,
+    get_kite_instance,
+    close_kite_http_session,
+    invalidate_kite_client_cache,
+)
 from utils.logger import log_info, log_error, log_warning, log_debug
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -293,7 +299,10 @@ async def kite_login(request: Request):
             )
         
         kite = KiteConnect(api_key=current_api_key)
-        login_url = kite.login_url()
+        try:
+            login_url = kite.login_url()
+        finally:
+            close_kite_http_session(kite)
         log_info(f"Generated login URL with redirect_uri: {redirect_uri}")
         return {
             "login_url": login_url,
@@ -396,6 +405,8 @@ async def kite_set_token(request: Request):
                     message=error_msg,
                     service="Kite Connect"
                 )
+            finally:
+                close_kite_http_session(kite)
         else:
             access_token = access_token_from_request
         
@@ -470,8 +481,7 @@ async def kite_get_access_token(request: Request):
             try:
                 user_id = get_user_id_from_request(request)
                 api_key = get_kite_api_key(user_id)
-                kite = KiteConnect(api_key=api_key)
-                kite.set_access_token(token)
+                kite = get_kite_instance(user_id=user_id, skip_validation=True)
                 kite.profile()
                 token_info["status"] = "valid"
                 token_info["api_key_used"] = api_key[:10] + "..." if api_key and len(api_key) > 10 else "NOT SET"
@@ -513,8 +523,11 @@ async def kite_delete_access_token():
     """
     try:
         token_path = Path("config/access_token.txt")
-        if token_path.exists():
+        existed = token_path.exists()
+        if existed:
             token_path.unlink()
+        invalidate_kite_client_cache()
+        if existed:
             return {"status": "success", "message": "Access token deleted successfully"}
         return {"status": "success", "message": "No access token file found"}
     except Exception as e:
