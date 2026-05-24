@@ -61,7 +61,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="AlgoFeast - Enterprise AI Trading Agent API with Zerodha Kite Connect integration",
+    description="vibeFnO - Enterprise AI Trading Agent API with Zerodha Kite Connect integration",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json"
@@ -204,6 +204,12 @@ async def startup_event():
     # Initialize database (required — if this fails, abort startup)
     init_database()
 
+    try:
+        from services.auth_bootstrap import ensure_default_admin_user
+        ensure_default_admin_user()
+    except Exception as e:
+        log_error(f"[Startup] Default admin bootstrap failed (API still starting): {e}")
+
     # Order monitor — failure must not block API (otherwise nginx returns 502 for all routes)
     try:
         from utils.order_monitor import order_monitor
@@ -259,11 +265,11 @@ async def startup_event():
         log_info("MCP simulation mode enabled")
     except ImportError as e:
         log_warning(f"MCP library not available: {e}")
-        log_info("Hybrid agent will fallback to AlgoFeast for trading operations")
+        log_info("Hybrid agent will fallback to vibeFnO for trading operations")
     except Exception as e:
         log_error(f"Error with MCP setup: {e}")
     
-    log_info("AlgoFeast API started successfully")
+    log_info("vibeFnO API started successfully")
     add_agent_log("Database initialized successfully", "info", "system")
 
     # Initialize instruments cache

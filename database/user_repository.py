@@ -15,10 +15,11 @@ class UserRepository:
         """Save or update a user"""
         try:
             db = get_database()
+            existing_hash = self.get_password_hash(user.user_id)
             query = '''
                 INSERT OR REPLACE INTO users
-                (user_id, email, name, picture, google_id, created_at, last_login, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, email, name, picture, google_id, created_at, last_login, is_active, password_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             '''
             params = (
                 user.user_id,
@@ -28,7 +29,8 @@ class UserRepository:
                 user.google_id,
                 user.created_at.isoformat(),
                 user.last_login.isoformat() if user.last_login else None,
-                1 if user.is_active else 0
+                1 if user.is_active else 0,
+                existing_hash,
             )
 
             db.execute_query(query, params)
@@ -37,6 +39,36 @@ class UserRepository:
         except Exception as e:
             print(f"Error saving user: {e}")
             return False
+
+    def set_password_hash(self, user_id: str, password_hash: str) -> bool:
+        """Set or update password hash for a user."""
+        try:
+            db = get_database()
+            db.execute_query(
+                "UPDATE users SET password_hash = ? WHERE user_id = ?",
+                (password_hash, user_id),
+            )
+            db.commit()
+            return True
+        except Exception as e:
+            print(f"Error setting password hash: {e}")
+            return False
+
+    def get_password_hash(self, user_id: str) -> Optional[str]:
+        """Get stored password hash for a user."""
+        try:
+            db = get_database()
+            cursor = db.execute_query(
+                "SELECT password_hash FROM users WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if row and row["password_hash"]:
+                return row["password_hash"]
+            return None
+        except Exception as e:
+            print(f"Error getting password hash: {e}")
+            return None
 
     def get_by_email(self, email: str) -> Optional[User]:
         """Get user by email"""
@@ -102,15 +134,16 @@ class UserRepository:
 
     def _row_to_user(self, row) -> User:
         """Convert database row to User object"""
+        last_login = row["last_login"]
         return User(
             user_id=row['user_id'],
             email=row['email'],
-            name=row.get('name'),
-            picture=row.get('picture'),
-            google_id=row.get('google_id'),
+            name=row['name'],
+            picture=row['picture'],
+            google_id=row['google_id'],
             created_at=datetime.fromisoformat(row['created_at']),
-            last_login=datetime.fromisoformat(row['last_login']) if row.get('last_login') else None,
-            is_active=bool(row.get('is_active', 1))
+            last_login=datetime.fromisoformat(last_login) if last_login else None,
+            is_active=bool(row['is_active'] if row['is_active'] is not None else 1)
         )
 
 

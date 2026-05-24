@@ -95,7 +95,7 @@ async def place_order(req: Request, order_request: PlaceOrderRequest):
             "product": order_request.product,
             "order_type": order_request.order_type,
             "validity": order_request.validity or kite.VALIDITY_DAY,
-            "tag": order_request.tag or 'algofeast'
+            "tag": order_request.tag or 'vibefno'
         }
         
         # Add optional fields
@@ -257,7 +257,7 @@ async def sell_order(req: Request):
             "validity": payload.get('validity', kite.VALIDITY_DAY),
             "disclosed_quantity": payload.get('disclosed_quantity', payload.get('disclosedQuantity', 0)),
             "trigger_price": payload.get('trigger_price', payload.get('triggerPrice')),
-            "tag": payload.get('tag', 'algofeast')
+            "tag": payload.get('tag', 'vibefno')
         }
         
         # Remove None values

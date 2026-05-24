@@ -1,4 +1,4 @@
-# AlgoFeast - Trading Agent API
+# vibeFnO - Trading Agent API
 
 A sophisticated, enterprise-grade AI-powered trading agent platform built with FastAPI, LangGraph, and Zerodha Kite Connect. The system provides autonomous market scanning, intelligent trade signal generation, risk management, and hybrid human-AI approval workflows with comprehensive error handling, logging, and monitoring.
 

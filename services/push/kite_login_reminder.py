@@ -1,5 +1,5 @@
 """
-Weekday Kite / Zerodha login reminder via FCM (AlgoFeast app).
+Weekday Kite / Zerodha login reminder via FCM (vibeFnO app).
 
 Schedule is read from SQLite (`kite_push_reminder_settings`) when present, else from env.
 See `services/push/kite_reminder_config.py`.
@@ -29,7 +29,7 @@ async def send_kite_reminder_for_all_users(cfg: Optional[KiteReminderConfig] = N
     body = cfg.body
     data = {
         "type": "kite_login_reminder",
-        "source": "algofeast_backend",
+        "source": "vibefno_backend",
     }
     if not push_service.configured():
         log_warning("Kite push reminder: FCM not configured; skipping send.")

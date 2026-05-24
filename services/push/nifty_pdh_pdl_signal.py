@@ -390,7 +390,7 @@ def _compose_push(sig: PdhPdlSignal) -> Dict[str, Any]:
 
     data: Dict[str, str] = {
         "type": "nifty_pdh_pdl_signal",
-        "source": "algofeast_backend",
+        "source": "vibefno_backend",
         "strategy": "nifty_pdh_pdl_break",
         "direction": sig.direction,
         "rr_ratio": f"{sig.rr_ratio:.2f}",

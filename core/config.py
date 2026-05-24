@@ -1,5 +1,5 @@
 """
-Enhanced configuration management with validation for AlgoFeast
+Enhanced configuration management with validation for vibeFnO
 """
 import os
 import json
@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     )
     
     # Application Settings
-    app_name: str = Field(default="AlgoFeast API", alias="APP_NAME")
+    app_name: str = Field(default="vibeFnO API", alias="APP_NAME")
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
     environment: Environment = Field(default=Environment.DEVELOPMENT, alias="ENVIRONMENT")
     debug: bool = Field(default=False, alias="DEBUG")

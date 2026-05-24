@@ -1,5 +1,5 @@
 """
-Multi-Agent Architecture for AlgoFeast Trading Platform
+Multi-Agent Architecture for vibeFnO Trading Platform
 """
 
 from .base_agent import BaseAgent, AgentCapability, AgentStatus

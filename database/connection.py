@@ -112,6 +112,12 @@ class DatabaseConnection:
             ON users(google_id)
         ''')
 
+        # Migration: password_hash for email/password auth
+        cursor.execute("PRAGMA table_info(users)")
+        user_columns = [row[1] for row in cursor.fetchall()]
+        if "password_hash" not in user_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
         # Agent Logs Table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS agent_logs (

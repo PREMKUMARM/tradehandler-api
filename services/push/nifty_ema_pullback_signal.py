@@ -338,7 +338,7 @@ def _compose_push(sig: EmaSignal) -> Dict[str, Any]:
 
     data: Dict[str, str] = {
         "type": "nifty_ema_signal",
-        "source": "algofeast_backend",
+        "source": "vibefno_backend",
         "strategy": "nifty_9ema_pullback",
         "direction": sig.direction,
         "rr_ratio": f"{sig.rr_ratio:.2f}",

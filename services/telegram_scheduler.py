@@ -58,7 +58,7 @@ def _extract_hybrid_response_text(result: Dict[str, Any]) -> str:
     if result.get("source") == "error":
         return f"Error: {result.get('error', 'unknown')}"
     src = result.get("source")
-    if src == "algofeast":
+    if src in ("algofeast", "vibefno"):
         inner = result.get("result")
         if isinstance(inner, dict):
             if inner.get("response"):
@@ -721,7 +721,7 @@ class TelegramScheduler:
             if os.getenv("TELEGRAM_MIRROR_PUSH_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on"):
                 if push_service.configured():
                     user_id = os.getenv("TELEGRAM_MIRROR_PUSH_USER_ID", "default").strip() or "default"
-                    title = (notification.title or "AlgoFeast").strip()[:120] or "AlgoFeast"
+                    title = (notification.title or "vibeFnO").strip()[:120] or "vibeFnO"
                     body_raw = (notification.message or "").strip()
                     # Telegram uses Markdown; push should be plain text.
                     body = re.sub(r"[*_`]", "", body_raw)

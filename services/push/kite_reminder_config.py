@@ -52,7 +52,7 @@ def _defaults_from_env() -> KiteReminderConfig:
         title=os.getenv("KITE_PUSH_REMINDER_TITLE", "Zerodha (Kite) login").strip(),
         body=os.getenv(
             "KITE_PUSH_REMINDER_BODY",
-            "Log in to Kite Connect in AlgoFeast so trading stays connected today.",
+            "Log in to Kite Connect in vibeFnO so trading stays connected today.",
         ).strip(),
         from_database=False,
     )
@@ -67,7 +67,7 @@ def _row_to_config(row: Dict[str, Any]) -> KiteReminderConfig:
         title=str(row.get("title") or "Zerodha (Kite) login").strip(),
         body=str(
             row.get("body")
-            or "Log in to Kite Connect in AlgoFeast so trading stays connected today."
+            or "Log in to Kite Connect in vibeFnO so trading stays connected today."
         ).strip(),
         from_database=True,
     )

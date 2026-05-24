@@ -109,7 +109,7 @@ class KiteReminderUpdateRequest(BaseModel):
     minute: int = Field(default=0, ge=0, le=59)
     title: str = Field(default="Zerodha (Kite) login", min_length=1, max_length=200)
     body: str = Field(
-        default="Log in to Kite Connect in AlgoFeast so trading stays connected today.",
+        default="Log in to Kite Connect in vibeFnO so trading stays connected today.",
         min_length=1,
         max_length=500,
     )
@@ -157,7 +157,7 @@ async def test_kite_reminder() -> dict:
     cfg = get_merged_config()
     data = {
         "type": "kite_login_reminder",
-        "source": "algofeast_backend",
+        "source": "vibefno_backend",
         "test": "true",
     }
     repo = get_push_device_repository()

@@ -11,12 +11,21 @@ from urllib.parse import urlencode
 from pathlib import Path
 
 from core.responses import SuccessResponse, ErrorResponse
-from core.exceptions import AlgoFeastException, ValidationError, AuthenticationError, ExternalAPIError, BusinessLogicError
-from core.auth import generate_jwt_token
+from core.exceptions import (
+    AlgoFeastException,
+    ValidationError,
+    AuthenticationError,
+    ExternalAPIError,
+    BusinessLogicError,
+    NotFoundError,
+)
+from core.auth import generate_jwt_token, verify_jwt_token
 from core.config import get_settings
 from core.user_context import get_user_id_from_request
 from database.user_repository import get_user_repository
 from database.models import User
+from schemas.auth import SignInRequest, RefreshTokenRequest, AuthSessionResponse, AuthUserResponse
+from utils.password_utils import verify_password
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import KiteException
 from utils.kite_utils import (
@@ -41,6 +50,79 @@ GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:4200/au
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+
+def _user_to_auth_response(user: User) -> AuthUserResponse:
+    return AuthUserResponse(
+        id=user.user_id,
+        name=user.name or user.email.split("@")[0],
+        email=user.email,
+        avatar=user.picture or "assets/images/avatars/admin-pic.jpg",
+        status="online",
+    )
+
+
+def _build_auth_session(user: User) -> AuthSessionResponse:
+    token = generate_jwt_token(user_id=user.user_id, email=user.email, name=user.name)
+    return AuthSessionResponse(
+        user=_user_to_auth_response(user),
+        accessToken=token,
+        tokenType="bearer",
+    )
+
+
+def _authenticate_email_password(email: str, password: str) -> User:
+    normalized_email = email.strip().lower()
+    user_repo = get_user_repository()
+    user = user_repo.get_by_email(normalized_email)
+    if not user or not user.is_active:
+        raise AuthenticationError(message="Wrong email or password")
+
+    stored_hash = user_repo.get_password_hash(user.user_id)
+    if not stored_hash or not verify_password(password, stored_hash):
+        raise AuthenticationError(message="Wrong email or password")
+
+    user.last_login = datetime.now()
+    user_repo.save(user)
+    user_repo.update_last_login(user.user_id)
+    return user
+
+
+@router.post("/sign-in", response_model=SuccessResponse[AuthSessionResponse])
+async def sign_in(body: SignInRequest):
+    """Email/password sign-in (credentials managed server-side)."""
+    user = _authenticate_email_password(body.email, body.password)
+    return SuccessResponse(data=_build_auth_session(user))
+
+
+@router.post("/refresh-access-token", response_model=SuccessResponse[AuthSessionResponse])
+async def refresh_access_token(body: RefreshTokenRequest):
+    """Verify JWT and issue a fresh access token."""
+    token = (body.accessToken or "").strip()
+    if not token:
+        raise AuthenticationError(message="No token provided")
+
+    payload = verify_jwt_token(token)
+    if not payload:
+        raise AuthenticationError(message="Invalid or expired token")
+
+    user_id = payload.get("user_id") or payload.get("sub")
+    if not user_id:
+        raise AuthenticationError(message="Invalid token payload")
+
+    user_repo = get_user_repository()
+    user = user_repo.get_by_user_id(user_id)
+    if not user or not user.is_active:
+        raise AuthenticationError(message="User not found or inactive")
+
+    return SuccessResponse(data=_build_auth_session(user))
+
+
+@router.post("/unlock-session", response_model=SuccessResponse[AuthSessionResponse])
+async def unlock_session(body: SignInRequest):
+    """Re-authenticate after session lock (same as sign-in)."""
+    user = _authenticate_email_password(body.email, body.password)
+    return SuccessResponse(data=_build_auth_session(user))
 
 
 @router.get("/google/login")

@@ -1,5 +1,5 @@
 """
-AI Agent package for AlgoFeast API
+AI Agent package for vibeFnO API
 Provides LangGraph-based agentic trading capabilities
 """
 

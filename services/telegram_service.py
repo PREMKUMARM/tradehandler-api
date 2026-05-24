@@ -51,7 +51,7 @@ class TelegramService:
                 f"*{notification.title}*\n\n"
                 f"{body}\n\n"
                 f"---\n"
-                f"_{cat_label} · Priority: {pri_label} · {ts} · AlgoFeast_"
+                f"_{cat_label} · Priority: {pri_label} · {ts} · vibeFnO_"
             )
             
             # Send message

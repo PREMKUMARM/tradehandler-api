@@ -203,7 +203,7 @@ class OrderMonitor:
                 quantity=order["quantity"],
                 product=kite.PRODUCT_MIS,  # Default to MIS
                 order_type=kite.ORDER_TYPE_MARKET,
-                tag=f"algofeast-{reason.lower()}"
+                tag=f"vibefno-{reason.lower()}"
             )
             
             log_info(f"Placed {reason} exit order {order_id} for {order['symbol']} at {current_price}")

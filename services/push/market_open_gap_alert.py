@@ -238,7 +238,7 @@ def _build_message(g: Dict[str, Any]) -> GapResult:
     data: Dict[str, str] = {
         "type": "market_open_gap_alert",
         "strategy": "market_open_gap",
-        "source": "algofeast_backend",
+        "source": "vibefno_backend",
         "instrument": short_sym,
         "direction": direction,
         "severity": severity,
