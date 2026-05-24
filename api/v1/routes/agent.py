@@ -216,15 +216,10 @@ async def get_agent_config_endpoint(request: Request):
             from utils.kite_utils import get_kite_instance
             kite = get_kite_instance()
             margins = kite.margins()
+            from utils.margin_utils import parse_equity_margins
+
             equity_data = margins.get('equity', {})
-            available_value = equity_data.get('available', 0)
-            
-            if isinstance(available_value, dict):
-                zerodha_funds = float(available_value.get('cash', 0))
-                if zerodha_funds == 0:
-                    zerodha_funds = float(equity_data.get('opening_balance', 0) or equity_data.get('live_balance', 0))
-            else:
-                zerodha_funds = float(available_value if available_value else equity_data.get('cash', 0) or equity_data.get('opening_balance', 0))
+            zerodha_funds, _, _ = parse_equity_margins(equity_data)
         except Exception:
             pass
         

@@ -336,22 +336,10 @@ def get_balance_tool() -> dict:
         kite = get_kite_instance()
         margins = kite.margins()
         
+        from utils.margin_utils import parse_equity_margins
+
         equity_data = margins.get('equity', {})
-        available_value = equity_data.get('available', 0)
-        utilised_value = equity_data.get('utilised', 0)
-        total_margin = equity_data.get('net', 0) or equity_data.get('live_balance', 0)
-        
-        if isinstance(available_value, dict):
-            available_margin = available_value.get('cash', 0)
-            if available_margin == 0:
-                available_margin = equity_data.get('opening_balance', 0) or equity_data.get('live_balance', 0)
-        else:
-            available_margin = available_value if available_value else equity_data.get('cash', 0) or equity_data.get('opening_balance', 0)
-        
-        if isinstance(utilised_value, dict):
-            utilised_margin = utilised_value.get('debits', 0)
-        else:
-            utilised_margin = utilised_value
+        available_margin, utilised_margin, total_margin = parse_equity_margins(equity_data)
         
         return {
             "status": "success",

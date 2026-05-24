@@ -14,6 +14,7 @@ from utils.kite_utils import (
 )
 from kiteconnect.exceptions import KiteException
 from core.user_context import get_user_id_from_request
+from utils.margin_utils import parse_equity_margins
 
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
 
@@ -34,28 +35,12 @@ async def get_balance(request: Request):
         margins = kite.margins()
         
         equity_data = margins.get('equity', {})
-        
+
         log_debug(f"Raw Kite Connect margins response: {margins}")
         log_debug(f"Equity data: {equity_data}")
-        
-        available_value = equity_data.get('available', 0)
-        utilised_value = equity_data.get('utilised', 0)
-        
-        # Extract numeric values if they're dictionaries
-        if isinstance(available_value, dict):
-            available_margin = available_value.get('cash', 0)
-            if available_margin == 0:
-                available_margin = equity_data.get('opening_balance', 0) or equity_data.get('live_balance', 0)
-        else:
-            available_margin = available_value if available_value else equity_data.get('cash', 0) or equity_data.get('opening_balance', 0)
-        
-        if isinstance(utilised_value, dict):
-            utilised_margin = utilised_value.get('debits', 0)
-        else:
-            utilised_margin = utilised_value
-        
-        total_margin = equity_data.get('net', 0) or equity_data.get('live_balance', 0)
-        
+
+        available_margin, utilised_margin, total_margin = parse_equity_margins(equity_data)
+
         log_debug(f"Calculated available_margin: {available_margin}")
         log_debug(f"Calculated utilised_margin: {utilised_margin}")
         log_debug(f"Calculated total_margin: {total_margin}")
