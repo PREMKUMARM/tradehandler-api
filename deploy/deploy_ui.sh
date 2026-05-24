@@ -42,12 +42,15 @@ cd "$DIST_PATH"
 tar -czf ../dist.tar.gz .
 cd "$LOCAL_PROJECT_ROOT"
 
-echo "☁️ Uploading build and nginx config to EC2..."
+echo "☁️ Uploading build to EC2..."
 scp -i "$PEM_FILE" dist.tar.gz "$NGINX_CONF" "$EC2_USER@$EC2_IP:/tmp/"
 
-echo "🔧 Installing nginx (if needed) and deploying UI on port 80..."
+echo "🔧 Deploying UI (static files; SSL config preserved when certs exist)..."
 ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
     set -e
+    DOMAIN="$DOMAIN"
+    REMOTE_WEB_ROOT="$REMOTE_WEB_ROOT"
+    REMOTE_NGINX_CONF="$REMOTE_NGINX_CONF"
 
     if ! command -v nginx >/dev/null 2>&1; then
         echo "📥 Installing nginx..."
@@ -55,44 +58,64 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
     fi
 
     echo "📁 Preparing web root..."
-    sudo mkdir -p "$REMOTE_WEB_ROOT"
+    sudo mkdir -p "\$REMOTE_WEB_ROOT"
     mkdir -p "$REMOTE_STAGING"
     tar -xzf /tmp/dist.tar.gz -C "$REMOTE_STAGING"
 
-    echo "🔄 Updating nginx site..."
     sudo rm -f /etc/nginx/conf.d/default.conf
     if ! grep -q 'server_names_hash_bucket_size' /etc/nginx/nginx.conf; then
         sudo sed -i '/http {/a \    server_names_hash_bucket_size 128;' /etc/nginx/nginx.conf
     fi
-    sudo rm -rf "$REMOTE_WEB_ROOT"/*
-    sudo cp -r "$REMOTE_STAGING"/* "$REMOTE_WEB_ROOT"/
-    if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
-        echo "🔒 SSL active for $DOMAIN — keeping certbot nginx config, updating files only."
-        sudo certbot install --cert-name "$DOMAIN" --nginx --redirect 2>/dev/null || true
-    else
-        sudo cp /tmp/nginx.conf "$REMOTE_NGINX_CONF"
-    fi
-    sudo rm -f /etc/nginx/conf.d/default.conf
 
-    sudo chown -R nginx:nginx "$REMOTE_WEB_ROOT"
-    sudo chmod -R 755 "$REMOTE_WEB_ROOT"
+    # Update Angular build only — do not overwrite certbot's vibefno.conf when SSL exists.
+    sudo rm -rf "\$REMOTE_WEB_ROOT"/*
+    sudo cp -r "$REMOTE_STAGING"/* "\$REMOTE_WEB_ROOT"/
+
+    HAS_SSL=false
+    if sudo test -d "/etc/letsencrypt/live/\$DOMAIN"; then
+        HAS_SSL=true
+        echo "🔒 SSL certs found — leaving \$REMOTE_NGINX_CONF unchanged."
+    else
+        echo "📄 No SSL yet — installing HTTP-only nginx site (run setup_ssl.sh once after DNS is ready)."
+        sudo cp /tmp/nginx.conf "\$REMOTE_NGINX_CONF"
+    fi
+
+    sudo chown -R nginx:nginx "\$REMOTE_WEB_ROOT"
+    sudo chmod -R 755 "\$REMOTE_WEB_ROOT"
+
+    # If certs exist but :443 is down (e.g. config was reset), re-apply certbot nginx config.
+    if [ "\$HAS_SSL" = true ] && ! sudo ss -tlnp | grep -q ':443'; then
+        echo "⚠️  HTTPS not listening — re-applying certbot nginx configuration..."
+        if command -v certbot >/dev/null 2>&1; then
+            sudo certbot --nginx -d "\$DOMAIN" -d "www.\$DOMAIN" \
+                --reinstall --redirect --non-interactive || \
+            sudo certbot install --cert-name "\$DOMAIN" --nginx --redirect
+        else
+            echo "❌ certbot missing; run deploy/setup_ssl.sh once on the server."
+            exit 1
+        fi
+    fi
 
     echo "✅ Testing nginx configuration..."
     sudo nginx -t
-
     sudo systemctl enable nginx
-    sudo systemctl restart nginx
+    sudo systemctl reload nginx
 
     rm -f /tmp/dist.tar.gz /tmp/nginx.conf
     rm -rf "$REMOTE_STAGING"
 
     echo "✨ Remote update complete!"
-    curl -s -o /dev/null -w "Local nginx HTTP %{http_code}\n" http://127.0.0.1/
+    curl -s -o /dev/null -w "HTTP %{http_code} " http://127.0.0.1/
+    if sudo ss -tlnp | grep -q ':443'; then
+        curl -sk -o /dev/null -w "HTTPS %{http_code}\n" "https://\$DOMAIN/" || echo "HTTPS check failed"
+    else
+        echo "(HTTPS not configured)"
+    fi
 EOF
 
 rm -f "$LOCAL_PROJECT_ROOT/dist.tar.gz"
 
 echo "🎉 Deployment finished successfully!"
 echo ""
-echo "🌐 App URL: http://$EC2_IP/"
-echo "💡 Ensure EC2 security group allows inbound TCP port 80."
+echo "🌐 App: https://$DOMAIN/  (or http://$EC2_IP/ before SSL)"
+echo "💡 Run setup_ssl.sh only once (initial HTTPS) or if https://$DOMAIN stops working."
