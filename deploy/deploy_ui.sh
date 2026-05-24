@@ -66,10 +66,11 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
     fi
     sudo rm -rf "$REMOTE_WEB_ROOT"/*
     sudo cp -r "$REMOTE_STAGING"/* "$REMOTE_WEB_ROOT"/
-    if [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
-        sudo cp /tmp/nginx.conf "$REMOTE_NGINX_CONF"
-    else
+    if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
         echo "🔒 SSL active for $DOMAIN — keeping certbot nginx config, updating files only."
+        sudo certbot install --cert-name "$DOMAIN" --nginx --redirect 2>/dev/null || true
+    else
+        sudo cp /tmp/nginx.conf "$REMOTE_NGINX_CONF"
     fi
     sudo rm -f /etc/nginx/conf.d/default.conf
 

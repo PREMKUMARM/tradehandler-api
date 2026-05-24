@@ -349,9 +349,20 @@ async def verify_token(request: Request):
 # ============================================================================
 
 # Get Kite Connect configuration
-def get_kite_redirect_uri():
-    """Get Kite Connect redirect URI from environment or default"""
-    return os.getenv('KITE_REDIRECT_URI', 'http://localhost:4200/auth-token')
+def get_kite_redirect_uri(user_id: str = "default"):
+    """Redirect URI must match Zerodha Kite Connect app settings exactly."""
+    env_uri = (os.getenv('KITE_REDIRECT_URI') or '').strip().rstrip('/')
+    if env_uri:
+        return env_uri
+    try:
+        from agent.user_config import get_user_config
+        config = get_user_config(user_id=user_id)
+        uri = (getattr(config, 'kite_redirect_uri', None) or '').strip().rstrip('/')
+        if uri and uri != 'http://localhost:4200/auth-token':
+            return uri
+    except Exception:
+        pass
+    return 'http://localhost:4200/auth-token'
 
 def get_kite_api_secret(user_id: str = "default"):
     """Get Kite API secret from user config or environment"""
@@ -380,7 +391,7 @@ async def kite_login(request: Request):
     try:
         user_id = get_user_id_from_request(request)
         current_api_key = get_kite_api_key(user_id)
-        redirect_uri = get_kite_redirect_uri()
+        redirect_uri = get_kite_redirect_uri(user_id)
         
         if current_api_key == 'your_api_key_here' or not current_api_key:
             raise BusinessLogicError(
@@ -422,7 +433,7 @@ async def kite_set_token(request: Request):
         access_token_from_request = data.get('access-token')
         
         user_id = get_user_id_from_request(request)
-        redirect_uri = get_kite_redirect_uri()
+        redirect_uri = get_kite_redirect_uri(user_id)
         
         log_debug(f"Received request_token: {request_token[:20] if request_token else None}...")
         log_debug(f"Received access-token from request: {access_token_from_request[:20] if access_token_from_request else None}...")
@@ -483,17 +494,28 @@ async def kite_set_token(request: Request):
                     )
             except KiteException as e:
                 error_msg = str(e)
-                if "invalid" in error_msg.lower() or "expired" in error_msg.lower():
+                lower = error_msg.lower()
+                if any(
+                    kw in lower
+                    for kw in (
+                        "invalid",
+                        "expired",
+                        "redirect",
+                        "minimum",
+                        "length",
+                        "token",
+                    )
+                ):
                     raise ValidationError(
-                        message=f"Invalid request token: {error_msg}. "
-                               f"Please ensure: 1) Redirect URI in Kite Connect app settings matches exactly '{redirect_uri}', "
-                               f"2) Request token is used immediately (they expire quickly), "
-                               f"3) API key and secret are correct.",
-                        field="request_token"
+                        message=(
+                            f"Kite token exchange failed: {error_msg}. "
+                            f"Register this redirect URL in your Kite Connect app (exact match): {redirect_uri}"
+                        ),
+                        field="request_token",
                     )
                 raise ExternalAPIError(
                     message=error_msg,
-                    service="Kite Connect"
+                    service="Kite Connect",
                 )
             finally:
                 close_kite_http_session(kite)

@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     # Kite Connect Settings
     kite_api_key: Optional[str] = Field(default=None, alias="KITE_API_KEY")
     kite_api_secret: Optional[str] = Field(default=None, alias="KITE_API_SECRET")
-    kite_redirect_uri: str = Field(default="http://13.233.151.3/auth-token", alias="KITE_REDIRECT_URI")
+    kite_redirect_uri: str = Field(default="https://vibefno.com/auth-token", alias="KITE_REDIRECT_URI")
     
     # Binance Futures Settings
     binance_api_key: Optional[str] = Field(default=None, alias="BINANCE_API_KEY")
