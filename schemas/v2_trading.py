@@ -1,0 +1,77 @@
+"""V2 pre-buy wizard trade execution schemas."""
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
+
+
+class V2TradePreviewRequest(BaseModel):
+    completed_steps: Optional[List[bool]] = Field(
+        default=None,
+        min_length=11,
+        max_length=11,
+        description="Wizard step completion flags (11 steps); ignored when auto_execute",
+    )
+    auto_execute: bool = Field(
+        default=False,
+        description="Run all checklist steps server-side and skip manual marks",
+    )
+    direction: str = Field(
+        default="AUTO",
+        description="CE, PE, or AUTO (infer from Nifty vs prior close)",
+    )
+    risk_percentage: Optional[float] = Field(default=None, gt=0, le=100)
+    reward_percentage: Optional[float] = Field(default=None, gt=0, le=100)
+    num_lots: Optional[int] = Field(default=1, ge=1, le=50)
+
+
+class V2TradePlaceRequest(V2TradePreviewRequest):
+    confirm: bool = Field(default=False, description="Must be true to place live orders")
+
+
+class ChecklistStepStatus(BaseModel):
+    index: int
+    title: str
+    completed: bool
+    server_ok: bool
+    message: str
+    output: Optional[str] = None
+
+
+class TradePlanOut(BaseModel):
+    tradingsymbol: str
+    exchange: str = "NFO"
+    option_type: str
+    strike: int
+    expiry: str
+    quantity: int
+    lot_size: int = 75
+    num_lots: int = 1
+    product: str = "MIS"
+    entry_premium: float
+    stop_loss_premium: float
+    target_premium: float
+    nifty_spot: float
+    spot_stop_loss: float
+    spot_target: float
+    risk_inr: float
+    reward_inr: float
+    reward_ratio: float
+    estimated_premium: bool = False
+    note: Optional[str] = None
+
+
+class V2TradePreviewResponse(BaseModel):
+    can_place: bool
+    checklist_ready: bool
+    missing_steps: List[int]
+    step_statuses: List[ChecklistStepStatus]
+    trade_plan: Optional[TradePlanOut] = None
+    validation: Optional[Dict[str, Any]] = None
+    messages: List[str] = []
+    market_open: bool = False
+
+
+class V2TradePlaceResponse(V2TradePreviewResponse):
+    placed: bool = False
+    entry_order_id: Optional[str] = None
+    gtt_trigger_id: Optional[str] = None
+    errors: List[str] = []
