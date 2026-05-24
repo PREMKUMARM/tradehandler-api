@@ -6,6 +6,7 @@ from .exceptions import (
     AlgoFeastException,
     ValidationError,
     AuthenticationError,
+    BrokerAuthenticationError,
     NotFoundError,
     BusinessLogicError
 )
@@ -21,6 +22,7 @@ __all__ = [
     "AlgoFeastException",
     "ValidationError",
     "AuthenticationError",
+    "BrokerAuthenticationError",
     "NotFoundError",
     "BusinessLogicError",
     "APIResponse",

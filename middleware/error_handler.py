@@ -47,10 +47,14 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
             # Handle custom exceptions
             request_id = getattr(request.state, "request_id", "unknown")
             from datetime import datetime
+            requires_logout = getattr(e, "requires_logout", None)
+            if requires_logout is None and isinstance(e.details, dict):
+                requires_logout = e.details.get("requires_logout")
             error_response = ErrorResponse(
                 status="error",
                 message=e.message,
                 error_code=e.error_code,
+                requires_logout=requires_logout,
                 details={**e.details, "request_id": request_id},
                 timestamp=datetime.now(),
                 request_id=request_id

@@ -76,11 +76,19 @@ def _authenticate_email_password(email: str, password: str) -> User:
     user_repo = get_user_repository()
     user = user_repo.get_by_email(normalized_email)
     if not user or not user.is_active:
-        raise AuthenticationError(message="Wrong email or password")
+        raise AuthenticationError(
+            message="Wrong email or password",
+            error_code="AUTHENTICATION_FAILED",
+            requires_logout=False,
+        )
 
     stored_hash = user_repo.get_password_hash(user.user_id)
     if not stored_hash or not verify_password(password, stored_hash):
-        raise AuthenticationError(message="Wrong email or password")
+        raise AuthenticationError(
+            message="Wrong email or password",
+            error_code="AUTHENTICATION_FAILED",
+            requires_logout=False,
+        )
 
     user.last_login = datetime.now()
     user_repo.save(user)

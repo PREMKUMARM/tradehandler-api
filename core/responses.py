@@ -27,6 +27,10 @@ class ErrorResponse(APIResponse[None]):
     """Error response"""
     status: str = "error"
     error_code: Optional[str] = Field(None, description="Error code for programmatic handling")
+    requires_logout: Optional[bool] = Field(
+        None,
+        description="When true, the client should clear the app login session",
+    )
     details: Optional[Dict[str, Any]] = Field(None, description="Additional error details")
 
 

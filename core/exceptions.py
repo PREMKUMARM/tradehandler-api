@@ -35,14 +35,35 @@ class ValidationError(AlgoFeastException):
 
 
 class AuthenticationError(AlgoFeastException):
-    """Authentication/authorization error"""
-    
-    def __init__(self, message: str = "Authentication required", details: Optional[Dict[str, Any]] = None):
+    """App session (JWT) authentication error."""
+
+    def __init__(
+        self,
+        message: str = "Authentication required",
+        *,
+        error_code: str = "SESSION_AUTH_REQUIRED",
+        requires_logout: bool = True,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        merged_details = {"requires_logout": requires_logout, **(details or {})}
         super().__init__(
             message=message,
             status_code=401,
-            error_code="AUTHENTICATION_ERROR",
-            details=details or {}
+            error_code=error_code,
+            details=merged_details,
+        )
+        self.requires_logout = requires_logout
+
+
+class BrokerAuthenticationError(AuthenticationError):
+    """Broker (e.g. Kite Connect) token missing or invalid — app session stays valid."""
+
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            error_code="BROKER_AUTH_REQUIRED",
+            requires_logout=False,
+            details=details,
         )
 
 

@@ -178,8 +178,8 @@ def get_candle(instrument_token: str, interval: str, fromDate: str, toDate: str,
                 )
             
             if is_token_error:
-                from core.exceptions import AuthenticationError
-                raise AuthenticationError(
+                from core.exceptions import BrokerAuthenticationError
+                raise BrokerAuthenticationError(
                     message=f"Kite API error: {error_msg} (Error type: {error_type}). "
                            "Possible causes: 1) Token was generated with a different API key than currently configured, "
                            "2) Token has expired (Kite tokens expire daily), or 3) API key was changed after token generation. "

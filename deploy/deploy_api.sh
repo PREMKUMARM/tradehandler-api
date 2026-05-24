@@ -8,14 +8,14 @@
 
 # --- CONFIGURATION ---
 # Path to your .pem file (Change this to your actual path)
-PEM_FILE="~/Downloads/algofeast-pkapps1993.pem"
+PEM_FILE="/Users/premkumar/Documents/vibefno.pem"
 
 # EC2 Connection Details
-EC2_USER="ubuntu"
-EC2_IP="13.233.151.3"
+EC2_USER="ec2-user"
+EC2_IP="ec2-3-108-61-102.ap-south-1.compute.amazonaws.com"
 
 # Remote Paths
-REMOTE_API_PATH="/home/ubuntu/algofeast-workspace/algofeast-api"
+REMOTE_API_PATH="/home/ec2-user/algofeast-workspace/algofeast-api"
 SERVICE_NAME="algofeast-api"
 LOCAL_ENV_FILE=".env"
 REMOTE_ENV_FILE="$REMOTE_API_PATH/.env"
@@ -206,12 +206,13 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" << EOF
     done
     git pull
     
-    echo "🔧 Activating virtual environment..."
-    source algo-env/bin/activate
+    echo "🔧 Recreating Python 3.11 virtual environment..."
+    rm -rf algo-env
+    python3.11 -m venv algo-env
     
     echo "📦 Installing/updating Python dependencies..."
-    pip3 install --upgrade pip
-    pip3 install -r requirements.txt
+    $REMOTE_API_PATH/algo-env/bin/python3.11 -m pip install --upgrade pip
+    $REMOTE_API_PATH/algo-env/bin/python3.11 -m pip install -r requirements.txt
     
     echo "🔄 Restarting API service..."
     sudo systemctl daemon-reload

@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from kiteconnect import KiteConnect
-from core.exceptions import AuthenticationError, ValidationError, AlgoFeastException
+from core.exceptions import AuthenticationError, ValidationError, AlgoFeastException, BrokerAuthenticationError
 from utils.logger import log_info, log_error, log_warning, log_debug
 
 # Global API key - get from AgentConfig (managed via UI) or environment
@@ -180,7 +180,7 @@ def get_kite_instance(user_id: str = "default", verbose: bool = False, skip_vali
     if not access_token:
         # Note: In a production app, you might want to return None or handle this differently 
         # for background tasks vs API requests
-        raise AuthenticationError(
+        raise BrokerAuthenticationError(
             message="Access token not found. Please authenticate first. "
                    "Steps: 1) GET /auth to get login URL, 2) Login through that URL, "
                    "3) POST /set-token with the request_token from redirect to store access token."
