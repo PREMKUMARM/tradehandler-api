@@ -200,28 +200,28 @@ def resolve_commodity_contract(
     rows = list_option_rows(k)
     if not rows:
         return None
-    # Ignore far OTM series (e.g. strike 3750 when spot ~8700).
-    def _row_near_spot(row: Dict[str, Any]) -> bool:
-        s = _strike_from_row(row)
-        if s <= 0:
-            return False
-        if spot > 1000:
-            return abs(s - spot) <= max(800, spot * 0.12)
-        return True
-
-    near = [r for r in rows if _row_near_spot(r)]
-    if near:
-        rows = near
-    best_row = None
-    best_dist = 10**9
+    if spot > 1000:
+        rows = [
+            r
+            for r in rows
+            if 5000 <= _strike_from_row(r) <= 15000
+            and abs(_strike_from_row(r) - spot) <= max(800, spot * 0.12)
+        ]
+    if not rows:
+        return None
     for row in rows:
-        s = _strike_from_row(row)
-        if s <= 0:
-            continue
-        dist = abs(s - target)
-        if dist < best_dist:
-            best_dist = dist
+        if _strike_from_row(row) == target:
             best_row = row
+            break
+    else:
+        best_row = None
+        best_dist = 10**9
+        for row in rows:
+            s = _strike_from_row(row)
+            dist = abs(s - target)
+            if dist < best_dist:
+                best_dist = dist
+                best_row = row
     if not best_row:
         return None
     exp = best_row.get("expiry")
