@@ -49,11 +49,21 @@ def lot_size() -> int:
         return DEFAULT_LOT_SIZE
 
 
+def _expiry_key(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if hasattr(value, "date"):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
 def list_option_rows(kind: Optional[str] = None) -> List[Dict[str, Any]]:
     prefix = OPTION_PREFIX
     fut_expiry = None
     try:
-        fut_expiry = resolve_future().get("expiry")
+        fut_expiry = _expiry_key(resolve_future().get("expiry"))
     except Exception:
         pass
     out = []
@@ -66,7 +76,7 @@ def list_option_rows(kind: Optional[str] = None) -> List[Dict[str, Any]]:
             continue
         if kind and it != kind.upper():
             continue
-        if fut_expiry is not None and row.get("expiry") != fut_expiry:
+        if fut_expiry is not None and _expiry_key(row.get("expiry")) != fut_expiry:
             continue
         out.append(row)
     return out

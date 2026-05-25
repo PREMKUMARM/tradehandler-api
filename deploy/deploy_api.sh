@@ -28,6 +28,25 @@ BINANCE_VARS=("BINANCE_API_KEY" "BINANCE_API_SECRET" "BINANCE_SYMBOLS")
 # Exit on any error
 set -e
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+echo "📤 Syncing local workspace to git..."
+cd "$REPO_ROOT"
+
+git add .
+
+if git diff --cached --quiet; then
+    echo "  ℹ️  No changes to commit."
+else
+    COMMIT_MSG="${DEPLOY_COMMIT_MESSAGE:-Deploy API $(date +%Y-%m-%d\ %H:%M:%S)}"
+    git commit -m "$COMMIT_MSG"
+    echo "  ✓ Committed: $COMMIT_MSG"
+fi
+
+git push
+echo "  ✓ Pushed to remote."
+
+echo ""
 echo "🚀 Starting backend deployment to $EC2_IP..."
 
 # Extract Binance + Telegram + FCM environment variables from local .env
@@ -69,7 +88,6 @@ if [[ "$FCM_SERVICE_ACCOUNT_JSON_FOR_REMOTE" = /* ]]; then
 fi
 
 # If FCM JSON is a relative path, resolve it from repo root (this script lives in deploy/)
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FCM_JSON_LOCAL_PATH=""
 if [ -n "$FCM_SERVICE_ACCOUNT_JSON_VAL" ]; then
     if [[ "$FCM_SERVICE_ACCOUNT_JSON_VAL" = /* ]]; then
