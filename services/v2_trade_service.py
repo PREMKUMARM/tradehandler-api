@@ -110,8 +110,9 @@ def fetch_live_checklist(
     reward_pct: float = 2.0,
     num_lots: int = 1,
     capital: float = 0.0,
+    only_steps: Optional[List[int]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Run all 12 steps on live Kite data; None if not connected."""
+    """Run checklist steps on live Kite data; None if not connected."""
     kite_ok, margin, _ = _check_kite_and_margin()
     if capital <= 0:
         capital = margin if margin > 0 else float(get_agent_config().trading_capital or 100000)
@@ -127,6 +128,7 @@ def fetch_live_checklist(
         reward_pct,
         num_lots,
         capital,
+        only_steps=only_steps,
     )
 
 
@@ -510,6 +512,65 @@ def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
     cfg = get_agent_config()
     capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
     return analyze_fno_strategies(direction_pref=direction, margin=capital)
+
+
+def get_checklist_analyze(
+    step: int,
+    direction: str = "AUTO",
+    risk_percentage: Optional[float] = None,
+    reward_percentage: Optional[float] = None,
+    num_lots: int = 1,
+) -> Dict[str, Any]:
+    """Realtime analysis for one checklist step and its prerequisite steps."""
+    from services.v2_realtime_checklist import step_indices_for_analysis
+
+    cfg = get_agent_config()
+    risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
+    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    market_open = is_market_session_open()
+    indices = step_indices_for_analysis(step)
+    _, margin, kite_msg = _check_kite_and_margin()
+    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    live = fetch_live_checklist(
+        direction,
+        market_open,
+        risk_pct,
+        reward_pct,
+        num_lots,
+        capital,
+        only_steps=indices,
+    )
+    if not live:
+        return {
+            "connected": False,
+            "message": kite_msg,
+            "focus_step": step,
+            "analyzed_steps": indices,
+            "step_statuses": [],
+            "checklist_ready": False,
+            "missing_steps": indices,
+            "market_open": market_open,
+            "allow_test_place": allow_offhours_v2_place(),
+        }
+    validation = live.get("validation")
+    trade_plan = live.get("trade_plan")
+    return {
+        "connected": True,
+        "message": kite_msg,
+        "focus_step": step,
+        "analyzed_steps": indices,
+        "step_statuses": live["step_statuses"],
+        "checklist_ready": live["checklist_ready"],
+        "missing_steps": live["missing_steps"],
+        "trade_plan": trade_plan,
+        "validation": validation,
+        "strategy_analysis": live.get("strategy_analysis"),
+        "can_place": _resolve_can_place(trade_plan, validation, market_open),
+        "market_open": market_open,
+        "allow_test_place": allow_offhours_v2_place(),
+        "nifty_spot": live.get("nifty_spot"),
+        "data_source": live.get("data_source"),
+    }
 
 
 def get_checklist_live(

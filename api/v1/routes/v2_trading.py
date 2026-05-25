@@ -25,6 +25,26 @@ async def checklist_live_v2(
     return SuccessResponse(data=data, message="Live checklist refreshed")
 
 
+@router.get("/checklist-analyze")
+async def checklist_analyze_v2(
+    request: Request,
+    step: int,
+    direction: str = "AUTO",
+    risk_percentage: float | None = None,
+    reward_percentage: float | None = None,
+    num_lots: int = 1,
+):
+    """Realtime analysis for one step and its prerequisite steps (0-based index)."""
+    data = v2_trade_service.get_checklist_analyze(
+        step=step,
+        direction=direction,
+        risk_percentage=risk_percentage,
+        reward_percentage=reward_percentage,
+        num_lots=num_lots,
+    )
+    return SuccessResponse(data=data, message="Step analysis ready")
+
+
 @router.get("/strategy-analysis")
 async def strategy_analysis_v2(request: Request, direction: str = "AUTO"):
     """Rank top 4 Nifty F&O strategies using session data from prior checklist steps."""

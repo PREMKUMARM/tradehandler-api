@@ -3,9 +3,34 @@ V2 — live checklist: every step uses fresh Kite ticker (Nifty) + quotes + chai
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
+
+# 0-based; must match tradehandler v2.component.ts preBuyChecklist[].dependsOn
+V2_STEP_DEPENDS_ON: List[List[int]] = [
+    [],
+    [],
+    [],
+    [0, 1, 2],
+    [0, 1, 2, 3],
+    [1, 4],
+    [4, 5],
+    [6],
+    [1, 3],
+    [7, 8],
+    [6, 7, 8, 9],
+    [10],
+]
+
+
+def step_indices_for_analysis(step_index: int) -> List[int]:
+    """This step plus its declared prerequisite steps (live realtime)."""
+    if step_index < 0 or step_index >= len(V2_STEP_DEPENDS_ON):
+        raise ValueError(f"Invalid checklist step index: {step_index}")
+    deps = V2_STEP_DEPENDS_ON[step_index]
+    return sorted(set(deps + [step_index]))
 
 from schemas.v2_trading import ChecklistStepStatus
 from services.nifty_option_chain import build_nifty_options_universe, nifty50_index_token
@@ -211,7 +236,26 @@ def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, 
     }
 
 
-def run_realtime_checklist(
+@dataclass
+class ChecklistContext:
+    direction: str
+    margin: float
+    market_open: bool
+    live: Dict[str, Any]
+    spot: float
+    prev_close: float
+    ohlc: Dict[str, Any]
+    vix: Dict[str, float]
+    intra: Dict[str, Any]
+    src_map: Dict[str, Any]
+    kite: Any
+    chain: Dict[str, Any]
+    strategy_analysis: Dict[str, Any]
+    trade_plan: Optional[Dict[str, Any]]
+    validation: Optional[Dict[str, Any]]
+
+
+def _build_checklist_context(
     direction: str,
     margin: float,
     market_open: bool,
@@ -219,18 +263,9 @@ def run_realtime_checklist(
     reward_pct: float,
     num_lots: int,
     capital: float,
-) -> Dict[str, Any]:
-    """
-    Execute all 12 checklist steps with live Kite data.
-    Returns step_statuses, strategy_analysis, trade_plan, missing, checklist_ready.
-    """
-    from services.v2_trade_service import (
-        STEP_TITLES,
-        _validate_trade_plan,
-        build_trade_plan,
-    )
-
-    from services.kite_live_indicators import get_nifty_bundle_for_v2, recalculate_from_ticker
+) -> ChecklistContext:
+    from services.v2_trade_service import _validate_trade_plan, build_trade_plan
+    from services.kite_live_indicators import recalculate_from_ticker
 
     live = recalculate_from_ticker()
     spot = float(live.get("nifty_spot") or 0)
@@ -242,28 +277,23 @@ def run_realtime_checklist(
         "close": prev_close,
     }
     vix_ltp = float(live.get("vix") or 0)
-    vix = {"ltp": vix_ltp, "chg_pct": 0.0}
+    vix: Dict[str, float] = {"ltp": vix_ltp, "chg_pct": 0.0}
     if prev_close > 0 and vix_ltp:
         try:
-            from utils.kite_utils import get_kite_instance
-
             vq = (get_kite_instance().quote(["NSE:INDIA VIX"]) or {}).get("NSE:INDIA VIX", {})
             vpc = float((vq.get("ohlc") or {}).get("close") or vix_ltp)
             vix["chg_pct"] = ((vix_ltp - vpc) / vpc * 100) if vpc else 0
         except Exception:
             pass
-    intra = live
     src_map = live.get("indicator_sources") or {}
     kite = get_kite_instance()
     universe = build_nifty_options_universe(kite)
     chain = _chain_live(kite, spot, universe)
-
     strategy_analysis = analyze_fno_strategies(direction_pref=direction, margin=margin)
     trade_plan = None
-    plan_msgs: List[str] = []
     validation = None
     if spot > 0:
-        plan, plan_msgs = build_trade_plan(
+        plan, _ = build_trade_plan(
             direction,
             risk_pct,
             reward_pct,
@@ -274,178 +304,242 @@ def run_realtime_checklist(
         trade_plan = plan
         if trade_plan:
             validation = _validate_trade_plan(trade_plan, capital, risk_pct, reward_pct)
+    return ChecklistContext(
+        direction=direction,
+        margin=margin,
+        market_open=market_open,
+        live=live,
+        spot=spot,
+        prev_close=prev_close,
+        ohlc=ohlc,
+        vix=vix,
+        intra=live,
+        src_map=src_map,
+        kite=kite,
+        chain=chain,
+        strategy_analysis=strategy_analysis,
+        trade_plan=trade_plan,
+        validation=validation,
+    )
 
-    missing: List[int] = []
-    statuses: List[ChecklistStepStatus] = []
+
+def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStepStatus:
+    direction = ctx.direction
+    margin = ctx.margin
+    market_open = ctx.market_open
+    live = ctx.live
+    spot = ctx.spot
+    prev_close = ctx.prev_close
+    ohlc = ctx.ohlc
+    vix = ctx.vix
+    intra = ctx.intra
+    chain = ctx.chain
+    strategy_analysis = ctx.strategy_analysis
+    trade_plan = ctx.trade_plan
+    kite = ctx.kite
     opt = (trade_plan or {}).get("option_type") or strategy_analysis.get("selected_option_kind") or "CE"
 
-    for i, title in enumerate(STEP_TITLES):
-        if i == 0:
-            ok = margin > 0 and spot > 0
-            if not ok:
-                missing.append(i)
-            src = live.get("spot_source", "quote")
-            ticks = live.get("tick_count_today", 0)
-            out = f"Margin ₹{margin:,.0f} · Nifty {spot:.2f} via {src} ({ticks} ticks today)"
-            statuses.append(_step(i, title, ok, "Session live", out))
-        elif i == 1:
-            gap = ((ohlc.get("open", spot) - prev_close) / prev_close * 100) if prev_close else 0
-            bias = "CE" if spot >= prev_close else "PE"
-            if direction.upper() in ("CE", "PE"):
-                bias = direction.upper()
-            ok = spot > 0
-            or_h, or_l = intra.get("or_high"), intra.get("or_low")
-            pdh, pdl = intra.get("pdh"), intra.get("pdl")
-            parts = [
-                f"Spot {spot:.2f} vs prior {prev_close:.2f} → {bias}",
-                f"Day {ohlc.get('low', spot):.0f}–{ohlc.get('high', spot):.0f}",
-                f"Gap {gap:+.2f}%",
-            ]
-            if or_h and or_l:
-                parts.append(f"OR {or_l:.0f}–{or_h:.0f}")
-            if pdh and pdl:
-                parts.append(f"PDH {pdh:.0f} PDL {pdl:.0f}")
-            ema_src = src_map.get("ema9", "?")
-            parts.append(f"EMA9 {intra.get('ema9')} ({ema_src})")
-            statuses.append(_step(i, title, ok, "Hypothesis (ticker+hist)", " · ".join(parts)))
-        elif i == 2:
-            ok = vix["ltp"] > 0
-            iv_note = "elevated" if vix["ltp"] > 18 else "moderate" if vix["ltp"] > 12 else "low"
-            out = f"VIX {vix['ltp']:.2f} ({vix['chg_pct']:+.1f}% vs prior close) — IV {iv_note}"
-            statuses.append(_step(i, title, ok, "VIX live", out))
-        elif i == 3:
-            ok = bool(strategy_analysis.get("selected_id"))
-            out = strategy_analysis.get("output_summary", "")
-            statuses.append(
-                _step(
-                    i,
-                    title,
-                    ok,
-                    f"Best: {strategy_analysis.get('selected_name')} ({strategy_analysis.get('selected_score')}/100)",
-                    out,
-                )
-            )
-        elif i == 4:
-            ok = bool(chain)
-            if chain:
-                ce = chain.get("atm_ce") or {}
-                pe = chain.get("atm_pe") or {}
-                out = (
-                    f"Expiry {chain.get('expiry')} · ATM {chain.get('atm')} · PCR {chain.get('pcr')} · "
-                    f"CE OI {chain.get('ce_oi_total'):,} PE OI {chain.get('pe_oi_total'):,} · "
-                    f"Max-OI strike {chain.get('max_pain_strike')} · "
-                    f"ATM CE ₹{ce.get('ltp', 0)} spread {ce.get('spread_pct', 0)}% · "
-                    f"ATM PE ₹{pe.get('ltp', 0)} spread {pe.get('spread_pct', 0)}%"
-                )
-            else:
-                out = "Chain quote unavailable"
-                ok = False
-            statuses.append(_step(i, title, ok, "Option chain (live OI)", out))
-        elif i == 5:
-            ok = bool(trade_plan)
-            out = f"Expiry {trade_plan.get('expiry')}" if trade_plan else "—"
-            statuses.append(_step(i, title, ok, "Expiry (nearest liquid)", out))
-        elif i == 6:
-            ok = bool(trade_plan)
-            spread = ""
-            if chain and chain.get("atm_ce"):
-                spread = f" · ATM CE spread {chain['atm_ce'].get('spread_pct')}%"
-            money = trade_plan.get("strike_moneyness", "ATM") if trade_plan else "ATM"
-            atm_ref = trade_plan.get("atm_reference", chain.get("atm", "")) if trade_plan else ""
-            delta_u = trade_plan.get("delta_used", "") if trade_plan else ""
-            out = (
-                f"{money} strike {trade_plan.get('strike')} {opt} "
-                f"(live ATM ref {atm_ref}, δ {delta_u}){spread}"
-                if trade_plan
-                else "—"
-            )
-            tag = trade_plan.get("pattern_tag", "") if trade_plan else ""
-            if tag:
-                out += f" · pattern {tag}"
-            statuses.append(_step(i, title, ok, "Strike (live moneyness)", out))
-        elif i == 7:
-            ok = bool(trade_plan)
-            est = " (estimated)" if trade_plan and trade_plan.get("estimated_premium") else ""
-            lim = trade_plan.get("entry_limit_price") if trade_plan else None
-            out = (
-                f"LIMIT entry ₹{lim} · LTP ₹{trade_plan.get('entry_premium')}{est} · "
-                f"Risk ₹{trade_plan.get('risk_inr')} · Reward ₹{trade_plan.get('reward_inr')}"
-                if trade_plan
-                else "—"
-            )
-            statuses.append(_step(i, title, ok, "Entry/exit premiums (indicators + live LTP)", out))
-        elif i == 8:
-            ok = bool(trade_plan)
-            out = (
-                f"GTT SL ₹{trade_plan.get('stop_loss_premium')} TP ₹{trade_plan.get('target_premium')} · "
-                f"Nifty {trade_plan.get('spot_stop_loss')} → {trade_plan.get('spot_target')}"
-                if trade_plan
-                else "—"
-            )
-            statuses.append(_step(i, title, ok, "Exit levels (live)", out))
-        elif i == 9:
-            ok = bool(trade_plan)
-            out = (
-                f"{trade_plan.get('num_lots')} lots × {trade_plan.get('lot_size')} = {trade_plan.get('quantity')} qty"
-                if trade_plan
-                else "—"
-            )
-            statuses.append(_step(i, title, ok, "Size (live margin)", out))
-        elif i == 10:
-            ok = bool(trade_plan)
-            spread_ok = True
-            if chain.get("atm_ce") and chain["atm_ce"].get("spread_pct", 99) > 3:
-                spread_ok = False
-            out = (
-                f"MIS · LIMIT entry ₹{trade_plan.get('entry_limit_price')} · GTT OCO exit only · "
-                f"spread OK={spread_ok}"
-                if trade_plan
-                else "—"
-            )
-            statuses.append(_step(i, title, ok and spread_ok, "LIMIT entry + GTT exit", out))
-        elif i == 11:
-            ok = bool(trade_plan)
-            ltp = trade_plan.get("entry_premium") if trade_plan else 0
-            if trade_plan and trade_plan.get("tradingsymbol"):
-                try:
-                    sym = trade_plan["tradingsymbol"]
-                    q = kite.quote(f"NFO:{sym}").get(f"NFO:{sym}", {}) or {}
-                    ltp = float(q.get("last_price") or ltp)
-                except Exception:
-                    pass
-            out = (
-                f"BUY {trade_plan.get('quantity')} {trade_plan.get('tradingsymbol')} @ ₹{ltp:.2f}"
-                if trade_plan
-                else "—"
-            )
-            statuses.append(
-                _step(
-                    i,
-                    title,
-                    ok,
-                    "Ticket (live LTP)" if market_open else "Ticket (live quote, market closed)",
-                    out,
-                )
-            )
+    src_map = ctx.src_map
 
-    if 0 not in missing and margin <= 0:
+    if i == 0:
+        ok = margin > 0 and spot > 0
+        src = live.get("spot_source", "quote")
+        ticks = live.get("tick_count_today", 0)
+        out = f"Margin ₹{margin:,.0f} · Nifty {spot:.2f} via {src} ({ticks} ticks today)"
+        return _step(i, title, ok, "Session live", out)
+    if i == 1:
+        gap = ((ohlc.get("open", spot) - prev_close) / prev_close * 100) if prev_close else 0
+        bias = "CE" if spot >= prev_close else "PE"
+        if direction.upper() in ("CE", "PE"):
+            bias = direction.upper()
+        ok = spot > 0
+        or_h, or_l = intra.get("or_high"), intra.get("or_low")
+        pdh, pdl = intra.get("pdh"), intra.get("pdl")
+        parts = [
+            f"Spot {spot:.2f} vs prior {prev_close:.2f} → {bias}",
+            f"Day {ohlc.get('low', spot):.0f}–{ohlc.get('high', spot):.0f}",
+            f"Gap {gap:+.2f}%",
+        ]
+        if or_h and or_l:
+            parts.append(f"OR {or_l:.0f}–{or_h:.0f}")
+        if pdh and pdl:
+            parts.append(f"PDH {pdh:.0f} PDL {pdl:.0f}")
+        ema_src = src_map.get("ema9", "?")
+        parts.append(f"EMA9 {intra.get('ema9')} ({ema_src})")
+        return _step(i, title, ok, "Hypothesis (ticker+hist)", " · ".join(parts))
+    if i == 2:
+        ok = vix["ltp"] > 0
+        iv_note = "elevated" if vix["ltp"] > 18 else "moderate" if vix["ltp"] > 12 else "low"
+        out = f"VIX {vix['ltp']:.2f} ({vix['chg_pct']:+.1f}% vs prior close) — IV {iv_note}"
+        return _step(i, title, ok, "VIX live", out)
+    if i == 3:
+        ok = bool(strategy_analysis.get("selected_id"))
+        out = strategy_analysis.get("output_summary", "")
+        return _step(
+            i,
+            title,
+            ok,
+            f"Best: {strategy_analysis.get('selected_name')} ({strategy_analysis.get('selected_score')}/100)",
+            out,
+        )
+    if i == 4:
+        ok = bool(chain)
+        if chain:
+            ce = chain.get("atm_ce") or {}
+            pe = chain.get("atm_pe") or {}
+            out = (
+                f"Expiry {chain.get('expiry')} · ATM {chain.get('atm')} · PCR {chain.get('pcr')} · "
+                f"CE OI {chain.get('ce_oi_total'):,} PE OI {chain.get('pe_oi_total'):,} · "
+                f"Max-OI strike {chain.get('max_pain_strike')} · "
+                f"ATM CE ₹{ce.get('ltp', 0)} spread {ce.get('spread_pct', 0)}% · "
+                f"ATM PE ₹{pe.get('ltp', 0)} spread {pe.get('spread_pct', 0)}%"
+            )
+        else:
+            out = "Chain quote unavailable"
+            ok = False
+        return _step(i, title, ok, "Option chain (live OI)", out)
+    if i == 5:
+        ok = bool(trade_plan)
+        out = f"Expiry {trade_plan.get('expiry')}" if trade_plan else "—"
+        return _step(i, title, ok, "Expiry (nearest liquid)", out)
+    if i == 6:
+        ok = bool(trade_plan)
+        spread = ""
+        if chain and chain.get("atm_ce"):
+            spread = f" · ATM CE spread {chain['atm_ce'].get('spread_pct')}%"
+        money = trade_plan.get("strike_moneyness", "ATM") if trade_plan else "ATM"
+        atm_ref = trade_plan.get("atm_reference", chain.get("atm", "")) if trade_plan else ""
+        delta_u = trade_plan.get("delta_used", "") if trade_plan else ""
+        out = (
+            f"{money} strike {trade_plan.get('strike')} {opt} "
+            f"(live ATM ref {atm_ref}, δ {delta_u}){spread}"
+            if trade_plan
+            else "—"
+        )
+        tag = trade_plan.get("pattern_tag", "") if trade_plan else ""
+        if tag:
+            out += f" · pattern {tag}"
+        return _step(i, title, ok, "Strike (live moneyness)", out)
+    if i == 7:
+        ok = bool(trade_plan)
+        est = " (estimated)" if trade_plan and trade_plan.get("estimated_premium") else ""
+        lim = trade_plan.get("entry_limit_price") if trade_plan else None
+        out = (
+            f"LIMIT entry ₹{lim} · LTP ₹{trade_plan.get('entry_premium')}{est} · "
+            f"Risk ₹{trade_plan.get('risk_inr')} · Reward ₹{trade_plan.get('reward_inr')}"
+            if trade_plan
+            else "—"
+        )
+        return _step(i, title, ok, "Entry/exit premiums (indicators + live LTP)", out)
+    if i == 8:
+        ok = bool(trade_plan)
+        out = (
+            f"GTT SL ₹{trade_plan.get('stop_loss_premium')} TP ₹{trade_plan.get('target_premium')} · "
+            f"Nifty {trade_plan.get('spot_stop_loss')} → {trade_plan.get('spot_target')}"
+            if trade_plan
+            else "—"
+        )
+        return _step(i, title, ok, "Exit levels (live)", out)
+    if i == 9:
+        ok = bool(trade_plan)
+        out = (
+            f"{trade_plan.get('num_lots')} lots × {trade_plan.get('lot_size')} = {trade_plan.get('quantity')} qty"
+            if trade_plan
+            else "—"
+        )
+        return _step(i, title, ok, "Size (live margin)", out)
+    if i == 10:
+        ok = bool(trade_plan)
+        spread_ok = True
+        if chain.get("atm_ce") and chain["atm_ce"].get("spread_pct", 99) > 3:
+            spread_ok = False
+        out = (
+            f"MIS · LIMIT entry ₹{trade_plan.get('entry_limit_price')} · GTT OCO exit only · "
+            f"spread OK={spread_ok}"
+            if trade_plan
+            else "—"
+        )
+        return _step(i, title, ok and spread_ok, "LIMIT entry + GTT exit", out)
+    if i == 11:
+        ok = bool(trade_plan)
+        ltp = trade_plan.get("entry_premium") if trade_plan else 0
+        if trade_plan and trade_plan.get("tradingsymbol"):
+            try:
+                sym = trade_plan["tradingsymbol"]
+                q = kite.quote(f"NFO:{sym}").get(f"NFO:{sym}", {}) or {}
+                ltp = float(q.get("last_price") or ltp)
+            except Exception:
+                pass
+        out = (
+            f"BUY {trade_plan.get('quantity')} {trade_plan.get('tradingsymbol')} @ ₹{ltp:.2f}"
+            if trade_plan
+            else "—"
+        )
+        return _step(
+            i,
+            title,
+            ok,
+            "Ticket (live LTP)" if market_open else "Ticket (live quote, market closed)",
+            out,
+        )
+    raise ValueError(f"Unknown checklist step index: {i}")
+
+
+def run_realtime_checklist(
+    direction: str,
+    margin: float,
+    market_open: bool,
+    risk_pct: float,
+    reward_pct: float,
+    num_lots: int,
+    capital: float,
+    only_steps: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    """
+    Execute checklist steps with live Kite data.
+    If only_steps is set, return statuses for those indices only (plus shared plan/analysis).
+    """
+    from services.v2_trade_service import STEP_TITLES
+
+    ctx = _build_checklist_context(
+        direction, margin, market_open, risk_pct, reward_pct, num_lots, capital
+    )
+    emit = only_steps if only_steps is not None else list(range(len(STEP_TITLES)))
+    emit = sorted(set(emit))
+
+    statuses: List[ChecklistStepStatus] = []
+    missing: List[int] = []
+    for i in emit:
+        if i < 0 or i >= len(STEP_TITLES):
+            continue
+        st = _status_for_step(i, STEP_TITLES[i], ctx)
+        statuses.append(st)
+        if not st.server_ok:
+            missing.append(i)
+
+    if 0 in emit and 0 not in missing and ctx.margin <= 0:
         missing.append(0)
-    if not trade_plan:
+    if not ctx.trade_plan:
         for idx in range(4, 12):
-            if idx not in missing:
+            if idx in emit and idx not in missing:
                 missing.append(idx)
 
-    checklist_ready = len(missing) == 0 and spot > 0 and bool(trade_plan)
+    needs_plan = any(s >= 4 for s in emit)
+    checklist_ready = (
+        len(missing) == 0
+        and ctx.spot > 0
+        and (bool(ctx.trade_plan) if needs_plan else True)
+    )
 
     return {
         "step_statuses": [s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in statuses],
         "missing_steps": sorted(set(missing)),
         "checklist_ready": checklist_ready,
-        "strategy_analysis": strategy_analysis,
-        "trade_plan": trade_plan,
-        "validation": validation,
+        "strategy_analysis": ctx.strategy_analysis,
+        "trade_plan": ctx.trade_plan,
+        "validation": ctx.validation,
         "market_open": market_open,
-        "data_source": live.get("spot_source"),
-        "indicator_sources": src_map,
-        "nifty_spot": spot,
+        "data_source": ctx.live.get("spot_source"),
+        "indicator_sources": ctx.src_map,
+        "nifty_spot": ctx.spot,
     }
