@@ -81,6 +81,7 @@ class V2TradePreviewResponse(BaseModel):
     validation: Optional[Dict[str, Any]] = None
     messages: List[str] = []
     market_open: bool = False
+    allow_test_place: bool = False
     strategy_analysis: Optional[Dict[str, Any]] = None
 
 

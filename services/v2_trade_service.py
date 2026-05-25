@@ -3,6 +3,7 @@ V2 wizard — validate checklist, build Nifty ATM option trade plan, place entry
 """
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -51,6 +52,30 @@ def is_market_session_open() -> bool:
     if not is_weekday:
         return False
     return 9 * 60 + 15 <= minutes < 15 * 60 + 30
+
+
+def allow_offhours_v2_place() -> bool:
+    """When true, allow confirm/place for integration testing outside market hours."""
+    return os.getenv("V2_ALLOW_OFFHOURS_PLACE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _resolve_can_place(
+    trade_plan: Optional[Dict[str, Any]],
+    validation: Optional[Dict[str, Any]],
+    market_open: bool,
+) -> bool:
+    if not trade_plan:
+        return False
+    if market_open:
+        return bool(validation and validation.get("is_good_trade"))
+    if allow_offhours_v2_place():
+        return True
+    return False
 
 
 def _check_kite_and_margin() -> Tuple[bool, float, str]:
@@ -482,9 +507,13 @@ def preview_trade(
             trade_plan = plan
             resolved_dir = plan.get("option_type")
             validation = _validate_trade_plan(plan, capital, risk_pct, reward_pct)
-            can_place = bool(validation.get("is_good_trade")) and market_open
+            can_place = _resolve_can_place(trade_plan, validation, market_open)
             if not validation.get("is_good_trade"):
                 messages.append("Risk/reward validation failed — adjust size or levels")
+            elif not market_open and allow_offhours_v2_place():
+                messages.append(
+                    "Test mode: off-hours place enabled (V2_ALLOW_OFFHOURS_PLACE) — live session still preferred"
+                )
             elif not market_open:
                 messages.append("Preview only — confirm and place when market is open")
         else:
@@ -514,9 +543,13 @@ def preview_trade(
             if plan:
                 trade_plan = plan
                 validation = _validate_trade_plan(plan, capital, risk_pct, reward_pct)
-                can_place = bool(validation.get("is_good_trade")) and market_open
+                can_place = _resolve_can_place(trade_plan, validation, market_open)
                 if not validation.get("is_good_trade"):
                     messages.append("Risk/reward validation failed — adjust size or levels")
+                elif not market_open and allow_offhours_v2_place():
+                    messages.append(
+                        "Test mode: off-hours place enabled (V2_ALLOW_OFFHOURS_PLACE)"
+                    )
                 elif not market_open:
                     messages.append("Preview only — confirm and place when market is open")
 
@@ -529,6 +562,7 @@ def preview_trade(
         "validation": validation,
         "messages": messages,
         "market_open": market_open,
+        "allow_test_place": allow_offhours_v2_place(),
         "strategy_analysis": strategy_analysis,
     }
 
