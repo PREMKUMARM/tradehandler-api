@@ -11,6 +11,7 @@ from pathlib import Path
 # Add parent directory to path to import get_kite_instance
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from utils.kite_utils import get_kite_instance
+from utils.kite_order_utils import aggressive_limit_price, place_kite_order
 
 
 @tool
@@ -130,8 +131,8 @@ def place_order_tool(
             order_params["price"] = price
         if trigger_price is not None:
             order_params["trigger_price"] = trigger_price
-            
-        order_id = kite.place_order(**order_params)
+
+        order_id = place_kite_order(kite, order_params)
 
         record_order_placed(est_value)
         log_execution_audit(

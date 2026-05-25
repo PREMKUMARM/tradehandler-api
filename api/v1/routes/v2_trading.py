@@ -48,7 +48,7 @@ async def preview_v2_trade(request: Request, body: V2TradePreviewRequest):
 
 @router.post("/place")
 async def place_v2_trade(request: Request, body: V2TradePlaceRequest):
-    """Validate checklist, then place MARKET entry + GTT OCO exit on NFO."""
+    """Validate checklist, place entry (LIMIT or MARKET+protection), then GTT OCO exit on NFO."""
     data = v2_trade_service.place_trade(
         completed_steps=body.completed_steps,
         direction=body.direction,

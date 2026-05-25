@@ -106,8 +106,10 @@ async def place_order(req: Request, order_request: PlaceOrderRequest):
         if order_request.disclosed_quantity:
             kite_order_params["disclosed_quantity"] = order_request.disclosed_quantity
         
+        from utils.kite_order_utils import place_kite_order
+
         log_info(f"Placing order: {order_request.tradingsymbol} {order_request.transaction_type} {order_request.quantity}")
-        order_id = kite.place_order(**kite_order_params)
+        order_id = place_kite_order(kite, kite_order_params)
         
         # Add to order monitor if stoploss or target is specified
         if order_request.stoploss or order_request.target:

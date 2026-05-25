@@ -14,6 +14,7 @@ from schemas.v2_trading import ChecklistStepStatus
 from utils.margin_utils import parse_equity_margins
 from services.v2_strategy_analysis import analyze_fno_strategies
 from utils.kite_utils import get_kite_instance, get_access_token
+from utils.kite_order_utils import aggressive_limit_price
 from utils.logger import log_error, log_info
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -733,17 +734,31 @@ def place_trade(
                 "Paper trading mode is ON — orders go to paper ledger, not Zerodha"
             ]
 
-        entry = place_order_tool.invoke(
-            {
-                "tradingsymbol": symbol,
-                "exchange": "NFO",
-                "transaction_type": "BUY",
-                "quantity": qty,
-                "order_type": "MARKET",
-                "product": "MIS",
-                "skip_session_check": skip_session,
-            }
-        )
+        # Entry: LIMIT at live premium (Kite rejects API MARKET without market_protection).
+        # Exit: GTT OCO (SL + target) — placed after entry fills.
+        entry_type = os.getenv("V2_ENTRY_ORDER_TYPE", "LIMIT").strip().upper()
+        limit_px = aggressive_limit_price("BUY", entry_prem, buffer_pct=1.0)
+        entry_payload: Dict[str, Any] = {
+            "tradingsymbol": symbol,
+            "exchange": "NFO",
+            "transaction_type": "BUY",
+            "quantity": qty,
+            "product": "MIS",
+            "skip_session_check": skip_session,
+        }
+        if entry_type == "MARKET":
+            entry_payload["order_type"] = "MARKET"
+            result["messages"] = list(result.get("messages", [])) + [
+                "Entry: MARKET with Kite market_protection (exit via GTT OCO)"
+            ]
+        else:
+            entry_payload["order_type"] = "LIMIT"
+            entry_payload["price"] = limit_px
+            result["messages"] = list(result.get("messages", [])) + [
+                f"Entry: LIMIT ₹{limit_px} (est premium ₹{entry_prem}) · exit: GTT OCO"
+            ]
+
+        entry = place_order_tool.invoke(entry_payload)
         if entry.get("status") != "success":
             err = entry.get("error") or "Entry order failed"
             result["errors"].append(err)
