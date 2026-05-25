@@ -348,6 +348,14 @@ async def startup_event():
     except Exception as e:
         log_error(f"[Startup] NIFTY PDH/PDL signal registration failed: {e}")
 
+    # V2 wizard strategy watch (poll entry_ready, alert / optional auto-place)
+    try:
+        from services.v2_strategy_watch import register_v2_strategy_watch
+
+        register_v2_strategy_watch(asyncio.get_running_loop())
+    except Exception as e:
+        log_error(f"[Startup] V2 strategy watch registration failed: {e}")
+
 # Simulation state and helpers moved to simulation/ module
 
 # Legacy endpoint removed - use /api/v1/simulation/live-logs instead

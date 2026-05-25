@@ -103,3 +103,26 @@ class V2TradePlaceResponse(V2TradePreviewResponse):
     entry_order_id: Optional[str] = None
     gtt_trigger_id: Optional[str] = None
     errors: List[str] = []
+
+
+class V2WatchArmRequest(BaseModel):
+    direction: str = Field(default="AUTO", description="CE, PE, or AUTO")
+    num_lots: Optional[int] = Field(default=1, ge=1, le=50)
+    risk_percentage: Optional[float] = Field(default=None, gt=0, le=100)
+    reward_percentage: Optional[float] = Field(default=None, gt=0, le=100)
+    mode: str = Field(
+        default="autonomous",
+        description="autonomous = server auto LIMIT+GTT when setup confirms; alert = notify only",
+    )
+    auto_place_on_signal: bool = Field(
+        default=True,
+        description="For autonomous mode: place without browser (ignored in alert mode)",
+    )
+    disarm_after_place: bool = Field(
+        default=True,
+        description="Stop watch after one successful autonomous order per day",
+    )
+    auto_execute_checklist: bool = Field(
+        default=True,
+        description="Run full live checklist server-side while watching",
+    )
