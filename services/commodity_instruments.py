@@ -209,15 +209,23 @@ def resolve_commodity_contract(
         ]
     if not rows:
         return None
+    def _symbol_matches_strike(sym: str, strike: int) -> bool:
+        return str(strike) in sym
+
+    best_row = None
     for row in rows:
-        if _strike_from_row(row) == target:
+        s = _strike_from_row(row)
+        sym = str(row.get("tradingsymbol") or "")
+        if s == target and _symbol_matches_strike(sym, s):
             best_row = row
             break
-    else:
-        best_row = None
+    if not best_row:
         best_dist = 10**9
         for row in rows:
             s = _strike_from_row(row)
+            sym = str(row.get("tradingsymbol") or "")
+            if not _symbol_matches_strike(sym, s):
+                continue
             dist = abs(s - target)
             if dist < best_dist:
                 best_dist = dist
