@@ -6,9 +6,9 @@ from pydantic import BaseModel, Field
 class V2TradePreviewRequest(BaseModel):
     completed_steps: Optional[List[bool]] = Field(
         default=None,
-        min_length=11,
-        max_length=11,
-        description="Wizard step completion flags (11 steps); ignored when auto_execute",
+        min_length=12,
+        max_length=12,
+        description="Wizard step completion flags (12 steps); ignored when auto_execute",
     )
     auto_execute: bool = Field(
         default=False,
@@ -57,6 +57,19 @@ class TradePlanOut(BaseModel):
     reward_ratio: float
     estimated_premium: bool = False
     note: Optional[str] = None
+    strategy_id: Optional[str] = None
+    strategy_name: Optional[str] = None
+
+
+class StrategyAnalysisOut(BaseModel):
+    selected_id: str
+    selected_name: str
+    selected_score: int
+    selected_fit: str
+    selected_option_kind: str
+    context: Dict[str, Any] = {}
+    strategies: List[Dict[str, Any]] = []
+    output_summary: str = ""
 
 
 class V2TradePreviewResponse(BaseModel):
@@ -68,6 +81,7 @@ class V2TradePreviewResponse(BaseModel):
     validation: Optional[Dict[str, Any]] = None
     messages: List[str] = []
     market_open: bool = False
+    strategy_analysis: Optional[Dict[str, Any]] = None
 
 
 class V2TradePlaceResponse(V2TradePreviewResponse):

@@ -7,6 +7,13 @@ from services import v2_trade_service
 router = APIRouter(prefix="/v2/trade", tags=["V2 Trading"])
 
 
+@router.get("/strategy-analysis")
+async def strategy_analysis_v2(request: Request, direction: str = "AUTO"):
+    """Rank top 4 Nifty F&O strategies using session data from prior checklist steps."""
+    data = v2_trade_service.get_strategy_analysis(direction=direction)
+    return SuccessResponse(data=data, message="Strategy analysis ready")
+
+
 @router.post("/preview")
 async def preview_v2_trade(request: Request, body: V2TradePreviewRequest):
     """Validate checklist and build Nifty GTT trade plan without placing orders."""

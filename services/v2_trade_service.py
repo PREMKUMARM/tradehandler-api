@@ -12,6 +12,7 @@ from agent.tools.kite_tools import place_gtt_tool, place_order_tool
 from schemas.v2_trading import ChecklistStepStatus
 from utils.margin_utils import parse_equity_margins
 from services.push.option_contract_resolver import estimate_option_leg
+from services.v2_strategy_analysis import analyze_fno_strategies
 from utils.kite_utils import get_kite_instance, get_access_token
 from utils.logger import log_error, log_info
 
@@ -21,6 +22,7 @@ STEP_TITLES = [
     "Confirm session, connectivity, and buying power",
     "Define the trade hypothesis on Nifty",
     "Check India VIX and event risk",
+    "Strategy analysis",
     "Read the Nifty option chain",
     "Pick expiry with purpose",
     "Select strike using delta and liquidity",
@@ -32,9 +34,9 @@ STEP_TITLES = [
 ]
 
 # Steps that must be marked done in the wizard before place (0-indexed).
-REQUIRED_MARKED_STEPS = [0, 1, 2, 8]
+REQUIRED_MARKED_STEPS = [0, 1, 2, 9]
 # Steps validated at execution time on the server during market hours.
-MARKET_EXECUTION_STEPS = [3, 4, 5, 6, 7, 9, 10]
+MARKET_EXECUTION_STEPS = [4, 5, 6, 7, 8, 10, 11]
 
 
 def _ist_clock() -> Tuple[int, bool]:
@@ -110,9 +112,14 @@ def validate_checklist(
             msg = "VIX/events reviewed" if marked else "Mark after reviewing VIX and calendar"
             if not marked:
                 missing.append(i)
-        elif i == 8:
+        elif i == 3:
             server_ok = marked
-            msg = "Exit plan defined" if marked else "Mark after SL/target rules are set"
+            msg = "Strategy chosen" if marked else "Run strategy analysis and pick best fit"
+            if not marked:
+                missing.append(i)
+        elif i == 9:
+            server_ok = marked
+            msg = "Position sized" if marked else "Mark after size matches risk rule"
             if not marked:
                 missing.append(i)
         elif i in MARKET_EXECUTION_STEPS:
@@ -161,6 +168,7 @@ def _validate_checklist_auto(
     plan_error: Optional[str] = None,
     resolved_direction: Optional[str] = None,
     margin: float = 0.0,
+    strategy_analysis: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[ChecklistStepStatus], List[int], bool]:
     """Build per-step outputs for auto-execute preview UI."""
     statuses: List[ChecklistStepStatus] = []
@@ -193,17 +201,23 @@ def _validate_checklist_auto(
                 missing.append(i)
             statuses.append(_step(i, title, ok, msg, out))
         elif i == 2:
+            vix = (strategy_analysis or {}).get("context", {}).get("vix")
             ok = plan is not None
-            statuses.append(
-                _step(
-                    i,
-                    title,
-                    ok,
-                    "Event/VIX check passed for sizing",
-                    "Proceed with defined risk % — review calendar before live size-up",
-                )
-            )
+            out = (
+                f"VIX {vix:.1f} — sized for current IV" if vix else "VIX/event check passed"
+            ) if ok else plan_error
+            statuses.append(_step(i, title, ok, "VIX & event risk reviewed", out))
         elif i == 3:
+            ok = strategy_analysis is not None and plan is not None
+            sa = strategy_analysis or {}
+            out = sa.get("output_summary") or plan_error
+            msg = (
+                f"Best: {sa.get('selected_name')} ({sa.get('selected_score')}/100)"
+                if ok
+                else "Strategy analysis failed"
+            )
+            statuses.append(_step(i, title, ok, msg, out))
+        elif i == 4:
             ok = plan is not None
             out = (
                 f"Nifty spot {plan.get('nifty_spot')} · focus ATM/near-ATM {opt} liquidity"
@@ -211,19 +225,20 @@ def _validate_checklist_auto(
                 else plan_error
             )
             statuses.append(_step(i, title, ok, "Chain read (spot + OI context)", out))
-        elif i == 4:
+        elif i == 5:
             ok = plan is not None
             out = f"Expiry: {plan.get('expiry')}" if plan else plan_error
             statuses.append(_step(i, title, ok, "Nearest liquid weekly/monthly expiry", out))
-        elif i == 5:
+        elif i == 6:
             ok = plan is not None
+            strat = (plan or {}).get("strategy_name", "")
             out = (
-                f"Strike {plan.get('strike')} {opt} · ~delta 0.5 ATM"
+                f"Strike {plan.get('strike')} {opt} · ~delta 0.5 ATM · via {strat}"
                 if plan
                 else plan_error
             )
             statuses.append(_step(i, title, ok, "ATM strike selected", out))
-        elif i == 6:
+        elif i == 7:
             ok = plan is not None
             out = (
                 f"Entry ~₹{plan.get('entry_premium')} · max loss ~₹{plan.get('risk_inr')}"
@@ -231,7 +246,7 @@ def _validate_checklist_auto(
                 else plan_error
             )
             statuses.append(_step(i, title, ok, "Premium & max loss estimated", out))
-        elif i == 7:
+        elif i == 8:
             ok = plan is not None
             out = (
                 f"SL premium ₹{plan.get('stop_loss_premium')} · Target ₹{plan.get('target_premium')} · "
@@ -240,7 +255,7 @@ def _validate_checklist_auto(
                 else plan_error
             )
             statuses.append(_step(i, title, ok, "Exit plan (GTT OCO)", out))
-        elif i == 8:
+        elif i == 9:
             ok = plan is not None
             lots = plan.get("num_lots") if plan else 0
             lot_sz = plan.get("lot_size") if plan else 75
@@ -251,11 +266,11 @@ def _validate_checklist_auto(
                 else plan_error
             )
             statuses.append(_step(i, title, ok, "Position sized to risk rule", out))
-        elif i == 9:
+        elif i == 10:
             ok = plan is not None
             out = f"{plan.get('product')} · MARKET entry + GTT OCO exit" if plan else plan_error
             statuses.append(_step(i, title, ok, "MIS intraday · MARKET + GTT", out))
-        elif i == 10:
+        elif i == 11:
             has_plan = plan is not None
             ok = has_plan
             sym = plan.get("tradingsymbol") if plan else "—"
@@ -289,6 +304,7 @@ def build_trade_plan(
     reward_pct: float,
     num_lots: int,
     capital: float,
+    strategy_analysis: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     messages: List[str] = []
     kite = get_kite_instance()
@@ -299,21 +315,35 @@ def build_trade_plan(
     if nifty_ltp <= 0:
         return None, ["Could not fetch Nifty 50 price"]
 
-    option_kind = _resolve_direction(direction, nifty_ltp, prev_close)
-    if direction.upper() == "AUTO":
-        messages.append(f"Direction AUTO → {option_kind} (spot vs prior close)")
-
-    # Index-level SL/target: risk ~0.35% spot, reward = risk_pct:reward_pct ratio
-    risk_ratio = reward_pct / risk_pct if risk_pct > 0 else 2.0
-    spot_risk_pts = nifty_ltp * (risk_pct / 100.0) * 0.35
-    spot_risk_pts = max(spot_risk_pts, 15.0)
-
-    if option_kind == "CE":
-        spot_sl = nifty_ltp - spot_risk_pts
-        spot_tgt = nifty_ltp + spot_risk_pts * risk_ratio
+    strategy_id = None
+    strategy_name = None
+    if strategy_analysis:
+        strategy_id = strategy_analysis.get("selected_id")
+        strategy_name = strategy_analysis.get("selected_name")
+        option_kind = strategy_analysis.get("selected_option_kind") or _resolve_direction(
+            direction, nifty_ltp, prev_close
+        )
+        ranked = strategy_analysis.get("strategies") or []
+        sel_row = next((s for s in ranked if s.get("id") == strategy_id), ranked[0] if ranked else {})
+        nifty_ltp = float(sel_row.get("spot_entry") or nifty_ltp)
+        spot_sl = float(sel_row.get("spot_stop_loss") or nifty_ltp)
+        spot_tgt = float(sel_row.get("spot_target") or nifty_ltp)
+        messages.append(
+            f"Strategy: {strategy_name} (score {strategy_analysis.get('selected_score')})"
+        )
     else:
-        spot_sl = nifty_ltp + spot_risk_pts
-        spot_tgt = nifty_ltp - spot_risk_pts * risk_ratio
+        option_kind = _resolve_direction(direction, nifty_ltp, prev_close)
+        risk_ratio = reward_pct / risk_pct if risk_pct > 0 else 2.0
+        spot_risk_pts = max(nifty_ltp * (risk_pct / 100.0) * 0.35, 15.0)
+        if option_kind == "CE":
+            spot_sl = nifty_ltp - spot_risk_pts
+            spot_tgt = nifty_ltp + spot_risk_pts * risk_ratio
+        else:
+            spot_sl = nifty_ltp + spot_risk_pts
+            spot_tgt = nifty_ltp - spot_risk_pts * risk_ratio
+
+    if direction.upper() == "AUTO" and not strategy_analysis:
+        messages.append(f"Direction AUTO → {option_kind} (spot vs prior close)")
 
     lot_size = 75
     try:
@@ -373,6 +403,8 @@ def build_trade_plan(
         "reward_ratio": round(rr, 2),
         "estimated_premium": bool(leg.estimated),
         "note": leg.note,
+        "strategy_id": strategy_id,
+        "strategy_name": strategy_name,
     }
     messages.append(
         f"Plan: BUY {quantity} {leg.contract.tradingsymbol} @ ~₹{entry_prem:.2f} | "
@@ -430,8 +462,21 @@ def preview_trade(
     plan_error: Optional[str] = None
     resolved_dir: Optional[str] = None
 
+    strategy_analysis: Optional[Dict[str, Any]] = None
+
     if auto_execute:
-        plan, plan_msgs = build_trade_plan(direction, risk_pct, reward_pct, num_lots, capital)
+        strategy_analysis = analyze_fno_strategies(
+            direction_pref=direction,
+            margin=capital,
+        )
+        plan, plan_msgs = build_trade_plan(
+            direction,
+            risk_pct,
+            reward_pct,
+            num_lots,
+            capital,
+            strategy_analysis=strategy_analysis,
+        )
         messages.extend(plan_msgs)
         if plan:
             trade_plan = plan
@@ -453,6 +498,7 @@ def preview_trade(
             plan_error=plan_error,
             resolved_direction=resolved_dir,
             margin=capital,
+            strategy_analysis=strategy_analysis,
         )
     else:
         statuses, missing, checklist_ready = validate_checklist(
@@ -483,7 +529,16 @@ def preview_trade(
         "validation": validation,
         "messages": messages,
         "market_open": market_open,
+        "strategy_analysis": strategy_analysis,
     }
+
+
+def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
+    """Standalone strategy analysis for wizard step 4 (uses steps 1–3 context)."""
+    _, margin, _ = _check_kite_and_margin()
+    cfg = get_agent_config()
+    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    return analyze_fno_strategies(direction_pref=direction, margin=capital)
 
 
 def place_trade(
