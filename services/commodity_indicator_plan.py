@@ -117,15 +117,16 @@ def size_from_risk(
     lot_size: int,
     num_lots: int,
 ) -> Tuple[int, int, float]:
-    """Return (num_lots, quantity, risk_inr) from risk rule and live premium risk."""
+    """Return (num_lots, order_quantity, risk_inr). MCX Kite qty is in lots, not barrels."""
     prem_risk = max(0.05, entry_premium - sl_premium)
     max_risk_amt = capital * (risk_pct / 100.0)
-    max_lots = int(max_risk_amt / (prem_risk * lot_size)) if prem_risk > 0 else 0
+    risk_per_lot = prem_risk * lot_size
+    max_lots = int(max_risk_amt / risk_per_lot) if risk_per_lot > 0 else 0
     qty_lots = min(num_lots, max_lots) if max_lots >= 1 else num_lots
     qty_lots = max(1, qty_lots)
-    quantity = qty_lots * lot_size
-    risk_inr = prem_risk * quantity
-    return qty_lots, quantity, risk_inr
+    order_qty = qty_lots
+    risk_inr = risk_per_lot * qty_lots
+    return qty_lots, order_qty, risk_inr
 
 
 def build_indicator_trade_plan(
@@ -242,7 +243,7 @@ def build_indicator_trade_plan(
     qty_lots, quantity, risk_inr = size_from_risk(
         capital, risk_pct, float(entry_prem), sl_prem, ls, num_lots
     )
-    reward_inr = max(0.0, (tgt_prem - float(entry_prem)) * quantity)
+    reward_inr = max(0.0, (tgt_prem - float(entry_prem)) * ls * qty_lots)
     rr = (reward_inr / risk_inr) if risk_inr > 0 else 0.0
 
     bb_zone = None
@@ -320,7 +321,7 @@ def build_indicator_trade_plan(
         f"PDH {ind.get('pdh')} PDL {ind.get('pdl')} | EMA9 {ind.get('ema9')} | VIX {ind.get('vix')}"
     )
     messages.append(
-        f"Entry LIMIT ₹{entry_limit} (LTP ₹{entry_prem:.2f}) · {qty_lots} lot(s) × {lot_size} = {quantity} qty · "
+        f"Entry LIMIT ₹{entry_limit} (LTP ₹{entry_prem:.2f}) · {qty_lots} lot(s) × {ls} bbl (Kite qty {quantity}) · "
         f"Risk ₹{risk_inr:.0f} · GTT exit SL ₹{sl_prem} TP ₹{tgt_prem}"
     )
     return plan, messages
@@ -385,7 +386,7 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         )
     else:
         qty_lots = num_lots
-        quantity = plan.get("quantity", lot_size * num_lots)
+        quantity = plan.get("quantity", num_lots)
         risk_inr = plan.get("risk_inr", 0)
 
     updated = dict(plan)

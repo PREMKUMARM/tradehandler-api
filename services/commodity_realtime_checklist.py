@@ -301,7 +301,9 @@ def _build_checklist_context(
         )
         trade_plan = plan
         if trade_plan:
-            validation = _validate_trade_plan(trade_plan, capital, risk_pct, reward_pct)
+            validation = _validate_trade_plan(
+                trade_plan, capital, risk_pct, reward_pct, available_margin=margin
+            )
     return ChecklistContext(
         direction=direction,
         margin=margin,
@@ -453,7 +455,7 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
     if i == 8:
         ok = bool(trade_plan)
         out = (
-            f"{trade_plan.get('num_lots')} lots × {trade_plan.get('lot_size')} = {trade_plan.get('quantity')} qty"
+            f"{trade_plan.get('num_lots')} lot(s) × {trade_plan.get('lot_size')} bbl (Kite qty {trade_plan.get('quantity')})"
             if trade_plan
             else "—"
         )
@@ -481,7 +483,8 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
             except Exception:
                 pass
         out = (
-            f"BUY {trade_plan.get('quantity')} {trade_plan.get('tradingsymbol')} @ ₹{ltp:.2f}"
+            f"BUY {trade_plan.get('num_lots', trade_plan.get('quantity'))} lot "
+            f"{trade_plan.get('tradingsymbol')} @ ₹{ltp:.2f}"
             if trade_plan
             else "—"
         )

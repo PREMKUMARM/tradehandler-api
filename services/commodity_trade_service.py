@@ -99,8 +99,9 @@ def fetch_live_checklist(
 ) -> Optional[Dict[str, Any]]:
     """Run checklist steps on live Kite data; None if not connected."""
     kite_ok, margin, _ = _check_kite_and_margin()
+    cfg = get_agent_config()
     if capital <= 0:
-        capital = margin if margin > 0 else float(get_agent_config().trading_capital or 100000)
+        capital = _commodity_risk_capital(margin, float(cfg.trading_capital or 100000))
     if not kite_ok or margin <= 0:
         return None
     from services.commodity_realtime_checklist import run_realtime_checklist
@@ -358,24 +359,51 @@ def build_trade_plan(
     return plan, messages
 
 
-def _validate_trade_plan(plan: Dict[str, Any], capital: float, risk_pct: float, reward_pct: float) -> Dict[str, Any]:
+def _commodity_risk_capital(margin: float, cfg_capital: float) -> float:
+    """Risk % applies to book capital; MCX margin alone understates sizing headroom."""
+    base = float(cfg_capital or 100000)
+    if margin > 0:
+        return max(margin, base)
+    return base
+
+
+def _validate_trade_plan(
+    plan: Dict[str, Any],
+    capital: float,
+    risk_pct: float,
+    reward_pct: float,
+    available_margin: Optional[float] = None,
+) -> Dict[str, Any]:
     entry = plan["entry_premium"]
     sl = plan["stop_loss_premium"]
     tgt = plan["target_premium"]
-    qty = plan["quantity"]
+    ls = int(plan.get("lot_size") or 100)
+    qty_lots = int(plan.get("num_lots") or plan.get("quantity") or 1)
+    units = qty_lots * ls
     if entry <= sl:
         return {"is_good_trade": False, "error": "Stop-loss premium must be below entry for long option"}
     if tgt <= entry:
         return {"is_good_trade": False, "error": "Target premium must be above entry for long option"}
-    risk_amt = (entry - sl) * qty
-    reward_amt = (tgt - entry) * qty
+    risk_amt = (entry - sl) * units
+    reward_amt = (tgt - entry) * units
     max_risk = capital * risk_pct / 100.0
     ratio = reward_pct / risk_pct if risk_pct > 0 else 2.0
     min_reward = risk_amt * ratio
     risk_ok = risk_amt <= max_risk
     reward_ok = reward_amt >= min_reward
-    # MCX option premiums: reward INR on 1 lot often below capital-scaled min_reward while risk is fine.
-    is_good = risk_ok and (reward_ok or reward_amt >= risk_amt * 1.25)
+    premium_cost = entry * units
+    margin_cap = (
+        float(available_margin)
+        if available_margin is not None and available_margin > 0
+        else capital
+    )
+    afford_ok = premium_cost <= margin_cap
+    # MCX: minimum size is one lot; book risk % may be smaller than unavoidable lot premium risk.
+    mcx_min_lot = units >= int(plan.get("lot_size") or 100)
+    risk_acceptable = risk_ok or (mcx_min_lot and afford_ok)
+    is_good = afford_ok and risk_acceptable and (
+        reward_ok or reward_amt >= risk_amt * 1.25
+    )
     return {
         "is_good_trade": is_good,
         "risk_amount": round(risk_amt, 2),
@@ -384,6 +412,8 @@ def _validate_trade_plan(plan: Dict[str, Any], capital: float, risk_pct: float, 
         "min_required_reward": round(min_reward, 2),
         "risk_within_limit": risk_ok,
         "reward_meets_requirement": reward_ok,
+        "premium_cost": round(premium_cost, 2),
+        "affordable": afford_ok,
     }
 
 
@@ -403,7 +433,7 @@ def preview_trade(
 
     messages: List[str] = []
     _, margin, _ = _check_kite_and_margin()
-    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    capital = _commodity_risk_capital(margin, float(cfg.trading_capital or 100000))
 
     trade_plan = None
     validation = None
@@ -500,7 +530,7 @@ def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
     """Standalone strategy analysis for wizard step 4 (uses steps 1–3 context)."""
     _, margin, _ = _check_kite_and_margin()
     cfg = get_agent_config()
-    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    capital = _commodity_risk_capital(margin, float(cfg.trading_capital or 100000))
     return analyze_commodity_strategies(direction_pref=direction, margin=capital)
 
 
@@ -520,7 +550,7 @@ def get_checklist_analyze(
     market_open = is_mcx_session_open()
     indices = step_indices_for_analysis(step)
     _, margin, kite_msg = _check_kite_and_margin()
-    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    capital = _commodity_risk_capital(margin, float(cfg.trading_capital or 100000))
     live = fetch_live_checklist(
         direction,
         market_open,
@@ -575,7 +605,7 @@ def get_checklist_live(
     reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
     market_open = is_mcx_session_open()
     _, margin, kite_msg = _check_kite_and_margin()
-    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    capital = _commodity_risk_capital(margin, float(cfg.trading_capital or 100000))
     live = fetch_live_checklist(
         direction, market_open, risk_pct, reward_pct, num_lots, capital
     )
@@ -676,7 +706,7 @@ def place_trade(
     result["trade_plan"] = plan
 
     symbol = plan["tradingsymbol"]
-    qty = int(plan["quantity"])
+    qty = int(plan.get("num_lots") or plan.get("quantity") or 1)
     entry_limit = float(plan.get("entry_limit_price") or plan.get("entry_premium"))
     sl_prem = float(plan["stop_loss_premium"])
     tgt_prem = float(plan["target_premium"])
