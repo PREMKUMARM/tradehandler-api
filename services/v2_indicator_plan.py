@@ -14,6 +14,7 @@ from services.push.option_contract_resolver import (
 )
 from services.kite_live_indicators import get_nifty_bundle_for_v2, get_vix_snapshot, recalculate_from_ticker
 from services.v2_constants import V2_NFO_PRODUCT
+from services.v2_entry_pricing import EntryAnalysis, compute_strategy_entry
 from services.v2_strike_pricing import (
     _pick_moneyness,
     refine_spot_levels_from_candles,
@@ -44,9 +45,7 @@ def live_option_quote(tradingsymbol: str, exchange: str = "NFO") -> Dict[str, fl
 
 
 def precise_entry_limit_price(quote: Dict[str, float], transaction_type: str = "BUY") -> float:
-    """
-    LIMIT price from live book — BUY at ask (or LTP), SELL at bid (or LTP).
-    """
+    """Legacy: aggressive book price. Prefer compute_strategy_entry for V2 buys."""
     bid, ask, ltp = quote.get("bid", 0), quote.get("ask", 0), quote.get("ltp", 0)
     tx = (transaction_type or "BUY").upper()
     if tx == "BUY":
@@ -54,6 +53,38 @@ def precise_entry_limit_price(quote: Dict[str, float], transaction_type: str = "
     else:
         px = bid if bid > 0 else ltp
     return round_to_tick(max(0.05, px))
+
+
+def _apply_entry_analysis_to_plan(
+    plan: Dict[str, Any],
+    entry: EntryAnalysis,
+    *,
+    ltp: float,
+) -> Dict[str, Any]:
+    updated = dict(plan)
+    updated["entry_limit_price"] = entry.entry_limit_price
+    updated["entry_premium"] = round(float(ltp or entry.fair_premium), 2)
+    updated["entry_ready"] = entry.entry_ready
+    updated["entry_style"] = entry.entry_style
+    updated["entry_fair_premium"] = entry.fair_premium
+    updated["entry_confirmation_score"] = entry.confirmation_score
+    updated["entry_spot_trigger"] = entry.spot_trigger
+    updated["entry_block_reason"] = entry.block_reason
+    note = " · ".join(entry.notes) if entry.notes else ""
+    if entry.block_reason and not entry.entry_ready:
+        updated["note"] = entry.block_reason
+    elif note:
+        updated["note"] = note
+    ind = dict(updated.get("indicators") or {})
+    ind["entry_analysis"] = {
+        "ready": entry.entry_ready,
+        "style": entry.entry_style,
+        "score": entry.confirmation_score,
+        "spot_trigger": entry.spot_trigger,
+        "block_reason": entry.block_reason,
+    }
+    updated["indicators"] = ind
+    return updated
 
 
 def premium_levels_from_indicators(
@@ -170,7 +201,6 @@ def build_indicator_trade_plan(
     if not entry_prem or entry_prem <= 0:
         entry_prem = max(1.0, 0.007 * spot_entry)
         messages.append("Live option LTP unavailable — using estimate")
-    entry_limit = precise_entry_limit_price(quote, "BUY")
 
     sl_prem, tgt_prem, delta = premium_levels_from_indicators(
         entry_premium=float(entry_prem),
@@ -181,6 +211,23 @@ def build_indicator_trade_plan(
         kind=option_kind,
         vix=ind.get("vix"),
     )
+
+    entry_analysis = compute_strategy_entry(
+        strategy_id=sid,
+        option_kind=option_kind,
+        quote=quote,
+        spot=spot_entry,
+        strike=contract.strike,
+        delta=delta,
+        intra={**intra, "last_5m_close": ind.get("last_5m_close")},
+        prev_close=float(ind.get("prev_close") or 0),
+    )
+    entry_limit = entry_analysis.entry_limit_price
+    if not entry_analysis.entry_ready:
+        messages.append(
+            entry_analysis.block_reason or "Entry not confirmed — wait for setup"
+        )
+    messages.extend(entry_analysis.notes)
 
     lot_size = 75
     try:
@@ -198,8 +245,21 @@ def build_indicator_trade_plan(
     reward_inr = max(0.0, (tgt_prem - float(entry_prem)) * quantity)
     rr = (reward_inr / risk_inr) if risk_inr > 0 else 0.0
 
+    bb_zone = None
+    if ind.get("bb_middle") and ind.get("bb_upper") and ind.get("bb_lower"):
+        from services.kite_live_indicators import bollinger_zone
+
+        bb_zone = bollinger_zone(
+            spot_entry,
+            float(ind["bb_middle"]),
+            float(ind["bb_upper"]),
+            float(ind["bb_lower"]),
+            option_kind,
+        ).get("zone")
+
     indicator_snapshot = {
         **ind,
+        "bb_zone": bb_zone,
         "margin": capital,
         "risk_pct": risk_pct,
         "indicator_sources": ind.get("indicator_sources", {}),
@@ -244,9 +304,15 @@ def build_indicator_trade_plan(
         "delta_used": round(delta, 3),
         "atm_reference": int(round(spot_entry / 50) * 50),
         "pricing_note": (
-            f"{m_reason} · {level_note} · LIMIT entry ₹{entry_limit} from live quote · "
-            f"GTT SL ₹{sl_prem} TP ₹{tgt_prem}"
+            f"{m_reason} · {level_note} · {entry_analysis.entry_style} LIMIT ₹{entry_limit} "
+            f"(fair ₹{entry_analysis.fair_premium}) · GTT SL ₹{sl_prem} TP ₹{tgt_prem}"
         ),
+        "entry_ready": entry_analysis.entry_ready,
+        "entry_style": entry_analysis.entry_style,
+        "entry_fair_premium": entry_analysis.fair_premium,
+        "entry_confirmation_score": entry_analysis.confirmation_score,
+        "entry_spot_trigger": entry_analysis.spot_trigger,
+        "entry_block_reason": entry_analysis.block_reason,
         "indicators": indicator_snapshot,
     }
     messages.append(
@@ -268,7 +334,6 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         return plan
     quote = live_option_quote(sym)
     entry_prem = quote["ltp"] or plan.get("entry_premium", 0)
-    entry_limit = precise_entry_limit_price(quote, "BUY")
     spot_entry = float(live.get("nifty_spot") or plan.get("nifty_spot", 0))
     intra = {
         "pdh": live.get("pdh"),
@@ -293,6 +358,17 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         kind=kind,
         vix=live.get("vix"),
     )
+    entry_analysis = compute_strategy_entry(
+        strategy_id=sid,
+        option_kind=kind,
+        quote=quote,
+        spot=spot_entry,
+        strike=int(plan.get("strike", 0)),
+        delta=delta,
+        intra={**intra, "last_5m_close": live.get("last_5m_close")},
+        prev_close=float(live.get("prev_close") or 0),
+    )
+    entry_limit = entry_analysis.entry_limit_price
     ind_meta = plan.get("indicators") or {}
     capital = float(ind_meta.get("margin") or 0)
     risk_pct = float(ind_meta.get("risk_pct") or 1.0)
@@ -328,6 +404,12 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
             "nifty_spot": round(spot_entry, 2),
             "spot_stop_loss": round(spot_sl, 2),
             "spot_target": round(spot_tgt, 2),
+            "entry_ready": entry_analysis.entry_ready,
+            "entry_style": entry_analysis.entry_style,
+            "entry_fair_premium": entry_analysis.fair_premium,
+            "entry_confirmation_score": entry_analysis.confirmation_score,
+            "entry_spot_trigger": entry_analysis.spot_trigger,
+            "entry_block_reason": entry_analysis.block_reason,
         }
     )
     ind = dict(plan.get("indicators") or {})

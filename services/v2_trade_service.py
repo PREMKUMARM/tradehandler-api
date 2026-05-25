@@ -71,6 +71,8 @@ def _resolve_can_place(
 ) -> bool:
     if not trade_plan:
         return False
+    if trade_plan.get("entry_ready") is False:
+        return False
     if market_open:
         return bool(validation and validation.get("is_good_trade"))
     if allow_offhours_v2_place():
@@ -697,6 +699,15 @@ def place_trade(
             "Off-hours test: bypassing session gate (LIMIT entry may still be rejected when exchange closed)"
         ]
 
+    entry_ready = plan.get("entry_ready", True)
+    if not entry_ready and not (skip_session and allow_offhours_v2_place()):
+        reason = plan.get("entry_block_reason") or "Entry setup not confirmed by indicators"
+        result["errors"].append(reason)
+        result["errors"].append(
+            "Refresh preview after OR/PDH/EMA conditions align; limit is set to patient mid, not market chase"
+        )
+        return result
+
     try:
         from services.paper_trading import is_paper_mode
 
@@ -706,9 +717,11 @@ def place_trade(
             ]
 
         ind = plan.get("indicators") or {}
+        entry_style = plan.get("entry_style") or "indicator_limit"
         result["messages"] = list(result.get("messages", [])) + [
             (
-                f"Entry LIMIT ₹{entry_limit} · {plan.get('num_lots')} lots × {plan.get('lot_size')} = {qty} qty · "
+                f"Entry {entry_style} LIMIT ₹{entry_limit} (fair ₹{plan.get('entry_fair_premium', entry_limit)}) · "
+                f"{plan.get('num_lots')} lots × {plan.get('lot_size')} = {qty} qty · "
                 f"Nifty SL {plan.get('spot_stop_loss')} TP {plan.get('spot_target')} · "
                 f"GTT SL ₹{sl_prem} TP ₹{tgt_prem}"
             ),

@@ -424,13 +424,28 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
         ok = bool(trade_plan)
         est = " (estimated)" if trade_plan and trade_plan.get("estimated_premium") else ""
         lim = trade_plan.get("entry_limit_price") if trade_plan else None
+        ready = trade_plan.get("entry_ready") if trade_plan else False
+        style = trade_plan.get("entry_style") or ""
+        trig = trade_plan.get("entry_spot_trigger")
+        ready_tag = "confirmed" if ready else "wait"
+        trig_s = f" · trigger {trig}" if trig else ""
+        ind = trade_plan.get("indicators") or {}
+        bb_s = ""
+        if ind.get("bb_middle"):
+            bb_s = (
+                f" · BB {ind.get('bb_zone', '?')} "
+                f"(L {ind.get('bb_lower'):.0f} M {ind.get('bb_middle'):.0f} U {ind.get('bb_upper'):.0f})"
+            )
         out = (
-            f"LIMIT entry ₹{lim} · LTP ₹{trade_plan.get('entry_premium')}{est} · "
+            f"{ready_tag} · {style} LIMIT ₹{lim} · LTP ₹{trade_plan.get('entry_premium')}{est}{trig_s}{bb_s} · "
             f"Risk ₹{trade_plan.get('risk_inr')} · Reward ₹{trade_plan.get('reward_inr')}"
             if trade_plan
             else "—"
         )
-        return _step(i, title, ok, "Entry/exit premiums (indicators + live LTP)", out)
+        msg = "Entry priced from indicators" if ready else (
+            trade_plan.get("entry_block_reason") or "Entry not confirmed"
+        )
+        return _step(i, title, ok and ready, msg, out)
     if i == 8:
         ok = bool(trade_plan)
         out = (
