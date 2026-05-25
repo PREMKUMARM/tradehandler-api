@@ -14,7 +14,8 @@ from schemas.v2_trading import ChecklistStepStatus
 from utils.margin_utils import parse_equity_margins
 from services.v2_strategy_analysis import analyze_fno_strategies
 from utils.kite_utils import get_kite_instance, get_access_token
-from utils.logger import log_error, log_info
+from utils.logger import log_error, log_info, log_warning
+from services.v2_constants import resolve_v2_nfo_product
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -312,8 +313,9 @@ def _validate_checklist_auto(
             statuses.append(_step(i, title, ok, "Position sized to risk rule", out))
         elif i == 10:
             ok = plan is not None
-            out = f"{plan.get('product')} · MARKET entry + GTT OCO exit" if plan else plan_error
-            statuses.append(_step(i, title, ok, "MIS intraday · MARKET + GTT", out))
+            prod = resolve_v2_nfo_product(plan) if plan else "NRML"
+            out = f"{prod} · LIMIT entry + GTT OCO exit" if plan else plan_error
+            statuses.append(_step(i, title, ok, "NRML + GTT (required by Zerodha)", out))
         elif i == 11:
             has_plan = plan is not None
             ok = has_plan
@@ -716,6 +718,15 @@ def place_trade(
             ),
         ]
 
+        product = resolve_v2_nfo_product(plan)
+        if str(plan.get("product") or "").upper() == "MIS":
+            log_warning("V2 place: MIS not valid with GTT on NFO — using NRML for entry and exit")
+            result["messages"] = list(result.get("messages", [])) + [
+                "Product: NRML (Zerodha GTT is not supported for MIS on NFO)"
+            ]
+            plan["product"] = product
+            result["trade_plan"] = plan
+
         entry = place_order_tool.invoke(
             {
                 "tradingsymbol": symbol,
@@ -724,7 +735,7 @@ def place_trade(
                 "quantity": qty,
                 "order_type": "LIMIT",
                 "price": entry_limit,
-                "product": "MIS",
+                "product": product,
                 "skip_session_check": skip_session,
             }
         )
@@ -758,7 +769,7 @@ def place_trade(
                 "target_price": tgt_prem,
                 "quantity": qty,
                 "transaction_type": "SELL",
-                "product": "MIS",
+                "product": product,
             }
         )
 

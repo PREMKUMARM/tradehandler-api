@@ -454,7 +454,7 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
         if chain.get("atm_ce") and chain["atm_ce"].get("spread_pct", 99) > 3:
             spread_ok = False
         out = (
-            f"MIS · LIMIT entry ₹{trade_plan.get('entry_limit_price')} · GTT OCO exit only · "
+            f"NRML · LIMIT entry ₹{trade_plan.get('entry_limit_price')} · GTT OCO exit only · "
             f"spread OK={spread_ok}"
             if trade_plan
             else "—"

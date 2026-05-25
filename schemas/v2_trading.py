@@ -49,7 +49,7 @@ class TradePlanOut(BaseModel):
     quantity: int
     lot_size: int = 75
     num_lots: int = 1
-    product: str = "MIS"
+    product: str = "NRML"
     entry_order_type: str = "LIMIT"
     entry_limit_price: Optional[float] = None
     exit_order_type: str = "GTT_OCO"

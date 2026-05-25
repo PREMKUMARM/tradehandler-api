@@ -13,6 +13,7 @@ from services.push.option_contract_resolver import (
     resolve_nifty_contract,
 )
 from services.kite_live_indicators import get_nifty_bundle_for_v2, get_vix_snapshot, recalculate_from_ticker
+from services.v2_constants import V2_NFO_PRODUCT
 from services.v2_strike_pricing import (
     _pick_moneyness,
     refine_spot_levels_from_candles,
@@ -222,7 +223,7 @@ def build_indicator_trade_plan(
         "quantity": quantity,
         "lot_size": lot_size,
         "num_lots": qty_lots,
-        "product": "MIS",
+        "product": V2_NFO_PRODUCT,
         "entry_order_type": "LIMIT",
         "entry_limit_price": entry_limit,
         "exit_order_type": "GTT_OCO",
