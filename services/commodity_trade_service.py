@@ -649,7 +649,14 @@ def place_trade(
 
     market_open = is_mcx_session_open()
     offhours_test = allow_offhours_commodity_place()
-    can_execute = bool(preview.get("can_place")) or (offhours_test and plan)
+    can_execute = bool(preview.get("can_place")) or (
+        offhours_test and plan
+    ) or (
+        bool(plan)
+        and plan.get("entry_ready")
+        and preview.get("checklist_ready")
+        and confirm
+    )
     if not can_execute:
         result["errors"].append("Cannot place — fix checklist or validation first")
         return result
@@ -686,13 +693,20 @@ def place_trade(
         ]
 
     entry_ready = plan.get("entry_ready", True)
-    if not entry_ready and not (skip_session and allow_offhours_commodity_place()):
+    manual_confirm = confirm and preview.get("checklist_ready")
+    if not entry_ready and not manual_confirm and not (
+        skip_session and allow_offhours_commodity_place()
+    ):
         reason = plan.get("entry_block_reason") or "Entry setup not confirmed by indicators"
         result["errors"].append(reason)
         result["errors"].append(
             "Refresh preview after OR/PDH/EMA conditions align; limit is set to patient mid, not market chase"
         )
         return result
+    if not entry_ready and manual_confirm:
+        result["messages"] = list(result.get("messages", [])) + [
+            "Manual confirm: placing despite entry_ready=false (user confirmed in UI)"
+        ]
 
     try:
         from services.paper_trading import is_paper_mode
@@ -726,6 +740,8 @@ def place_trade(
             plan["product"] = product
             result["trade_plan"] = plan
 
+        mcx_open = is_mcx_session_open()
+        skip_session_check = skip_session or mcx_open
         entry = place_order_tool.invoke(
             {
                 "tradingsymbol": symbol,
@@ -735,7 +751,7 @@ def place_trade(
                 "order_type": "LIMIT",
                 "price": entry_limit,
                 "product": product,
-                "skip_session_check": skip_session,
+                "skip_session_check": skip_session_check,
             }
         )
         if entry.get("status") != "success":
