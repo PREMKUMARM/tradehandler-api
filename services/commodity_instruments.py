@@ -91,9 +91,15 @@ def pick_option_tradingsymbol(strike: int, kind: str) -> str:
     rows = list_option_rows(k)
     if not rows:
         raise ValueError(f"No MCX {k} options for {OPTION_PREFIX}")
+    near = [
+        r
+        for r in rows
+        if _strike_from_row(r) > 0 and abs(_strike_from_row(r) - strike) <= max(500, strike * 0.15)
+    ]
+    scan = near if near else rows
     best = None
     best_dist = 10**9
-    for row in rows:
+    for row in scan:
         s = _strike_from_row(row)
         if s <= 0:
             continue
@@ -172,6 +178,14 @@ def resolve_commodity_contract(
     rows = list_option_rows(k)
     if not rows:
         return None
+    # Ignore far OTM series (e.g. strike 3750 when spot ~8700).
+    near = [
+        r
+        for r in rows
+        if _strike_from_row(r) > 0 and abs(_strike_from_row(r) - spot) <= max(500, spot * 0.15)
+    ]
+    if near:
+        rows = near
     best_row = None
     best_dist = 10**9
     for row in rows:
