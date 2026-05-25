@@ -172,25 +172,28 @@ def resolve_commodity_contract(
     if k not in ("CE", "PE"):
         return None
     target = strike_for_moneyness(spot, k, moneyness)
-    expected_sym = f"{OPTION_PREFIX}{target}{k}"
-    for row in list_option_rows(k):
-        if str(row.get("tradingsymbol") or "") == expected_sym:
-            exp = row.get("expiry")
-            if hasattr(exp, "date"):
-                exp = exp.date()
-            elif not isinstance(exp, date):
-                exp = date.today()
-            ls = int(row.get("lot_size") or DEFAULT_LOT_SIZE)
-            if ls < DEFAULT_LOT_SIZE:
-                ls = DEFAULT_LOT_SIZE
-            return CommodityOptionContract(
-                tradingsymbol=expected_sym,
-                strike=target,
-                expiry=exp,
-                instrument_token=int(row.get("instrument_token") or 0),
-                lot_size=ls,
-                instrument_type=k,
-            )
+    by_symbol = {str(r.get("tradingsymbol") or ""): r for r in list_option_rows(k)}
+    for strike_try in range(target, target - 250, -STRIKE_STEP):
+        expected_sym = f"{OPTION_PREFIX}{strike_try}{k}"
+        row = by_symbol.get(expected_sym)
+        if not row:
+            continue
+        exp = row.get("expiry")
+        if hasattr(exp, "date"):
+            exp = exp.date()
+        elif not isinstance(exp, date):
+            exp = date.today()
+        ls = int(row.get("lot_size") or DEFAULT_LOT_SIZE)
+        if ls < DEFAULT_LOT_SIZE:
+            ls = DEFAULT_LOT_SIZE
+        return CommodityOptionContract(
+            tradingsymbol=expected_sym,
+            strike=strike_try,
+            expiry=exp,
+            instrument_token=int(row.get("instrument_token") or 0),
+            lot_size=ls,
+            instrument_type=k,
+        )
     rows = list_option_rows(k)
     if not rows:
         return None
