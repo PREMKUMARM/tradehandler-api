@@ -415,9 +415,11 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
         return _step(i, title, ok, "Strike (live moneyness)", out)
     if i == 6:
         ok = bool(trade_plan)
-        est = " (estimated)" if trade_plan and trade_plan.get("estimated_premium") else ""
-        lim = trade_plan.get("entry_limit_price") if trade_plan else None
-        ready = trade_plan.get("entry_ready") if trade_plan else False
+        if not trade_plan:
+            return _step(i, title, False, "No trade plan", "—")
+        est = " (estimated)" if trade_plan.get("estimated_premium") else ""
+        lim = trade_plan.get("entry_limit_price")
+        ready = trade_plan.get("entry_ready")
         style = trade_plan.get("entry_style") or ""
         trig = trade_plan.get("entry_spot_trigger")
         ready_tag = "confirmed" if ready else "wait"

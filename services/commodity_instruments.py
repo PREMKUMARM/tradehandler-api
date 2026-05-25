@@ -61,11 +61,6 @@ def _expiry_key(value: Any) -> Optional[date]:
 
 def list_option_rows(kind: Optional[str] = None) -> List[Dict[str, Any]]:
     prefix = OPTION_PREFIX
-    fut_expiry = None
-    try:
-        fut_expiry = _expiry_key(resolve_future().get("expiry"))
-    except Exception:
-        pass
     out = []
     for row in _mcx_rows():
         it = str(row.get("instrument_type") or "").upper()
@@ -76,9 +71,22 @@ def list_option_rows(kind: Optional[str] = None) -> List[Dict[str, Any]]:
             continue
         if kind and it != kind.upper():
             continue
-        if fut_expiry is not None and _expiry_key(row.get("expiry")) != fut_expiry:
-            continue
         out.append(row)
+    if not out:
+        return out
+    # Keep only the nearest expiry to the configured future (drops stale series).
+    try:
+        fut_exp = _expiry_key(resolve_future().get("expiry"))
+    except Exception:
+        fut_exp = None
+    if fut_exp:
+        expiries = sorted(
+            {e for e in (_expiry_key(r.get("expiry")) for r in out) if e},
+            key=lambda e: abs((e - fut_exp).days),
+        )
+        if expiries:
+            pick = expiries[0]
+            out = [r for r in out if _expiry_key(r.get("expiry")) == pick]
     return out
 
 
