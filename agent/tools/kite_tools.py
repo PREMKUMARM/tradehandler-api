@@ -485,20 +485,22 @@ def place_gtt_tool(
                     "error": "last_price is required. Could not fetch from market."
                 }
         
-        # Build trigger_values based on trigger_type
+        # Build trigger_values based on trigger_type (Kite expects float arrays, not ltp dicts)
         if trigger_type == "single" or trigger_type == kite.GTT_TYPE_SINGLE:
             if not trigger_price:
                 return {
                     "status": "error",
                     "error": "trigger_price is required for single trigger GTT"
                 }
-            trigger_values = {"ltp": trigger_price}
+            trigger_values = [float(trigger_price)]
             orders = [{
+                "exchange": exchange,
+                "tradingsymbol": tradingsymbol,
                 "transaction_type": transaction_type,
                 "quantity": quantity,
-                "price": stop_loss_price or trigger_price * 0.99,  # Default to 1% below trigger
+                "price": stop_loss_price or trigger_price * 0.99,
                 "product": product,
-                "order_type": "LIMIT"
+                "order_type": "LIMIT",
             }]
         elif trigger_type == "two-leg" or trigger_type == kite.GTT_TYPE_OCO:
             if not trigger_prices or len(trigger_prices) != 2:
@@ -511,34 +513,33 @@ def place_gtt_tool(
                     "status": "error",
                     "error": "Both stop_loss_price and target_price are required for OCO GTT"
                 }
-            trigger_values = {
-                "ltp": [
-                    {"ltp": trigger_prices[0]},  # Stop-loss trigger
-                    {"ltp": trigger_prices[1]}  # Target trigger
-                ]
-            }
+            trigger_values = [float(trigger_prices[0]), float(trigger_prices[1])]
             orders = [
                 {
+                    "exchange": exchange,
+                    "tradingsymbol": tradingsymbol,
                     "transaction_type": transaction_type,
                     "quantity": quantity,
                     "price": stop_loss_price,
                     "product": product,
-                    "order_type": "LIMIT"
+                    "order_type": "LIMIT",
                 },
                 {
+                    "exchange": exchange,
+                    "tradingsymbol": tradingsymbol,
                     "transaction_type": transaction_type,
                     "quantity": quantity,
                     "price": target_price,
                     "product": product,
-                    "order_type": "LIMIT"
-                }
+                    "order_type": "LIMIT",
+                },
             ]
         else:
             return {
                 "status": "error",
-                "error": f"Invalid trigger_type: {trigger_type}. Use 'single' or 'two-leg'"
+                "error": f"Invalid trigger_type: {trigger_type}. Use 'single' or 'two-leg'",
             }
-        
+
         # Place GTT order
         trigger_id = kite.place_gtt(
             trigger_type=kite.GTT_TYPE_SINGLE if trigger_type == "single" else kite.GTT_TYPE_OCO,
@@ -613,13 +614,15 @@ def modify_gtt_tool(
                     "status": "error",
                     "error": "trigger_price is required for single trigger GTT"
                 }
-            trigger_values = {"ltp": trigger_price}
+            trigger_values = [float(trigger_price)]
             orders = [{
+                "exchange": exchange,
+                "tradingsymbol": tradingsymbol,
                 "transaction_type": transaction_type,
                 "quantity": quantity,
                 "price": stop_loss_price or trigger_price * 0.99,
                 "product": product,
-                "order_type": "LIMIT"
+                "order_type": "LIMIT",
             }]
         elif trigger_type == "two-leg" or trigger_type == kite.GTT_TYPE_OCO:
             if not trigger_prices or len(trigger_prices) != 2:
@@ -632,27 +635,26 @@ def modify_gtt_tool(
                     "status": "error",
                     "error": "Both stop_loss_price and target_price are required for OCO GTT"
                 }
-            trigger_values = {
-                "ltp": [
-                    {"ltp": trigger_prices[0]},
-                    {"ltp": trigger_prices[1]}
-                ]
-            }
+            trigger_values = [float(trigger_prices[0]), float(trigger_prices[1])]
             orders = [
                 {
+                    "exchange": exchange,
+                    "tradingsymbol": tradingsymbol,
                     "transaction_type": transaction_type,
                     "quantity": quantity,
                     "price": stop_loss_price,
                     "product": product,
-                    "order_type": "LIMIT"
+                    "order_type": "LIMIT",
                 },
                 {
+                    "exchange": exchange,
+                    "tradingsymbol": tradingsymbol,
                     "transaction_type": transaction_type,
                     "quantity": quantity,
                     "price": target_price,
                     "product": product,
-                    "order_type": "LIMIT"
-                }
+                    "order_type": "LIMIT",
+                },
             ]
         else:
             return {

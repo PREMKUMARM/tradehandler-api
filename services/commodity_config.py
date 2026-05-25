@@ -1,22 +1,19 @@
-"""MCX Crude Oil (CRUDEOIL26JUN) — wizard constants."""
+"""MCX commodity wizard constants (product-aware via commodity_product_context)."""
 from __future__ import annotations
 
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from services.commodity_product_context import get_active_product
+
 IST = ZoneInfo("Asia/Kolkata")
 
 EXCHANGE = "MCX"
-FUTURE_SYMBOL = os.getenv("COMMODITY_FUTURE_SYMBOL", "CRUDEOIL26JUN").strip() or "CRUDEOIL26JUN"
-OPTION_PREFIX = os.getenv("COMMODITY_OPTION_PREFIX", FUTURE_SYMBOL).strip() or FUTURE_SYMBOL
-STRIKE_STEP = 50
-TICK_SIZE = 0.05
-DEFAULT_LOT_SIZE = 100
-DEFAULT_NUM_LOTS = 1
 COMMODITY_PRODUCT = "NRML"
+DEFAULT_NUM_LOTS = 1
 
-# MCX crude session (IST) — full hours per user
+# MCX session (IST)
 MCX_OPEN_MINUTES = 9 * 60
 MCX_CLOSE_MINUTES = 23 * 60 + 30
 OR_START_HOUR = 9
@@ -25,12 +22,36 @@ OR_END_HOUR = 9
 OR_END_MINUTE = 30
 
 
+def future_symbol() -> str:
+    return get_active_product().future_symbol
+
+
+def option_prefix() -> str:
+    return get_active_product().option_prefix
+
+
+def strike_step() -> float:
+    return get_active_product().strike_step
+
+
+def units_per_lot() -> int:
+    return get_active_product().units_per_lot
+
+
+def product_label() -> str:
+    return get_active_product().label
+
+
+# Legacy module-level defaults (CRUDEOILM only)
+FUTURE_SYMBOL = os.getenv("COMMODITY_FUTURE_SYMBOL", "CRUDEOILM26JUNFUT").strip() or "CRUDEOILM26JUNFUT"
+OPTION_PREFIX = os.getenv("COMMODITY_OPTION_PREFIX", "CRUDEOILM26JUN").strip() or "CRUDEOILM26JUN"
+STRIKE_STEP = float(os.getenv("COMMODITY_STRIKE_STEP", "50") or 50)
+DEFAULT_LOT_SIZE = int(os.getenv("COMMODITY_UNITS_PER_LOT", "10") or 10)
+
+
 def is_mcx_session_open() -> bool:
     now = datetime.now(IST)
-    if now.weekday() > 5:  # Sun=6 in some libs; use 0=Mon
-        pass
-    day = now.weekday()
-    if day > 4:  # Sat=5, Sun=6
+    if now.weekday() > 4:
         return False
     minutes = now.hour * 60 + now.minute
     return MCX_OPEN_MINUTES <= minutes < MCX_CLOSE_MINUTES

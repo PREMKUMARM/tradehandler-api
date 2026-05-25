@@ -21,6 +21,10 @@ class CommodityTradePreviewRequest(BaseModel):
     risk_percentage: Optional[float] = Field(default=None, gt=0, le=100)
     reward_percentage: Optional[float] = Field(default=None, gt=0, le=100)
     num_lots: Optional[int] = Field(default=1, ge=1, le=50)
+    future_symbol: Optional[str] = Field(
+        default=None,
+        description="Ignored — app uses CRUDEOILM only (nearest listed month)",
+    )
 
 
 class CommodityTradePlaceRequest(CommodityTradePreviewRequest):

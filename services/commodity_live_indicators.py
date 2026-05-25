@@ -1,9 +1,9 @@
-"""Live MCX CRUDEOIL26JUN indicators (ticker + historical pad, same engine as Nifty)."""
+"""Live MCX CRUDEOILM indicators (ticker + historical pad, same engine as Nifty)."""
 from __future__ import annotations
 
 from typing import Any, Dict
 
-from services.commodity_config import FUTURE_SYMBOL
+from services.commodity_product_context import get_active_product
 from services.commodity_instruments import future_token
 from services.kite_live_indicators import ensure_kite_live_indicators_registered, get_live_indicator_snapshot
 from utils.kite_utils import get_kite_instance
@@ -23,10 +23,10 @@ def _ensure_crude_subscribed() -> None:
 
 
 def _mcx_future_ltp() -> tuple[float, str]:
-    """MCX quote for CRUDEOIL26JUN — avoids Nifty/VIX fallback in generic indicator engine."""
+    """MCX quote for CRUDEOILM future — avoids Nifty/VIX fallback in generic indicator engine."""
     try:
         kite = get_kite_instance()
-        key = f"MCX:{FUTURE_SYMBOL}"
+        key = f"MCX:{get_active_product().future_symbol}"
         row = (kite.quote(key) or {}).get(key, {}) or {}
         ltp = float(row.get("last_price") or 0)
         if ltp <= 0:

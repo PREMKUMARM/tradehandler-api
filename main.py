@@ -357,6 +357,13 @@ async def startup_event():
         log_error(f"[Startup] V2 strategy watch registration failed: {e}")
 
     try:
+        from services.commodity_bootstrap import bootstrap_crude_mini_product
+
+        bootstrap_crude_mini_product()
+    except Exception as e:
+        log_error(f"[Startup] Commodity CRUDEOILM bootstrap failed: {e}")
+
+    try:
         from services.commodity_strategy_watch import register_commodity_strategy_watch
 
         register_commodity_strategy_watch(asyncio.get_running_loop())

@@ -15,6 +15,15 @@ from services.commodity_strategy_watch import (
 router = APIRouter(prefix="/commodity/trade", tags=["Commodity Trading"])
 
 
+@router.get("/scan-affordable")
+async def scan_affordable_commodity(request: Request, direction: str = "AUTO"):
+    """CRUDEOILM premium cost vs available commodity margin."""
+    from services.commodity_affordable_scan import scan_affordable_commodities
+
+    data = scan_affordable_commodities(direction=direction)
+    return SuccessResponse(data=data, message="Affordable commodity scan complete")
+
+
 @router.get("/checklist-live")
 async def checklist_live_commodity(
     request: Request,
@@ -70,6 +79,7 @@ async def preview_commodity_trade(request: Request, body: CommodityTradePreviewR
         reward_percentage=body.reward_percentage,
         num_lots=body.num_lots or 1,
         auto_execute=body.auto_execute,
+        future_symbol=body.future_symbol,
     )
     return SuccessResponse(data=data, message="Trade preview ready")
 
@@ -83,6 +93,7 @@ async def place_commodity_trade(request: Request, body: CommodityTradePlaceReque
         risk_percentage=body.risk_percentage,
         reward_percentage=body.reward_percentage,
         num_lots=body.num_lots or 1,
+        future_symbol=body.future_symbol,
         confirm=body.confirm,
         auto_execute=body.auto_execute,
         trade_plan_snapshot=body.trade_plan,

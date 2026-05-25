@@ -395,7 +395,10 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
         return _step(i, title, ok, "Option chain (live OI)", out)
     if i == 4:
         ok = bool(trade_plan)
-        out = f"Expiry {trade_plan.get('expiry')} (CRUDEOIL26JUN)" if trade_plan else "—"
+        from services.commodity_product_context import get_active_product
+
+        prefix = get_active_product().option_prefix
+        out = f"Expiry {trade_plan.get('expiry')} ({prefix})" if trade_plan else "—"
         return _step(i, title, ok, "Expiry locked", out)
     if i == 5:
         ok = bool(trade_plan)

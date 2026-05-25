@@ -28,7 +28,7 @@ STEP_TITLES = [
     "Define the trade hypothesis on Crude Oil",
     "Strategy analysis",
     "Read the Crude option chain",
-    "Confirm expiry (CRUDEOIL26JUN)",
+    "Confirm expiry (CRUDEOILM)",
     "Select strike using delta and liquidity",
     "Estimate premium, Greeks, and max loss",
     "Plan exit before entry",
@@ -424,7 +424,40 @@ def preview_trade(
     reward_percentage: Optional[float] = None,
     num_lots: int = 1,
     auto_execute: bool = False,
+    future_symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
+    from contextlib import nullcontext
+
+    from services.commodity_product_context import use_commodity_product
+
+    ctx = (
+        use_commodity_product(future_symbol)
+        if future_symbol
+        else nullcontext()
+    )
+    with ctx:
+        return _preview_trade_impl(
+            completed_steps,
+            direction,
+            risk_percentage,
+            reward_percentage,
+            num_lots,
+            auto_execute,
+            future_symbol,
+        )
+
+
+def _preview_trade_impl(
+    completed_steps: Optional[List[bool]] = None,
+    direction: str = "AUTO",
+    risk_percentage: Optional[float] = None,
+    reward_percentage: Optional[float] = None,
+    num_lots: int = 1,
+    auto_execute: bool = False,
+    future_symbol: Optional[str] = None,
+) -> Dict[str, Any]:
+    from services.commodity_product_context import get_active_product
+
     cfg = get_agent_config()
     risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
     reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
@@ -511,6 +544,7 @@ def preview_trade(
     except Exception:
         pass
 
+    prod = get_active_product()
     return {
         "can_place": can_place and not paper_mode,
         "checklist_ready": checklist_ready,
@@ -523,6 +557,8 @@ def preview_trade(
         "allow_test_place": allow_offhours_commodity_place(),
         "paper_trading_mode": paper_mode,
         "strategy_analysis": strategy_analysis,
+        "future_symbol": prod.future_symbol,
+        "product_label": prod.label,
     }
 
 
@@ -647,6 +683,7 @@ def place_trade(
     confirm: bool = False,
     auto_execute: bool = False,
     trade_plan_snapshot: Optional[Dict[str, Any]] = None,
+    future_symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     preview = preview_trade(
         completed_steps,
@@ -655,6 +692,7 @@ def place_trade(
         reward_percentage,
         num_lots,
         auto_execute=auto_execute,
+        future_symbol=future_symbol,
     )
     result = {
         **preview,
@@ -819,7 +857,10 @@ def place_trade(
         )
 
         if gtt.get("status") == "success":
-            result["gtt_trigger_id"] = str(gtt.get("trigger_id"))
+            tid = gtt.get("trigger_id")
+            if isinstance(tid, dict):
+                tid = tid.get("trigger_id", tid)
+            result["gtt_trigger_id"] = str(tid)
             result["placed"] = True
             venue = "paper" if result["entry_paper"] else "Zerodha"
             result["messages"] = list(preview.get("messages", [])) + [

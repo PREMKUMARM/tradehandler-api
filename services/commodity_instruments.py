@@ -1,4 +1,4 @@
-"""Resolve MCX CRUDEOIL26JUN future + option contracts from Kite instruments."""
+"""Resolve MCX CRUDEOILM future + option contracts from Kite instruments."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,13 +6,9 @@ from datetime import date
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
-from services.commodity_config import (
-    DEFAULT_LOT_SIZE,
-    EXCHANGE,
-    FUTURE_SYMBOL,
-    OPTION_PREFIX,
-    STRIKE_STEP,
-)
+from services.commodity_config import EXCHANGE
+from services.commodity_product_context import get_active_product
+from services.commodity_products import strike_filter_band
 from utils.kite_utils import get_kite_instance
 from utils.logger import log_warning
 
@@ -24,18 +20,19 @@ def _mcx_rows() -> List[Dict[str, Any]]:
 
 
 def resolve_future() -> Dict[str, Any]:
+    fut_sym = get_active_product().future_symbol
     for row in _mcx_rows():
         if (
-            str(row.get("tradingsymbol") or "") == FUTURE_SYMBOL
+            str(row.get("tradingsymbol") or "") == fut_sym
             and str(row.get("instrument_type") or "").upper() == "FUT"
         ):
             return row
     for row in _mcx_rows():
         sym = str(row.get("tradingsymbol") or "")
-        if sym == FUTURE_SYMBOL or sym.startswith(FUTURE_SYMBOL):
+        if sym == fut_sym or sym.startswith(fut_sym.replace("FUT", "")):
             if str(row.get("instrument_type") or "").upper() == "FUT":
                 return row
-    raise ValueError(f"MCX future {FUTURE_SYMBOL} not found — refresh instruments cache")
+    raise ValueError(f"MCX future {fut_sym} not found — refresh instruments cache")
 
 
 def future_token() -> int:
@@ -43,10 +40,8 @@ def future_token() -> int:
 
 
 def lot_size() -> int:
-    try:
-        return int(resolve_future().get("lot_size") or DEFAULT_LOT_SIZE)
-    except Exception:
-        return DEFAULT_LOT_SIZE
+    """Contract units per lot (barrels, mmBtu, grams) — not Kite's lot_size field (often 1)."""
+    return get_active_product().units_per_lot
 
 
 def _expiry_key(value: Any) -> Optional[date]:
@@ -60,7 +55,7 @@ def _expiry_key(value: Any) -> Optional[date]:
 
 
 def list_option_rows(kind: Optional[str] = None) -> List[Dict[str, Any]]:
-    prefix = OPTION_PREFIX
+    prefix = get_active_product().option_prefix
     out = []
     for row in _mcx_rows():
         it = str(row.get("instrument_type") or "").upper()
@@ -99,8 +94,9 @@ def _strike_from_row(row: Dict[str, Any]) -> int:
     except (TypeError, ValueError):
         pass
     sym = str(row.get("tradingsymbol") or "")
-    if sym.startswith(OPTION_PREFIX):
-        rest = sym[len(OPTION_PREFIX) :]
+    prefix = get_active_product().option_prefix
+    if sym.startswith(prefix):
+        rest = sym[len(prefix) :]
         for suffix in ("CE", "PE"):
             if rest.endswith(suffix):
                 rest = rest[: -len(suffix)]
@@ -115,7 +111,7 @@ def pick_option_tradingsymbol(strike: int, kind: str) -> str:
     k = kind.upper()
     rows = list_option_rows(k)
     if not rows:
-        raise ValueError(f"No MCX {k} options for {OPTION_PREFIX}")
+        raise ValueError(f"No MCX {k} options for {get_active_product().option_prefix}")
     scan = [r for r in rows if _strike_from_row(r) > 0 and abs(_strike_from_row(r) - strike) <= max(800, strike * 0.12)]
     if not scan:
         scan = [r for r in rows if _strike_from_row(r) > 0]
@@ -130,16 +126,17 @@ def pick_option_tradingsymbol(strike: int, kind: str) -> str:
             best_dist = dist
             best = row
     if not best:
-        raise ValueError(f"No strike near {strike} for {OPTION_PREFIX} {k}")
+        raise ValueError(f"No strike near {strike} for {get_active_product().option_prefix} {k}")
     return str(best["tradingsymbol"])
 
 
 def atm_strike(spot: float) -> int:
-    return int(round(spot / STRIKE_STEP) * STRIKE_STEP)
+    step = get_active_product().strike_step
+    return int(round(spot / step) * step)
 
 
 def build_crude_options_universe(kite) -> List[Dict[str, Any]]:
-    """MCX CRUDEOIL options for chain / strike resolution."""
+    """MCX CRUDEOILM options for chain / strike resolution."""
     out: List[Dict[str, Any]] = []
     try:
         for inst in list_option_rows():
@@ -161,9 +158,10 @@ def strike_for_moneyness(
     spot: float,
     kind: str,
     moneyness: str,
-    step: int = STRIKE_STEP,
+    step: Optional[float] = None,
 ) -> int:
-    atm = atm_strike(spot)
+    step = step if step is not None else get_active_product().strike_step
+    atm = int(round(spot / step) * step)
     k = (kind or "CE").upper()
     m = (moneyness or "ATM").upper()
     if m == "ATM":
@@ -200,12 +198,13 @@ def resolve_commodity_contract(
     rows = list_option_rows(k)
     if not rows:
         return None
-    if spot > 1000:
+    if spot > 0:
+        lo, hi, max_dist = strike_filter_band(spot)
         rows = [
             r
             for r in rows
-            if 5000 <= _strike_from_row(r) <= 15000
-            and abs(_strike_from_row(r) - spot) <= max(800, spot * 0.12)
+            if lo <= _strike_from_row(r) <= hi
+            and abs(_strike_from_row(r) - spot) <= max_dist
         ]
     if not rows:
         return None
@@ -237,9 +236,7 @@ def resolve_commodity_contract(
         exp = exp.date()
     elif not isinstance(exp, date):
         exp = date.today()
-    ls = int(best_row.get("lot_size") or DEFAULT_LOT_SIZE)
-    if ls < DEFAULT_LOT_SIZE:
-        ls = DEFAULT_LOT_SIZE
+    ls = get_active_product().units_per_lot
     resolved_strike = _strike_from_row(best_row) or target
     return CommodityOptionContract(
         tradingsymbol=str(best_row["tradingsymbol"]),
