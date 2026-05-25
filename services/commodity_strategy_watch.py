@@ -1,12 +1,15 @@
 """
-V2 Strategy Watch — server-side deploy with optional full autonomy.
+Commodity Strategy Watch — CRUDEOILM autonomous with strict entry + no duplicates.
 
 Modes:
   - alert: push/WS when entry_ready; user places manually.
-  - autonomous: persists to disk, survives API restart, auto LIMIT+GTT when
-    entry_ready + can_place (retries each poll until placed or disarmed).
+  - autonomous: one LIMIT+GTT per day on rising edge of confirmed entry only.
 
-Autonomous is blocked only by kill-switch env/file or COMMODITY_WATCH_AUTONOMOUS=0.
+Safeguards:
+  - entry_ready must be True (not defaulted)
+  - minimum confirmation score + no block_reason + spread/limit chase checks
+  - placed_today + open-order + position checks before place
+  - in-flight place lock (no concurrent duplicate submits)
 """
 from __future__ import annotations
 
@@ -24,6 +27,10 @@ from zoneinfo import ZoneInfo
 
 from agent.ws_manager import broadcast_agent_update
 from services import commodity_trade_service
+from services.commodity_order_guard import (
+    autonomous_place_allowed,
+    min_entry_confirmation_score,
+)
 from services.push.push_service import push_service
 from utils.logger import log_error, log_info, log_warning
 
@@ -33,6 +40,7 @@ _MAX_EVENTS = 40
 _DEFAULT_POLL_SEC = 5
 _STATE_PATH = Path(os.getenv("COMMODITY_WATCH_STATE_FILE", "data/commodity_strategy_watch.json"))
 _lock = RLock()
+_place_lock = asyncio.Lock()
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -45,12 +53,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def watch_autonomous_globally_disabled() -> bool:
-    """Ops-only hard stop via env — normal users enable autonomous from the UI button."""
     return _env_bool("COMMODITY_WATCH_DISABLE_AUTONOMOUS", False)
 
 
 def watch_autonomous_allowed() -> bool:
-    """Whether the UI may offer autonomous (blocked only by ops env or kill switch)."""
     if watch_autonomous_globally_disabled():
         return False
     try:
@@ -103,7 +109,7 @@ class WatchConfig:
     num_lots: int = 1
     risk_percentage: Optional[float] = None
     reward_percentage: Optional[float] = None
-    mode: str = "alert"  # alert | autonomous
+    mode: str = "alert"
     auto_place_on_signal: bool = False
     auto_execute_checklist: bool = True
     disarm_after_place: bool = True
@@ -114,6 +120,7 @@ def _default_persisted() -> Dict[str, Any]:
         "armed": False,
         "session_date": _today_iso(),
         "placed_today": False,
+        "placed_symbol_today": None,
         "signal_fired_today": False,
         "config": asdict(WatchConfig()),
         "events": [],
@@ -146,14 +153,13 @@ def _write_persisted(data: Dict[str, Any]) -> None:
 
 
 def _normalize_mode(mode: str, auto_place_on_signal: bool) -> tuple[str, bool]:
-    """UI/API mode selects behavior — no separate env flag required to arm."""
     m = (mode or "alert").strip().lower()
     if m in ("auto", "autonomous"):
         return "autonomous", True
     return "alert", False
 
 
-class V2StrategyWatch:
+class CommodityStrategyWatch:
     def __init__(self) -> None:
         self._armed = False
         self._cfg = WatchConfig()
@@ -165,10 +171,12 @@ class V2StrategyWatch:
         self._last_eval_at: Optional[datetime] = None
         self._signal_fired_today = False
         self._placed_today = False
+        self._placed_symbol_today: Optional[str] = None
         self._eval_count = 0
         self._events: Deque[WatchEvent] = deque(maxlen=_MAX_EVENTS)
         self._task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._placing = False
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
@@ -178,6 +186,7 @@ class V2StrategyWatch:
             if data.get("session_date") != today:
                 data["session_date"] = today
                 data["placed_today"] = False
+                data["placed_symbol_today"] = None
                 data["signal_fired_today"] = False
                 data["last_entry_ready"] = None
                 data["eval_count"] = 0
@@ -194,6 +203,7 @@ class V2StrategyWatch:
             )
             self._armed = bool(data.get("armed"))
             self._placed_today = bool(data.get("placed_today"))
+            self._placed_symbol_today = data.get("placed_symbol_today")
             self._signal_fired_today = bool(data.get("signal_fired_today"))
             self._eval_count = int(data.get("eval_count") or 0)
             ler = data.get("last_entry_ready")
@@ -211,6 +221,7 @@ class V2StrategyWatch:
                 "armed": self._armed,
                 "session_date": _today_iso(),
                 "placed_today": self._placed_today,
+                "placed_symbol_today": self._placed_symbol_today,
                 "signal_fired_today": self._signal_fired_today,
                 "config": asdict(self._cfg),
                 "events": [e.to_dict() for e in list(self._events)],
@@ -234,6 +245,7 @@ class V2StrategyWatch:
             self._session_date = today
             self._signal_fired_today = False
             self._placed_today = False
+            self._placed_symbol_today = None
             self._last_entry_ready = None
             self._eval_count = 0
 
@@ -278,8 +290,13 @@ class V2StrategyWatch:
                 at=datetime.now(IST).isoformat(),
                 kind="armed",
                 message=(
-                    f"Watch armed ({mode}) — {self._cfg.direction}, {self._cfg.num_lots} lot(s)"
-                    + (" · autonomous LIMIT+GTT" if mode == "autonomous" else "")
+                    f"Commodity watch armed ({mode}) — CRUDEOILM · {self._cfg.direction}, "
+                    f"{self._cfg.num_lots} lot(s)"
+                    + (
+                        f" · auto on confirmed entry (score≥{min_entry_confirmation_score()})"
+                        if mode == "autonomous"
+                        else ""
+                    )
                 ),
             )
         )
@@ -296,7 +313,7 @@ class V2StrategyWatch:
                 WatchEvent(
                     at=datetime.now(IST).isoformat(),
                     kind="disarmed",
-                    message="Strategy watch stopped",
+                    message="Commodity strategy watch stopped",
                 )
             )
         else:
@@ -321,6 +338,7 @@ class V2StrategyWatch:
                 "auto_place_server_allowed": watch_autonomous_allowed(),
                 "disarm_after_place": cfg.disarm_after_place,
                 "auto_execute_checklist": cfg.auto_execute_checklist,
+                "min_entry_score": min_entry_confirmation_score(),
                 "persisted": _STATE_PATH.exists(),
                 "poll_interval_sec": _poll_interval(),
                 "last_eval_at": self._last_eval_at.isoformat() if self._last_eval_at else None,
@@ -330,6 +348,7 @@ class V2StrategyWatch:
                 "entry_block_reason": self._last_block_reason,
                 "signal_fired_today": self._signal_fired_today,
                 "placed_today": self._placed_today,
+                "placed_symbol_today": self._placed_symbol_today,
                 "strategy_name": plan.get("strategy_name"),
                 "tradingsymbol": plan.get("tradingsymbol"),
                 "nifty_spot": (plan.get("indicators") or {}).get("nifty_spot"),
@@ -359,17 +378,13 @@ class V2StrategyWatch:
                     break
             try:
                 if commodity_trade_service.is_mcx_session_open():
-                    (
-                        fire_signal,
-                        try_autonomous,
-                        preview,
-                        plan,
-                        can_place,
-                    ) = await asyncio.to_thread(self._evaluate_sync)
+                    fire_signal, try_autonomous, preview, plan, can_place = (
+                        await asyncio.to_thread(self._evaluate_sync)
+                    )
                     if fire_signal and preview is not None:
-                        await self._on_signal_ready(preview, plan, can_place, try_autonomous)
-                    elif try_autonomous and preview is not None:
-                        await self._try_auto_place(preview, plan)
+                        await self._on_signal_ready(
+                            preview, plan, can_place, try_autonomous
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -410,9 +425,7 @@ class V2StrategyWatch:
             auto_execute=cfg.auto_execute_checklist,
         )
         plan = preview.get("trade_plan") or {}
-        entry_ready = plan.get("entry_ready")
-        if entry_ready is None:
-            entry_ready = True
+        entry_ready = plan.get("entry_ready") is True
         can_place = bool(preview.get("can_place"))
         block = plan.get("entry_block_reason")
 
@@ -426,19 +439,28 @@ class V2StrategyWatch:
             self._last_can_place = can_place
             self._last_block_reason = block
             prev = self._last_entry_ready
-            self._last_entry_ready = bool(entry_ready)
+            self._last_entry_ready = entry_ready
 
+            # Rising edge only — one alert / one auto attempt per confirmed entry
             if entry_ready and not self._signal_fired_today and prev is not True:
                 if prev is False or (prev is None and self._eval_count > 1):
                     fire_signal = True
                     self._signal_fired_today = True
 
             if (
-                self._should_autonomous_place(cfg)
+                fire_signal
+                and self._should_autonomous_place(cfg)
                 and entry_ready
                 and can_place
+                and not self._placing
             ):
-                try_autonomous = True
+                allowed, _ = autonomous_place_allowed(
+                    plan,
+                    placed_today=self._placed_today,
+                    placed_symbol_today=self._placed_symbol_today,
+                )
+                if allowed:
+                    try_autonomous = True
 
         self._persist()
         return fire_signal, try_autonomous, preview, plan, can_place
@@ -452,20 +474,24 @@ class V2StrategyWatch:
     ) -> None:
         sym = plan.get("tradingsymbol") or "—"
         strat = plan.get("strategy_name") or preview.get("strategy_analysis", {}).get(
-            "selected_name", "V2"
+            "selected_name", "Commodity"
         )
         limit_px = plan.get("entry_limit_price") or plan.get("entry_premium")
+        score = plan.get("entry_confirmation_score")
         with _lock:
             autonomous = self._cfg.mode == "autonomous"
-        title = f"V2 setup ready — {strat}"
+        title = f"Crude Mini setup — {strat}"
         if autonomous and try_autonomous:
-            body = f"{sym} — placing LIMIT+GTT autonomously"
+            body = f"{sym} — placing patient LIMIT+GTT (score {score})"
         elif autonomous:
-            body = f"{sym} setup OK — waiting for risk gate ({plan.get('entry_block_reason') or 'validation'})"
+            body = (
+                f"{sym} confirmed — "
+                f"{plan.get('entry_block_reason') or 'waiting for margin/validation'}"
+            )
         else:
             body = f"{sym} LIMIT ₹{limit_px} · confirm in wizard"
             if not can_place:
-                body += " (risk validation pending)"
+                body += " (validation pending)"
 
         self._push_event(
             WatchEvent(
@@ -504,111 +530,148 @@ class V2StrategyWatch:
         except Exception as exc:
             log_warning(f"[CommodityWatch] push failed: {exc}")
 
-        log_info(f"[CommodityWatch] Signal ready {sym} can_place={can_place} autonomous={try_autonomous}")
+        log_info(
+            f"[CommodityWatch] Signal ready {sym} can_place={can_place} "
+            f"auto={try_autonomous} score={score}"
+        )
 
         if try_autonomous:
             await self._try_auto_place(preview, plan)
 
     async def _try_auto_place(self, preview: Dict[str, Any], plan: Dict[str, Any]) -> None:
-        with _lock:
-            if self._placed_today:
-                return
-            cfg = self._cfg
-            if not self._should_autonomous_place(cfg):
-                return
-
-        try:
-            from services.paper_trading import is_paper_mode
-            from services.risk_gate import check_order_allowed, is_kill_switch_active
-
-            if is_kill_switch_active():
-                self._push_event(
-                    WatchEvent(
-                        at=datetime.now(IST).isoformat(),
-                        kind="auto_skipped",
-                        message="Kill switch ON — autonomous place blocked",
-                    )
+        async with _place_lock:
+            with _lock:
+                if self._placed_today or self._placing:
+                    return
+                cfg = self._cfg
+                if not self._should_autonomous_place(cfg):
+                    return
+                allowed, guard_msg = autonomous_place_allowed(
+                    plan,
+                    placed_today=self._placed_today,
+                    placed_symbol_today=self._placed_symbol_today,
                 )
-                return
+                if not allowed:
+                    self._push_event(
+                        WatchEvent(
+                            at=datetime.now(IST).isoformat(),
+                            kind="auto_skipped",
+                            message=guard_msg[:240],
+                            tradingsymbol=plan.get("tradingsymbol"),
+                        )
+                    )
+                    return
+                self._placing = True
 
-            sym = plan.get("tradingsymbol") or ""
-            qty = int(plan.get("quantity") or 0)
-            entry_px = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
-            est_value = entry_px * qty
-            ok, gate_msg = check_order_allowed(
-                "MCX",
-                sym,
-                qty,
-                "BUY",
-                estimated_value_inr=est_value,
-            )
-            if not ok:
+            try:
+                from services.paper_trading import is_paper_mode
+                from services.risk_gate import check_order_allowed, is_kill_switch_active
+
+                if is_kill_switch_active():
+                    self._push_event(
+                        WatchEvent(
+                            at=datetime.now(IST).isoformat(),
+                            kind="auto_skipped",
+                            message="Kill switch ON — autonomous place blocked",
+                        )
+                    )
+                    return
+
+                sym = plan.get("tradingsymbol") or ""
+                qty_lots = int(plan.get("quantity") or plan.get("num_lots") or 1)
+                units = int(plan.get("lot_size") or 10)
+                entry_px = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
+                est_value = entry_px * units * qty_lots
+                ok, gate_msg = check_order_allowed(
+                    "MCX",
+                    sym,
+                    qty_lots,
+                    "BUY",
+                    estimated_value_inr=est_value,
+                )
+                if not ok:
+                    self._push_event(
+                        WatchEvent(
+                            at=datetime.now(IST).isoformat(),
+                            kind="auto_skipped",
+                            message=f"Risk gate: {gate_msg}",
+                            tradingsymbol=sym,
+                        )
+                    )
+                    return
+
+                if is_paper_mode():
+                    log_info("[CommodityWatch] Autonomous place in paper mode")
+
+                result = await asyncio.to_thread(
+                    commodity_trade_service.place_trade,
+                    completed_steps=None,
+                    direction=cfg.direction,
+                    risk_percentage=cfg.risk_percentage,
+                    reward_percentage=cfg.reward_percentage,
+                    num_lots=cfg.num_lots,
+                    confirm=True,
+                    auto_execute=cfg.auto_execute_checklist,
+                    trade_plan_snapshot=plan,
+                )
+                placed = bool(result.get("placed"))
+                entry_id = result.get("entry_order_id")
+                entry_submitted = bool(entry_id)
+                sym = plan.get("tradingsymbol") or sym
+
+                if entry_submitted or placed:
+                    msg = (
+                        f"Autonomous entry {entry_id} {sym} @ ₹{entry_px}"
+                        + (
+                            f" · GTT {result.get('gtt_trigger_id')}"
+                            if result.get("gtt_trigger_id")
+                            else " · set exit manually if GTT pending"
+                        )
+                    )
+                    with _lock:
+                        self._placed_today = True
+                        self._placed_symbol_today = sym
+                        if cfg.disarm_after_place:
+                            self._armed = False
+                    kind = "auto_placed"
+                else:
+                    msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"
+                    kind = "auto_skipped"
+
                 self._push_event(
                     WatchEvent(
                         at=datetime.now(IST).isoformat(),
-                        kind="auto_skipped",
-                        message=f"Risk gate: {gate_msg}",
+                        kind=kind,
+                        message=msg[:240],
+                        placed=entry_submitted or placed,
                         tradingsymbol=sym,
                     )
                 )
-                return
-
-            if is_paper_mode():
-                log_info("[CommodityWatch] Autonomous place in paper mode")
-
-            result = await asyncio.to_thread(
-                commodity_trade_service.place_trade,
-                completed_steps=None,
-                direction=cfg.direction,
-                risk_percentage=cfg.risk_percentage,
-                reward_percentage=cfg.reward_percentage,
-                num_lots=cfg.num_lots,
-                confirm=True,
-                auto_execute=cfg.auto_execute_checklist,
-                trade_plan_snapshot=plan,
-            )
-            placed = bool(result.get("placed"))
-            msg = (
-                f"Autonomous placed {sym} · entry {result.get('entry_order_id')}"
-                if placed
-                else f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"
-            )
-            with _lock:
-                if placed:
-                    self._placed_today = True
-                    if cfg.disarm_after_place:
-                        self._armed = False
-            self._push_event(
-                WatchEvent(
-                    at=datetime.now(IST).isoformat(),
-                    kind="auto_placed" if placed else "auto_skipped",
-                    message=msg[:240],
-                    placed=placed,
-                    tradingsymbol=sym,
+                self._persist()
+                await broadcast_agent_update(
+                    "COMMODITY_WATCH_AUTO_PLACE",
+                    {"placed": placed, "entry_submitted": entry_submitted, "result": result},
                 )
-            )
-            self._persist()
-            await broadcast_agent_update(
-                "COMMODITY_WATCH_AUTO_PLACE",
-                {"placed": placed, "autonomous": True, "result": result},
-            )
-            await push_service.send_to_user(
-                user_id="default",
-                title="V2 autonomous " + ("placed" if placed else "skipped"),
-                body=msg[:180],
-            )
-        except Exception as exc:
-            log_error(f"[CommodityWatch] autonomous place failed: {exc}")
-            self._push_event(
-                WatchEvent(
-                    at=datetime.now(IST).isoformat(),
-                    kind="auto_skipped",
-                    message=str(exc)[:200],
+                await push_service.send_to_user(
+                    user_id="default",
+                    title="Crude Mini autonomous " + ("placed" if entry_submitted else "skipped"),
+                    body=msg[:180],
                 )
-            )
+            except Exception as exc:
+                log_error(f"[CommodityWatch] autonomous place failed: {exc}")
+                self._push_event(
+                    WatchEvent(
+                        at=datetime.now(IST).isoformat(),
+                        kind="auto_skipped",
+                        message=str(exc)[:200],
+                    )
+                )
+            finally:
+                with _lock:
+                    self._placing = False
 
 
-_watch = V2StrategyWatch()
+_watch = CommodityStrategyWatch()
 
 
 def arm_watch(**kwargs: Any) -> Dict[str, Any]:
