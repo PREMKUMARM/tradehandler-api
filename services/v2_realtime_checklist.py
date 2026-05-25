@@ -43,42 +43,21 @@ def _step(
 
 
 def _nifty_live(kite) -> Dict[str, Any]:
-    """Prefer Kite ticker cache; fallback to REST quote."""
-    spot = 0.0
-    ohlc: Dict[str, float] = {}
-    source = "quote"
-    try:
-        from utils.kite_websocket_ticker import get_kite_ticker_instance
+    """Ticker-first Nifty snapshot (Kite app–aligned day OHLC)."""
+    from services.kite_live_indicators import get_nifty_bundle_for_v2
 
-        ticker = get_kite_ticker_instance()
-        if ticker:
-            tick = ticker.get_latest_tick(NIFTY_TOKEN)
-            if tick and tick.get("last_price"):
-                spot = float(tick["last_price"])
-                raw_ohlc = tick.get("ohlc") or {}
-                ohlc = {
-                    "open": float(raw_ohlc.get("open") or spot),
-                    "high": float(raw_ohlc.get("high") or spot),
-                    "low": float(raw_ohlc.get("low") or spot),
-                    "close": float(raw_ohlc.get("close") or spot),
-                }
-                source = "kite_ticker"
-    except Exception as exc:
-        log_warning(f"[V2 realtime] ticker read: {exc}")
-
-    if spot <= 0:
-        q = kite.quote("NSE:NIFTY 50").get("NSE:NIFTY 50", {}) or {}
-        spot = float(q.get("last_price") or 0)
-        o = q.get("ohlc") or {}
-        ohlc = {
-            "open": float(o.get("open") or spot),
-            "high": float(o.get("high") or spot),
-            "low": float(o.get("low") or spot),
-            "close": float(o.get("close") or spot),
-        }
-        source = "kite_quote"
-
-    return {"spot": spot, "ohlc": ohlc, "source": source}
+    bundle = get_nifty_bundle_for_v2()
+    spot = float(bundle.get("nifty_spot") or 0)
+    return {
+        "spot": spot,
+        "ohlc": {
+            "open": float(bundle.get("day_open") or spot),
+            "high": float(bundle.get("day_high") or spot),
+            "low": float(bundle.get("day_low") or spot),
+            "close": float(bundle.get("prev_close") or spot),
+        },
+        "source": bundle.get("spot_source", "kite_quote"),
+    }
 
 
 def _vix_live(kite) -> Dict[str, Any]:
@@ -251,14 +230,31 @@ def run_realtime_checklist(
         build_trade_plan,
     )
 
+    from services.kite_live_indicators import get_nifty_bundle_for_v2, recalculate_from_ticker
+
+    live = recalculate_from_ticker()
+    spot = float(live.get("nifty_spot") or 0)
+    prev_close = float(live.get("prev_close") or spot)
+    ohlc = {
+        "open": live.get("day_open"),
+        "high": live.get("day_high"),
+        "low": live.get("day_low"),
+        "close": prev_close,
+    }
+    vix_ltp = float(live.get("vix") or 0)
+    vix = {"ltp": vix_ltp, "chg_pct": 0.0}
+    if prev_close > 0 and vix_ltp:
+        try:
+            from utils.kite_utils import get_kite_instance
+
+            vq = (get_kite_instance().quote(["NSE:INDIA VIX"]) or {}).get("NSE:INDIA VIX", {})
+            vpc = float((vq.get("ohlc") or {}).get("close") or vix_ltp)
+            vix["chg_pct"] = ((vix_ltp - vpc) / vpc * 100) if vpc else 0
+        except Exception:
+            pass
+    intra = live
+    src_map = live.get("indicator_sources") or {}
     kite = get_kite_instance()
-    token = nifty50_index_token(kite)
-    nifty = _nifty_live(kite)
-    spot = nifty["spot"]
-    ohlc = nifty["ohlc"]
-    prev_close = float(ohlc.get("close") or spot)
-    vix = _vix_live(kite)
-    intra = _intraday_context(kite, token)
     universe = build_nifty_options_universe(kite)
     chain = _chain_live(kite, spot, universe)
 
@@ -288,8 +284,9 @@ def run_realtime_checklist(
             ok = margin > 0 and spot > 0
             if not ok:
                 missing.append(i)
-            src = nifty.get("source", "quote")
-            out = f"Margin ₹{margin:,.0f} · Nifty {spot:.2f} via {src}"
+            src = live.get("spot_source", "quote")
+            ticks = live.get("tick_count_today", 0)
+            out = f"Margin ₹{margin:,.0f} · Nifty {spot:.2f} via {src} ({ticks} ticks today)"
             statuses.append(_step(i, title, ok, "Session live", out))
         elif i == 1:
             gap = ((ohlc.get("open", spot) - prev_close) / prev_close * 100) if prev_close else 0
@@ -308,7 +305,9 @@ def run_realtime_checklist(
                 parts.append(f"OR {or_l:.0f}–{or_h:.0f}")
             if pdh and pdl:
                 parts.append(f"PDH {pdh:.0f} PDL {pdl:.0f}")
-            statuses.append(_step(i, title, ok, "Hypothesis (live)", " · ".join(parts)))
+            ema_src = src_map.get("ema9", "?")
+            parts.append(f"EMA9 {intra.get('ema9')} ({ema_src})")
+            statuses.append(_step(i, title, ok, "Hypothesis (ticker+hist)", " · ".join(parts)))
         elif i == 2:
             ok = vix["ltp"] > 0
             iv_note = "elevated" if vix["ltp"] > 18 else "moderate" if vix["ltp"] > 12 else "low"
@@ -367,13 +366,14 @@ def run_realtime_checklist(
         elif i == 7:
             ok = bool(trade_plan)
             est = " (estimated)" if trade_plan and trade_plan.get("estimated_premium") else ""
+            lim = trade_plan.get("entry_limit_price") if trade_plan else None
             out = (
-                f"Entry ₹{trade_plan.get('entry_premium')}{est} · Risk ₹{trade_plan.get('risk_inr')} · "
-                f"Reward ₹{trade_plan.get('reward_inr')}"
+                f"LIMIT entry ₹{lim} · LTP ₹{trade_plan.get('entry_premium')}{est} · "
+                f"Risk ₹{trade_plan.get('risk_inr')} · Reward ₹{trade_plan.get('reward_inr')}"
                 if trade_plan
                 else "—"
             )
-            statuses.append(_step(i, title, ok, "Premium & max loss (live)", out))
+            statuses.append(_step(i, title, ok, "Entry/exit premiums (indicators + live LTP)", out))
         elif i == 8:
             ok = bool(trade_plan)
             out = (
@@ -396,8 +396,13 @@ def run_realtime_checklist(
             spread_ok = True
             if chain.get("atm_ce") and chain["atm_ce"].get("spread_pct", 99) > 3:
                 spread_ok = False
-            out = f"MIS · MARKET entry · GTT OCO · spread OK={spread_ok}"
-            statuses.append(_step(i, title, ok and spread_ok, "Product & order type", out))
+            out = (
+                f"MIS · LIMIT entry ₹{trade_plan.get('entry_limit_price')} · GTT OCO exit only · "
+                f"spread OK={spread_ok}"
+                if trade_plan
+                else "—"
+            )
+            statuses.append(_step(i, title, ok and spread_ok, "LIMIT entry + GTT exit", out))
         elif i == 11:
             ok = bool(trade_plan)
             ltp = trade_plan.get("entry_premium") if trade_plan else 0
@@ -440,6 +445,7 @@ def run_realtime_checklist(
         "trade_plan": trade_plan,
         "validation": validation,
         "market_open": market_open,
-        "data_source": nifty.get("source"),
+        "data_source": live.get("spot_source"),
+        "indicator_sources": src_map,
         "nifty_spot": spot,
     }

@@ -50,9 +50,13 @@ class TradePlanOut(BaseModel):
     lot_size: int = 75
     num_lots: int = 1
     product: str = "MIS"
+    entry_order_type: str = "LIMIT"
+    entry_limit_price: Optional[float] = None
+    exit_order_type: str = "GTT_OCO"
     entry_premium: float
     stop_loss_premium: float
     target_premium: float
+    indicators: Optional[Dict[str, Any]] = None
     nifty_spot: float
     spot_stop_loss: float
     spot_target: float

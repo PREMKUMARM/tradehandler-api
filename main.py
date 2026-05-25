@@ -309,6 +309,13 @@ async def startup_event():
     from utils.kite_websocket_ticker import manage_kite_ticker_market_hours
     asyncio.create_task(manage_kite_ticker_market_hours())
 
+    try:
+        from services.kite_live_indicators import ensure_kite_live_indicators_registered
+
+        ensure_kite_live_indicators_registered()
+    except Exception as e:
+        log_error(f"[Startup] Kite live indicators registration failed: {e}")
+
     # NIFTY 5m candle alerts using ticker ticks (must be registered on main loop)
     try:
         from services.push.nifty_ticker_candle_alerts import register_nifty_5m_rejection_alerts

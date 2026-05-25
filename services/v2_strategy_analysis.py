@@ -66,85 +66,29 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
     ctx.is_weekday = 1 <= now.weekday() <= 5
 
     try:
-        kite = get_kite_instance()
-        from services.v2_realtime_checklist import _nifty_live, _vix_live
+        from services.kite_live_indicators import recalculate_from_ticker
 
-        nifty = _nifty_live(kite)
-        ctx.nifty_ltp = float(nifty.get("spot") or 0)
-        ohlc = nifty.get("ohlc", {}) or {}
-        ctx.prev_close = float(ohlc.get("close") or ctx.nifty_ltp)
-        ctx.day_open = float(ohlc.get("open") or ctx.nifty_ltp)
-        ctx.day_high = float(ohlc.get("high") or ctx.nifty_ltp)
-        ctx.day_low = float(ohlc.get("low") or ctx.nifty_ltp)
-        vix = _vix_live(kite)
-        if vix.get("ltp"):
-            ctx.vix_ltp = float(vix["ltp"])
+        live = recalculate_from_ticker()
+        ctx.nifty_ltp = float(live.get("nifty_spot") or 0)
+        ctx.prev_close = float(live.get("prev_close") or ctx.nifty_ltp)
+        ctx.day_open = float(live.get("day_open") or ctx.nifty_ltp)
+        ctx.day_high = float(live.get("day_high") or ctx.nifty_ltp)
+        ctx.day_low = float(live.get("day_low") or ctx.nifty_ltp)
+        if live.get("vix"):
+            ctx.vix_ltp = float(live["vix"])
+        if live.get("pdh"):
+            ctx.pdh = float(live["pdh"])
+        if live.get("pdl"):
+            ctx.pdl = float(live["pdl"])
+        if live.get("or_high"):
+            ctx.or_high = float(live["or_high"])
+        if live.get("or_low"):
+            ctx.or_low = float(live["or_low"])
+        if live.get("ema9"):
+            ctx.ema9 = float(live["ema9"])
     except Exception as exc:
-        log_warning(f"[V2 strategy] quote fetch failed: {exc}")
+        log_warning(f"[V2 strategy] live indicators failed: {exc}")
         return ctx
-
-    try:
-        kite = get_kite_instance()
-        today = now.date()
-        from_dt = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST) - timedelta(days=10)
-        to_dt = now
-        daily = kite.historical_data(
-            256265,
-            from_dt.strftime("%Y-%m-%d"),
-            to_dt.strftime("%Y-%m-%d"),
-            "day",
-            continuous=False,
-            oi=False,
-        )
-        if daily and len(daily) >= 2:
-            prev = daily[-2]
-            ctx.pdh = float(prev.get("high") or 0)
-            ctx.pdl = float(prev.get("low") or 0)
-    except Exception as exc:
-        log_warning(f"[V2 strategy] PDH/PDL fetch failed: {exc}")
-
-    try:
-        kite = get_kite_instance()
-        today = now.date()
-        from_dt = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
-        candles = kite.historical_data(
-            256265,
-            from_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            now.strftime("%Y-%m-%d %H:%M:%S"),
-            "15minute",
-            continuous=False,
-            oi=False,
-        )
-        or_candles = [
-            c
-            for c in (candles or [])
-            if c.get("date")
-            and 9 * 60 + 15
-            <= c["date"].astimezone(IST).hour * 60 + c["date"].astimezone(IST).minute
-            < 9 * 60 + 30
-        ]
-        if or_candles:
-            ctx.or_high = max(float(c["high"]) for c in or_candles)
-            ctx.or_low = min(float(c["low"]) for c in or_candles)
-
-        # 9 EMA on 5m closes (last 12 bars ≈ 1 hour)
-        c5 = kite.historical_data(
-            256265,
-            from_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            now.strftime("%Y-%m-%d %H:%M:%S"),
-            "5minute",
-            continuous=False,
-            oi=False,
-        )
-        if c5 and len(c5) >= 9:
-            closes = [float(c["close"]) for c in c5[-12:]]
-            k = 2 / (9 + 1)
-            ema = closes[0]
-            for px in closes[1:]:
-                ema = px * k + ema * (1 - k)
-            ctx.ema9 = ema
-    except Exception as exc:
-        log_warning(f"[V2 strategy] intraday candles failed: {exc}")
 
     return ctx
 
@@ -466,15 +410,13 @@ def analyze_fno_strategies(
         _score_pdh_pdl(ctx),
         _score_ema_pullback(ctx),
     ]
-    intra: Dict[str, Any] = {}
     try:
-        kite = get_kite_instance()
-        from services.nifty_option_chain import nifty50_index_token
-        from services.v2_realtime_checklist import _intraday_context
+        from services.kite_live_indicators import recalculate_from_ticker
 
-        intra = _intraday_context(kite, nifty50_index_token(kite))
+        intra = recalculate_from_ticker()
     except Exception as exc:
         log_warning(f"[V2 strategy] intraday for strike pick: {exc}")
+        intra = {}
 
     from services.v2_strike_pricing import _pick_moneyness
 
