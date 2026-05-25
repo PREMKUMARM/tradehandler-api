@@ -191,12 +191,17 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" << EOF
     echo "📂 Navigating to API directory..."
     cd $REMOTE_API_PATH
     
-    echo "📥 Pulling latest code from git..."
-    git stash
-    # If someone copied a file onto the server without "git add", the same path may exist in
-    # a newer commit; git then aborts: "untracked working tree files would be overwritten".
-    # Remove *untracked* (not in index) non-ignored paths we know the repo now tracks.
-    for f in scripts/verify_fcm_service_account.py; do
+    echo "📥 Syncing latest code from git..."
+    # Stash tracked changes; -u includes untracked files (fixes "would be overwritten by merge").
+    git stash push -u -m "deploy-pre-pull-\$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+
+    # Remove untracked paths that block merge when stash did not catch them (e.g. partial copies on EC2).
+    for f in \
+        scripts/verify_fcm_service_account.py \
+        services/v2_constants.py \
+        services/v2_entry_pricing.py \
+        services/v2_strategy_watch.py \
+        api/v1/routes/v2_trading.py; do
         if [ -e "\$f" ] && ! git ls-files --error-unmatch -- "\$f" >/dev/null 2>&1; then
             if ! git check-ignore -q -- "\$f" 2>/dev/null; then
                 echo "  🧹 Removing untracked \$f so pull can add the tracked version..."
@@ -204,7 +209,14 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" << EOF
             fi
         fi
     done
-    git pull
+
+    git fetch origin main
+    git reset --hard origin/main
+
+    # Drop most recent deploy autostash if present (server should match origin/main only).
+    if git stash list 2>/dev/null | head -1 | grep -q 'deploy-pre-pull'; then
+        git stash drop 2>/dev/null || true
+    fi
     
     echo "🔧 Recreating Python 3.11 virtual environment..."
     rm -rf algo-env
