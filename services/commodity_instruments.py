@@ -170,11 +170,14 @@ def resolve_commodity_contract(
         exp = exp.date()
     elif not isinstance(exp, date):
         exp = date.today()
+    ls = int(best_row.get("lot_size") or DEFAULT_LOT_SIZE)
+    if ls < DEFAULT_LOT_SIZE:
+        ls = DEFAULT_LOT_SIZE
     return CommodityOptionContract(
         tradingsymbol=str(best_row["tradingsymbol"]),
         strike=int(float(best_row.get("strike") or target)),
         expiry=exp,
         instrument_token=int(best_row.get("instrument_token") or 0),
-        lot_size=int(best_row.get("lot_size") or DEFAULT_LOT_SIZE),
+        lot_size=ls,
         instrument_type=k,
     )

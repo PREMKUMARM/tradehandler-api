@@ -372,14 +372,18 @@ def _validate_trade_plan(plan: Dict[str, Any], capital: float, risk_pct: float, 
     max_risk = capital * risk_pct / 100.0
     ratio = reward_pct / risk_pct if risk_pct > 0 else 2.0
     min_reward = risk_amt * ratio
+    risk_ok = risk_amt <= max_risk
+    reward_ok = reward_amt >= min_reward
+    # MCX option premiums: reward INR on 1 lot often below capital-scaled min_reward while risk is fine.
+    is_good = risk_ok and (reward_ok or reward_amt >= risk_amt * 1.25)
     return {
-        "is_good_trade": risk_amt <= max_risk and reward_amt >= min_reward,
+        "is_good_trade": is_good,
         "risk_amount": round(risk_amt, 2),
         "reward_amount": round(reward_amt, 2),
         "max_risk_amount": round(max_risk, 2),
         "min_required_reward": round(min_reward, 2),
-        "risk_within_limit": risk_amt <= max_risk,
-        "reward_meets_requirement": reward_amt >= min_reward,
+        "risk_within_limit": risk_ok,
+        "reward_meets_requirement": reward_ok,
     }
 
 

@@ -120,8 +120,9 @@ def size_from_risk(
     """Return (num_lots, quantity, risk_inr) from risk rule and live premium risk."""
     prem_risk = max(0.05, entry_premium - sl_premium)
     max_risk_amt = capital * (risk_pct / 100.0)
-    max_lots = int(max_risk_amt / (prem_risk * lot_size)) if prem_risk > 0 else 1
-    qty_lots = min(num_lots, max(1, max_lots))
+    max_lots = int(max_risk_amt / (prem_risk * lot_size)) if prem_risk > 0 else 0
+    qty_lots = min(num_lots, max_lots) if max_lots >= 1 else num_lots
+    qty_lots = max(1, qty_lots)
     quantity = qty_lots * lot_size
     risk_inr = prem_risk * quantity
     return qty_lots, quantity, risk_inr
