@@ -575,8 +575,18 @@ def preview_trade(
         elif not market_open and allow_offhours_v2_place():
             messages.append("Test mode: off-hours place enabled (V2_ALLOW_OFFHOURS_PLACE)")
 
+    paper_mode = False
+    try:
+        from services.paper_trading import is_paper_mode
+
+        paper_mode = is_paper_mode()
+        if paper_mode:
+            messages.append("Paper trading mode ON — live Zerodha orders are disabled")
+    except Exception:
+        pass
+
     return {
-        "can_place": can_place,
+        "can_place": can_place and not paper_mode,
         "checklist_ready": checklist_ready,
         "missing_steps": missing,
         "step_statuses": [s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in statuses],
@@ -585,6 +595,7 @@ def preview_trade(
         "messages": messages,
         "market_open": market_open,
         "allow_test_place": allow_offhours_v2_place(),
+        "paper_trading_mode": paper_mode,
         "strategy_analysis": strategy_analysis,
     }
 
