@@ -65,6 +65,27 @@ def list_option_rows(kind: Optional[str] = None) -> List[Dict[str, Any]]:
     return out
 
 
+def _strike_from_row(row: Dict[str, Any]) -> int:
+    """MCX rows sometimes have strike=0; parse from tradingsymbol (e.g. CRUDEOIL26JUN8700PE)."""
+    try:
+        s = int(float(row.get("strike") or 0))
+        if s >= 1000:
+            return s
+    except (TypeError, ValueError):
+        pass
+    sym = str(row.get("tradingsymbol") or "")
+    if sym.startswith(OPTION_PREFIX):
+        rest = sym[len(OPTION_PREFIX) :]
+        for suffix in ("CE", "PE"):
+            if rest.endswith(suffix):
+                rest = rest[: -len(suffix)]
+                try:
+                    return int(rest)
+                except ValueError:
+                    break
+    return 0
+
+
 def pick_option_tradingsymbol(strike: int, kind: str) -> str:
     k = kind.upper()
     rows = list_option_rows(k)
@@ -73,9 +94,8 @@ def pick_option_tradingsymbol(strike: int, kind: str) -> str:
     best = None
     best_dist = 10**9
     for row in rows:
-        try:
-            s = int(float(row.get("strike") or 0))
-        except (TypeError, ValueError):
+        s = _strike_from_row(row)
+        if s <= 0:
             continue
         dist = abs(s - strike)
         if dist < best_dist:
@@ -155,9 +175,8 @@ def resolve_commodity_contract(
     best_row = None
     best_dist = 10**9
     for row in rows:
-        try:
-            s = int(float(row.get("strike") or 0))
-        except (TypeError, ValueError):
+        s = _strike_from_row(row)
+        if s <= 0:
             continue
         dist = abs(s - target)
         if dist < best_dist:
@@ -173,9 +192,10 @@ def resolve_commodity_contract(
     ls = int(best_row.get("lot_size") or DEFAULT_LOT_SIZE)
     if ls < DEFAULT_LOT_SIZE:
         ls = DEFAULT_LOT_SIZE
+    resolved_strike = _strike_from_row(best_row) or target
     return CommodityOptionContract(
         tradingsymbol=str(best_row["tradingsymbol"]),
-        strike=int(float(best_row.get("strike") or target)),
+        strike=int(resolved_strike),
         expiry=exp,
         instrument_token=int(best_row.get("instrument_token") or 0),
         lot_size=ls,

@@ -237,7 +237,7 @@ def build_indicator_trade_plan(
         )
     messages.extend(entry_analysis.notes)
 
-    ls = lot_size()
+    ls = int(contract.lot_size or lot_size())
 
     qty_lots, quantity, risk_inr = size_from_risk(
         capital, risk_pct, float(entry_prem), sl_prem, ls, num_lots
