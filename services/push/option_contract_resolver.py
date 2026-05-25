@@ -180,7 +180,98 @@ def _nearest_strike(target: int, available: List[int]) -> Optional[int]:
     return min(available, key=lambda s: abs(s - target))
 
 
+def true_atm_strike(spot: float, atm_step: int = 50, available: Optional[List[int]] = None) -> int:
+    """Strike closest to live spot (may differ from round(spot/step)*step)."""
+    if available:
+        return int(min(available, key=lambda s: abs(s - spot)))
+    return int(round(float(spot) / max(1, atm_step)) * atm_step)
+
+
+def strike_for_moneyness(
+    spot: float,
+    kind: str,
+    moneyness: str,
+    atm_step: int = 50,
+    available: Optional[List[int]] = None,
+) -> int:
+    """
+    Map moneyness label to strike. CE: OTM = higher strike; PE: OTM = lower strike.
+    Labels: ATM, ITM1, OTM1, OTM2
+    """
+    kind = (kind or "").upper()
+    atm = true_atm_strike(spot, atm_step, available)
+    step = max(1, int(atm_step))
+    m = (moneyness or "ATM").upper()
+    if m == "ATM":
+        return atm
+    if kind == "CE":
+        if m == "OTM1":
+            return atm + step
+        if m == "OTM2":
+            return atm + 2 * step
+        if m == "ITM1":
+            return atm - step
+    elif kind == "PE":
+        if m == "OTM1":
+            return atm - step
+        if m == "OTM2":
+            return atm - 2 * step
+        if m == "ITM1":
+            return atm + step
+    return atm
+
+
+def estimate_delta_from_spot(
+    spot: float,
+    strike: int,
+    kind: str,
+    *,
+    vix: Optional[float] = None,
+) -> float:
+    """Rough live delta from spot–strike distance (Nifty weekly)."""
+    if spot <= 0 or strike <= 0:
+        return 0.5
+    kind = (kind or "CE").upper()
+    # CE: ITM when strike < spot; PE: ITM when strike > spot
+    moneyness_pts = (float(spot) - float(strike)) if kind == "CE" else (float(strike) - float(spot))
+    scale = max(float(spot) * 0.018, 45.0)
+    delta = 0.5 + moneyness_pts / scale
+    if vix and vix > 22:
+        delta *= 0.92
+    elif vix and vix < 12:
+        delta *= 1.05
+    return min(0.88, max(0.12, delta))
+
+
 # -------------------------- public API --------------------------
+
+
+def resolve_nifty_contract(
+    *,
+    spot: float,
+    kind: str,
+    moneyness: str = "ATM",
+    atm_step: int = 50,
+    name: str = "NIFTY",
+) -> Optional[OptionContract]:
+    """Resolve weekly contract for ATM / OTM1 / OTM2 / ITM1 relative to live spot."""
+    kind = (kind or "").upper()
+    if kind not in ("CE", "PE"):
+        return None
+    if not _ensure_cache(name=name):
+        return None
+
+    strikes: List[int] = list(_cache.get("available_strikes") or [])
+    by_ks: Dict[Tuple[str, int], OptionContract] = _cache.get("by_kind_strike") or {}
+    target_strike = strike_for_moneyness(spot, kind, moneyness, atm_step, strikes)
+    c = by_ks.get((kind, target_strike))
+    if c:
+        return c
+    same_kind_strikes = [s for s in strikes if (kind, s) in by_ks]
+    nearest = _nearest_strike(target_strike, same_kind_strikes)
+    if nearest is None:
+        return None
+    return by_ks.get((kind, nearest))
 
 
 def resolve_nifty_atm_contract(
@@ -201,20 +292,9 @@ def resolve_nifty_atm_contract(
     if not _ensure_cache(name=name):
         return None
 
-    target_strike = int(round(spot / max(1, atm_step)) * atm_step)
-    strikes: List[int] = list(_cache.get("available_strikes") or [])
-    by_ks: Dict[Tuple[str, int], OptionContract] = _cache.get("by_kind_strike") or {}
-
-    # First, try exact ATM
-    c = by_ks.get((kind, target_strike))
-    if c:
-        return c
-    # Otherwise, nearest available strike with this kind
-    same_kind_strikes = [s for s in strikes if (kind, s) in by_ks]
-    nearest = _nearest_strike(target_strike, same_kind_strikes)
-    if nearest is None:
-        return None
-    return by_ks.get((kind, nearest))
+    return resolve_nifty_contract(
+        spot=spot, kind=kind, moneyness="ATM", atm_step=atm_step, name=name
+    )
 
 
 def fetch_option_ltp(contract: OptionContract) -> Optional[float]:
@@ -290,22 +370,26 @@ def estimate_option_leg(
     num_lots: int,
     atm_step: int = 50,
     name: str = "NIFTY",
+    moneyness: str = "ATM",
+    vix: Optional[float] = None,
+    use_live_delta: bool = True,
 ) -> OptionLegEstimate:
     """
-    Resolve the ATM contract, fetch live LTP, and project SL/Target premium
-    using `delta * spot_move`. If contract resolution or LTP fetch fails, the
-    function still returns spot-derived premium projections with a clear
-    `estimated=True` flag (using a heuristic placeholder entry of 0.7% × spot,
-    which is in the ballpark for NIFTY ATM weeklies on most days).
+    Resolve contract by moneyness (ATM/OTM1/…), fetch live LTP, and project
+    SL/target premium using live delta when `use_live_delta` is True.
     """
-    delta = min(0.99, max(0.05, float(delta)))
     spot_risk = abs(spot_entry - spot_stop_loss)
     spot_reward = abs(spot_target - spot_entry)
     qty = max(1, int(lot_size)) * max(1, int(num_lots))
 
-    contract = resolve_nifty_atm_contract(
-        spot=spot_entry, kind=kind, atm_step=atm_step, name=name
+    contract = resolve_nifty_contract(
+        spot=spot_entry, kind=kind, moneyness=moneyness, atm_step=atm_step, name=name
     )
+
+    if contract is not None and use_live_delta:
+        delta = estimate_delta_from_spot(spot_entry, contract.strike, kind, vix=vix)
+    else:
+        delta = min(0.99, max(0.05, float(delta)))
 
     entry_prem: Optional[float] = None
     estimated = False
@@ -320,7 +404,7 @@ def estimate_option_leg(
     else:
         estimated = True
         entry_prem = max(1.0, 0.007 * float(spot_entry))
-        note = "ATM contract not resolvable (instruments cache); premium estimated"
+        note = f"{moneyness} contract not resolvable (instruments cache); premium estimated"
 
     sl_prem = max(0.05, entry_prem - spot_risk * delta)
     target_prem = entry_prem + spot_reward * delta

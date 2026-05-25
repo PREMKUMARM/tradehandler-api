@@ -28,6 +28,7 @@ def place_order_tool(
     stoploss: Optional[float] = None,
     target: Optional[float] = None,
     trailing_stoploss: Optional[float] = None,
+    skip_session_check: bool = False,
 ) -> dict:
     """
     Place a buy or sell order on Zerodha Kite.
@@ -54,7 +55,12 @@ def place_order_tool(
 
         est_value = float((price or 0) * max(quantity, 1))
         ok, reason = check_order_allowed(
-            exchange, tradingsymbol, quantity, transaction_type, est_value
+            exchange,
+            tradingsymbol,
+            quantity,
+            transaction_type,
+            est_value,
+            skip_session_check=skip_session_check,
         )
         if not ok:
             log_execution_audit(

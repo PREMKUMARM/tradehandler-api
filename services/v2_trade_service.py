@@ -12,7 +12,6 @@ from agent.config import get_agent_config
 from agent.tools.kite_tools import place_gtt_tool, place_order_tool
 from schemas.v2_trading import ChecklistStepStatus
 from utils.margin_utils import parse_equity_margins
-from services.push.option_contract_resolver import estimate_option_leg
 from services.v2_strategy_analysis import analyze_fno_strategies
 from utils.kite_utils import get_kite_instance, get_access_token
 from utils.logger import log_error, log_info
@@ -104,69 +103,87 @@ def _resolve_completed_steps(
     return [False] * len(STEP_TITLES)
 
 
+def fetch_live_checklist(
+    direction: str,
+    market_open: bool,
+    risk_pct: float = 1.0,
+    reward_pct: float = 2.0,
+    num_lots: int = 1,
+    capital: float = 0.0,
+) -> Optional[Dict[str, Any]]:
+    """Run all 12 steps on live Kite data; None if not connected."""
+    kite_ok, margin, _ = _check_kite_and_margin()
+    if capital <= 0:
+        capital = margin if margin > 0 else float(get_agent_config().trading_capital or 100000)
+    if not kite_ok or margin <= 0:
+        return None
+    from services.v2_realtime_checklist import run_realtime_checklist
+
+    return run_realtime_checklist(
+        direction,
+        margin,
+        market_open,
+        risk_pct,
+        reward_pct,
+        num_lots,
+        capital,
+    )
+
+
 def validate_checklist(
     completed_steps: List[bool],
     direction: str,
     market_open: bool,
     auto_execute: bool = False,
-) -> Tuple[List[ChecklistStepStatus], List[int], bool]:
-    if auto_execute:
-        return _validate_checklist_auto(direction, market_open, plan=None)
+    risk_pct: float = 1.0,
+    reward_pct: float = 2.0,
+    num_lots: int = 1,
+    capital: float = 0.0,
+) -> Tuple[List[ChecklistStepStatus], List[int], bool, Optional[Dict[str, Any]]]:
+    """All steps validated against live Kite ticker + quotes when connected."""
+    live = fetch_live_checklist(
+        direction, market_open, risk_pct, reward_pct, num_lots, capital
+    )
+
+    if live:
+        statuses = [
+            ChecklistStepStatus(**s) if isinstance(s, dict) else s
+            for s in live["step_statuses"]
+        ]
+        missing: List[int] = []
+        if not auto_execute:
+            for i in REQUIRED_MARKED_STEPS:
+                marked = bool(completed_steps[i]) if i < len(completed_steps) else False
+                if not marked:
+                    missing.append(i)
+                if i < len(statuses):
+                    statuses[i] = statuses[i].model_copy(
+                        update={"completed": statuses[i].server_ok and marked}
+                    )
+            for i, st in enumerate(statuses):
+                if i not in REQUIRED_MARKED_STEPS:
+                    statuses[i] = st.model_copy(update={"completed": st.server_ok})
+        checklist_ready = live["checklist_ready"] and len(missing) == 0
+        return statuses, missing, checklist_ready, live
+
     statuses: List[ChecklistStepStatus] = []
     missing: List[int] = []
-    kite_ok, margin, kite_msg = _check_kite_and_margin()
-    dir_ok = direction.upper() in ("CE", "PE", "AUTO")
-
     for i, title in enumerate(STEP_TITLES):
         marked = bool(completed_steps[i]) if i < len(completed_steps) else False
-        server_ok = True
-        msg = "Marked complete" if marked else "Not marked done"
-
-        if i == 0:
-            server_ok = kite_ok and margin > 0
-            msg = kite_msg
-            if not server_ok or not marked:
-                missing.append(i)
-        elif i == 1:
-            server_ok = marked or direction.upper() in ("CE", "PE")
-            msg = "Hypothesis set" if marked else "Mark done or choose CE/PE below"
-            if not marked and direction.upper() not in ("CE", "PE"):
-                missing.append(i)
-        elif i == 2:
-            server_ok = marked
-            msg = "VIX/events reviewed" if marked else "Mark after reviewing VIX and calendar"
-            if not marked:
-                missing.append(i)
-        elif i == 3:
-            server_ok = marked
-            msg = "Strategy chosen" if marked else "Run strategy analysis and pick best fit"
-            if not marked:
-                missing.append(i)
-        elif i == 9:
-            server_ok = marked
-            msg = "Position sized" if marked else "Mark after size matches risk rule"
-            if not marked:
-                missing.append(i)
-        elif i in MARKET_EXECUTION_STEPS:
-            if market_open:
-                server_ok = True
-                msg = "Validated when placing order" if not marked else "Marked complete"
-            else:
-                server_ok = False
-                msg = "Opens 9:15 AM IST on trading days"
-
+        server_ok = False
+        msg = "Connect Kite for live checklist"
+        if i in REQUIRED_MARKED_STEPS and not marked:
+            missing.append(i)
         statuses.append(
             ChecklistStepStatus(
                 index=i,
                 title=title,
-                completed=marked,
+                completed=marked and server_ok,
                 server_ok=server_ok,
                 message=msg,
             )
         )
-
-    checklist_ready = len(missing) == 0 and dir_ok
-    return statuses, missing, checklist_ready
+    return statuses, missing, False, None
 
 
 def _step(
@@ -333,10 +350,12 @@ def build_trade_plan(
 ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     messages: List[str] = []
     kite = get_kite_instance()
-    quote = kite.quote("NSE:NIFTY 50")
-    nq = quote.get("NSE:NIFTY 50", {})
-    nifty_ltp = float(nq.get("last_price") or 0)
-    prev_close = float(nq.get("ohlc", {}).get("close") or nifty_ltp)
+    from services.v2_realtime_checklist import _nifty_live
+
+    nifty = _nifty_live(kite)
+    nifty_ltp = float(nifty.get("spot") or 0)
+    ohlc = nifty.get("ohlc") or {}
+    prev_close = float(ohlc.get("close") or nifty_ltp)
     if nifty_ltp <= 0:
         return None, ["Could not fetch Nifty 50 price"]
 
@@ -379,20 +398,23 @@ def build_trade_plan(
     except Exception:
         pass
 
-    leg = estimate_option_leg(
+    from services.v2_strike_pricing import build_dynamic_option_leg
+
+    leg, strike_profile = build_dynamic_option_leg(
+        strategy_id=strategy_id,
         spot_entry=nifty_ltp,
         spot_stop_loss=spot_sl,
         spot_target=spot_tgt,
         kind=option_kind,
-        delta=0.5,
         lot_size=lot_size,
         num_lots=num_lots,
-        atm_step=50,
-        name="NIFTY",
     )
+    nifty_ltp = strike_profile.spot_entry
+    spot_sl = strike_profile.spot_stop_loss
+    spot_tgt = strike_profile.spot_target
 
     if leg.contract is None:
-        return None, ["Could not resolve ATM NIFTY option contract"]
+        return None, ["Could not resolve NIFTY option contract for selected moneyness"]
 
     entry_prem = float(leg.entry_premium or 0)
     sl_prem = float(leg.sl_premium or 0)
@@ -430,11 +452,17 @@ def build_trade_plan(
         "note": leg.note,
         "strategy_id": strategy_id,
         "strategy_name": strategy_name,
+        "strike_moneyness": strike_profile.moneyness,
+        "pattern_tag": strike_profile.pattern_tag,
+        "delta_used": round(leg.delta_used, 3),
+        "atm_reference": int(round(nifty_ltp / 50) * 50),
+        "pricing_note": strike_profile.reason,
     }
     messages.append(
-        f"Plan: BUY {quantity} {leg.contract.tradingsymbol} @ ~₹{entry_prem:.2f} | "
-        f"GTT SL ₹{sl_prem:.2f} TP ₹{tgt_prem:.2f}"
+        f"Plan: BUY {quantity} {leg.contract.tradingsymbol} ({strike_profile.moneyness}) "
+        f"@ ~₹{entry_prem:.2f} δ{leg.delta_used:.2f} | GTT SL ₹{sl_prem:.2f} TP ₹{tgt_prem:.2f}"
     )
+    messages.append(strike_profile.reason)
     return plan, messages
 
 
@@ -489,69 +517,63 @@ def preview_trade(
 
     strategy_analysis: Optional[Dict[str, Any]] = None
 
-    if auto_execute:
-        strategy_analysis = analyze_fno_strategies(
-            direction_pref=direction,
-            margin=capital,
-        )
-        plan, plan_msgs = build_trade_plan(
-            direction,
-            risk_pct,
-            reward_pct,
-            num_lots,
-            capital,
-            strategy_analysis=strategy_analysis,
-        )
-        messages.extend(plan_msgs)
-        if plan:
-            trade_plan = plan
-            resolved_dir = plan.get("option_type")
-            validation = _validate_trade_plan(plan, capital, risk_pct, reward_pct)
-            can_place = _resolve_can_place(trade_plan, validation, market_open)
-            if not validation.get("is_good_trade"):
+    live = fetch_live_checklist(
+        direction, market_open, risk_pct, reward_pct, num_lots, capital
+    )
+
+    if auto_execute and live:
+        statuses = [
+            ChecklistStepStatus(**s) if isinstance(s, dict) else s
+            for s in live["step_statuses"]
+        ]
+        missing = live["missing_steps"]
+        checklist_ready = live["checklist_ready"]
+        trade_plan = live.get("trade_plan")
+        validation = live.get("validation")
+        strategy_analysis = live.get("strategy_analysis")
+        can_place = _resolve_can_place(trade_plan, validation, market_open)
+        if trade_plan:
+            messages.append(
+                f"Live Nifty {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
+            )
+            if not validation or not validation.get("is_good_trade"):
                 messages.append("Risk/reward validation failed — adjust size or levels")
             elif not market_open and allow_offhours_v2_place():
                 messages.append(
-                    "Test mode: off-hours place enabled (V2_ALLOW_OFFHOURS_PLACE) — live session still preferred"
+                    "Test mode: off-hours place enabled (V2_ALLOW_OFFHOURS_PLACE)"
                 )
             elif not market_open:
                 messages.append("Preview only — confirm and place when market is open")
         else:
-            plan_error = plan_msgs[0] if plan_msgs else "Could not build trade plan"
-            messages.append(plan_error)
-
-        statuses, missing, checklist_ready = _validate_checklist_auto(
+            messages.append("Could not build trade plan from live data")
+    elif auto_execute:
+        messages.append("Kite not connected — cannot run live checklist")
+        statuses, missing, checklist_ready = [], list(range(len(STEP_TITLES))), False
+    else:
+        statuses, missing, checklist_ready, live = validate_checklist(
+            steps,
             direction,
             market_open,
-            plan=trade_plan,
-            plan_error=plan_error,
-            resolved_direction=resolved_dir,
-            margin=capital,
-            strategy_analysis=strategy_analysis,
+            auto_execute=False,
+            risk_pct=risk_pct,
+            reward_pct=reward_pct,
+            num_lots=num_lots,
+            capital=capital,
         )
-    else:
-        statuses, missing, checklist_ready = validate_checklist(
-            steps, direction, market_open, auto_execute=False
-        )
+        if live:
+            trade_plan = live.get("trade_plan")
+            validation = live.get("validation")
+            strategy_analysis = live.get("strategy_analysis")
+            can_place = _resolve_can_place(trade_plan, validation, market_open)
+            messages.append(
+                f"Live Nifty {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
+            )
         if not checklist_ready:
             messages.append(f"Complete checklist steps: {[i + 1 for i in missing]}")
-        if not market_open:
+        if not market_open and not allow_offhours_v2_place():
             messages.append("Live orders only during market hours (9:15 AM–3:30 PM IST, Mon–Fri)")
-        if checklist_ready:
-            plan, plan_msgs = build_trade_plan(direction, risk_pct, reward_pct, num_lots, capital)
-            messages.extend(plan_msgs)
-            if plan:
-                trade_plan = plan
-                validation = _validate_trade_plan(plan, capital, risk_pct, reward_pct)
-                can_place = _resolve_can_place(trade_plan, validation, market_open)
-                if not validation.get("is_good_trade"):
-                    messages.append("Risk/reward validation failed — adjust size or levels")
-                elif not market_open and allow_offhours_v2_place():
-                    messages.append(
-                        "Test mode: off-hours place enabled (V2_ALLOW_OFFHOURS_PLACE)"
-                    )
-                elif not market_open:
-                    messages.append("Preview only — confirm and place when market is open")
+        elif not market_open and allow_offhours_v2_place():
+            messages.append("Test mode: off-hours place enabled (V2_ALLOW_OFFHOURS_PLACE)")
 
     return {
         "can_place": can_place,
@@ -575,6 +597,51 @@ def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
     return analyze_fno_strategies(direction_pref=direction, margin=capital)
 
 
+def get_checklist_live(
+    direction: str = "AUTO",
+    risk_percentage: Optional[float] = None,
+    reward_percentage: Optional[float] = None,
+    num_lots: int = 1,
+) -> Dict[str, Any]:
+    """Refresh all 12 checklist steps from live Kite data (for wizard step navigation)."""
+    cfg = get_agent_config()
+    risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
+    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    market_open = is_market_session_open()
+    _, margin, kite_msg = _check_kite_and_margin()
+    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    live = fetch_live_checklist(
+        direction, market_open, risk_pct, reward_pct, num_lots, capital
+    )
+    if not live:
+        return {
+            "connected": False,
+            "message": kite_msg,
+            "step_statuses": [],
+            "checklist_ready": False,
+            "missing_steps": list(range(len(STEP_TITLES))),
+            "market_open": market_open,
+            "allow_test_place": allow_offhours_v2_place(),
+        }
+    validation = live.get("validation")
+    trade_plan = live.get("trade_plan")
+    return {
+        "connected": True,
+        "message": kite_msg,
+        "step_statuses": live["step_statuses"],
+        "checklist_ready": live["checklist_ready"],
+        "missing_steps": live["missing_steps"],
+        "trade_plan": trade_plan,
+        "validation": validation,
+        "strategy_analysis": live.get("strategy_analysis"),
+        "can_place": _resolve_can_place(trade_plan, validation, market_open),
+        "market_open": market_open,
+        "allow_test_place": allow_offhours_v2_place(),
+        "nifty_spot": live.get("nifty_spot"),
+        "data_source": live.get("data_source"),
+    }
+
+
 def place_trade(
     completed_steps: Optional[List[bool]] = None,
     direction: str = "AUTO",
@@ -583,6 +650,7 @@ def place_trade(
     num_lots: int = 1,
     confirm: bool = False,
     auto_execute: bool = False,
+    trade_plan_snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     preview = preview_trade(
         completed_steps,
@@ -592,7 +660,14 @@ def place_trade(
         num_lots,
         auto_execute=auto_execute,
     )
-    result = {**preview, "placed": False, "entry_order_id": None, "gtt_trigger_id": None, "errors": []}
+    result = {
+        **preview,
+        "placed": False,
+        "entry_order_id": None,
+        "gtt_trigger_id": None,
+        "errors": [],
+        "entry_paper": False,
+    }
 
     if not confirm:
         result["errors"].append("Set confirm=true to place orders")
@@ -601,65 +676,113 @@ def place_trade(
     if auto_execute:
         result["messages"] = ["Auto-executing checklist…"] + list(result.get("messages", []))
 
-    if not preview.get("can_place") or not preview.get("trade_plan"):
+    plan = trade_plan_snapshot or preview.get("trade_plan")
+    if not plan:
+        result["errors"].append("Cannot place — no trade plan (re-run Place trade preview)")
+        return result
+
+    market_open = is_market_session_open()
+    offhours_test = allow_offhours_v2_place()
+    can_execute = bool(preview.get("can_place")) or (offhours_test and plan)
+    if not can_execute:
         result["errors"].append("Cannot place — fix checklist or validation first")
         return result
 
-    plan = preview["trade_plan"]
+    if trade_plan_snapshot:
+        result["trade_plan"] = plan
+        result["messages"] = list(result.get("messages", [])) + [
+            "Using trade plan from confirm dialog"
+        ]
+
+    # UI allows off-hours test; risk gate normally blocks outside 9:15–15:30 IST.
+    skip_session = offhours_test and not market_open
+
     symbol = plan["tradingsymbol"]
     qty = int(plan["quantity"])
     entry_prem = float(plan["entry_premium"])
     sl_prem = float(plan["stop_loss_premium"])
     tgt_prem = float(plan["target_premium"])
 
+    if not market_open and not skip_session:
+        result["errors"].append(
+            "Market is closed. Enable V2_ALLOW_OFFHOURS_PLACE for test bypass or place during 9:15 AM–3:30 PM IST."
+        )
+        return result
+
+    if skip_session:
+        result["messages"] = list(result.get("messages", [])) + [
+            "Off-hours test: bypassing session gate (Kite may still reject MARKET orders when closed)"
+        ]
+
     try:
-        entry = place_order_tool.invoke({
-            "tradingsymbol": symbol,
-            "exchange": "NFO",
-            "transaction_type": "BUY",
-            "quantity": qty,
-            "order_type": "MARKET",
-            "product": "MIS",
-        })
+        from services.paper_trading import is_paper_mode
+
+        if is_paper_mode():
+            result["messages"] = list(result.get("messages", [])) + [
+                "Paper trading mode is ON — orders go to paper ledger, not Zerodha"
+            ]
+
+        entry = place_order_tool.invoke(
+            {
+                "tradingsymbol": symbol,
+                "exchange": "NFO",
+                "transaction_type": "BUY",
+                "quantity": qty,
+                "order_type": "MARKET",
+                "product": "MIS",
+                "skip_session_check": skip_session,
+            }
+        )
         if entry.get("status") != "success":
-            result["errors"].append(entry.get("error") or "Entry order failed")
+            err = entry.get("error") or "Entry order failed"
+            result["errors"].append(err)
+            if not market_open:
+                result["errors"].append(
+                    "Zerodha rejects live MARKET orders outside market hours — test during 9:15 AM–3:30 PM IST Mon–Fri"
+                )
             return result
 
         entry_id = str(entry.get("order_id"))
         result["entry_order_id"] = entry_id
-        log_info(f"V2 trade entry placed: {entry_id} {symbol}")
+        result["entry_paper"] = bool(entry.get("paper"))
+        log_info(f"V2 trade entry placed: {entry_id} {symbol} paper={result['entry_paper']}")
 
         sl_trigger = round(sl_prem * 1.002, 2)
         tp_trigger = round(tgt_prem * 0.998, 2)
         last_price = entry_prem
 
-        gtt = place_gtt_tool.invoke({
-            "tradingsymbol": symbol,
-            "exchange": "NFO",
-            "trigger_type": "two-leg",
-            "trigger_prices": [sl_trigger, tp_trigger],
-            "last_price": last_price,
-            "stop_loss_price": round(sl_prem, 2),
-            "target_price": round(tgt_prem, 2),
-            "quantity": qty,
-            "transaction_type": "SELL",
-            "product": "MIS",
-        })
+        gtt = place_gtt_tool.invoke(
+            {
+                "tradingsymbol": symbol,
+                "exchange": "NFO",
+                "trigger_type": "two-leg",
+                "trigger_prices": [sl_trigger, tp_trigger],
+                "last_price": last_price,
+                "stop_loss_price": round(sl_prem, 2),
+                "target_price": round(tgt_prem, 2),
+                "quantity": qty,
+                "transaction_type": "SELL",
+                "product": "MIS",
+            }
+        )
 
         if gtt.get("status") == "success":
             result["gtt_trigger_id"] = str(gtt.get("trigger_id"))
             result["placed"] = True
+            venue = "paper" if result["entry_paper"] else "Zerodha"
             result["messages"] = list(preview.get("messages", [])) + [
-                f"Entry order {entry_id}",
+                f"Entry order {entry_id} on {venue}",
                 f"GTT OCO trigger {result['gtt_trigger_id']}",
             ]
         else:
-            result["errors"].append(
-                gtt.get("error") or "GTT placement failed — entry may be open without exit GTT"
-            )
-            result["messages"] = list(preview.get("messages", [])) + [
-                f"Entry order {entry_id} placed; exit GTT failed — manage manually",
-            ]
+            gtt_err = gtt.get("error") or "GTT placement failed"
+            result["errors"].append(gtt_err)
+            # Entry may still be live on Kite
+            if entry_id:
+                result["placed"] = False
+                result["messages"] = list(preview.get("messages", [])) + [
+                    f"Entry order {entry_id} placed on Zerodha; exit GTT failed — set SL/target manually in Kite",
+                ]
 
     except Exception as exc:
         log_error(f"V2 place_trade error: {exc}")

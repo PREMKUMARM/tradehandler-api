@@ -7,6 +7,24 @@ from services import v2_trade_service
 router = APIRouter(prefix="/v2/trade", tags=["V2 Trading"])
 
 
+@router.get("/checklist-live")
+async def checklist_live_v2(
+    request: Request,
+    direction: str = "AUTO",
+    risk_percentage: float | None = None,
+    reward_percentage: float | None = None,
+    num_lots: int = 1,
+):
+    """All 12 checklist steps from live Kite ticker + quotes + chain OI."""
+    data = v2_trade_service.get_checklist_live(
+        direction=direction,
+        risk_percentage=risk_percentage,
+        reward_percentage=reward_percentage,
+        num_lots=num_lots,
+    )
+    return SuccessResponse(data=data, message="Live checklist refreshed")
+
+
 @router.get("/strategy-analysis")
 async def strategy_analysis_v2(request: Request, direction: str = "AUTO"):
     """Rank top 4 Nifty F&O strategies using session data from prior checklist steps."""
@@ -39,6 +57,7 @@ async def place_v2_trade(request: Request, body: V2TradePlaceRequest):
         num_lots=body.num_lots or 1,
         confirm=body.confirm,
         auto_execute=body.auto_execute,
+        trade_plan_snapshot=body.trade_plan,
     )
     msg = "Order placed" if data.get("placed") else "Trade not placed"
     return SuccessResponse(data=data, message=msg)

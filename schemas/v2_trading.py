@@ -25,6 +25,10 @@ class V2TradePreviewRequest(BaseModel):
 
 class V2TradePlaceRequest(V2TradePreviewRequest):
     confirm: bool = Field(default=False, description="Must be true to place live orders")
+    trade_plan: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional plan snapshot from preview — avoids re-build mismatch on confirm",
+    )
 
 
 class ChecklistStepStatus(BaseModel):
@@ -59,6 +63,11 @@ class TradePlanOut(BaseModel):
     note: Optional[str] = None
     strategy_id: Optional[str] = None
     strategy_name: Optional[str] = None
+    strike_moneyness: Optional[str] = None
+    pattern_tag: Optional[str] = None
+    delta_used: Optional[float] = None
+    atm_reference: Optional[int] = None
+    pricing_note: Optional[str] = None
 
 
 class StrategyAnalysisOut(BaseModel):

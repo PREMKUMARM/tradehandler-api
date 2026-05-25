@@ -55,6 +55,8 @@ class StrategyCandidate:
     rr_ratio: float
     reasons: List[str]
     warnings: List[str]
+    strike_moneyness: str = "ATM"
+    pattern_tag: str = ""
 
 
 def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
@@ -65,19 +67,18 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
 
     try:
         kite = get_kite_instance()
-        keys = ["NSE:NIFTY 50", "NSE:INDIA VIX"]
-        quotes = kite.quote(keys)
-        nq = quotes.get("NSE:NIFTY 50", {}) or {}
-        ctx.nifty_ltp = float(nq.get("last_price") or 0)
-        ohlc = nq.get("ohlc", {}) or {}
+        from services.v2_realtime_checklist import _nifty_live, _vix_live
+
+        nifty = _nifty_live(kite)
+        ctx.nifty_ltp = float(nifty.get("spot") or 0)
+        ohlc = nifty.get("ohlc", {}) or {}
         ctx.prev_close = float(ohlc.get("close") or ctx.nifty_ltp)
         ctx.day_open = float(ohlc.get("open") or ctx.nifty_ltp)
         ctx.day_high = float(ohlc.get("high") or ctx.nifty_ltp)
         ctx.day_low = float(ohlc.get("low") or ctx.nifty_ltp)
-
-        vix_q = quotes.get("NSE:INDIA VIX", {}) or {}
-        if vix_q.get("last_price"):
-            ctx.vix_ltp = float(vix_q["last_price"])
+        vix = _vix_live(kite)
+        if vix.get("ltp"):
+            ctx.vix_ltp = float(vix["ltp"])
     except Exception as exc:
         log_warning(f"[V2 strategy] quote fetch failed: {exc}")
         return ctx
@@ -465,6 +466,27 @@ def analyze_fno_strategies(
         _score_pdh_pdl(ctx),
         _score_ema_pullback(ctx),
     ]
+    intra: Dict[str, Any] = {}
+    try:
+        kite = get_kite_instance()
+        from services.nifty_option_chain import nifty50_index_token
+        from services.v2_realtime_checklist import _intraday_context
+
+        intra = _intraday_context(kite, nifty50_index_token(kite))
+    except Exception as exc:
+        log_warning(f"[V2 strategy] intraday for strike pick: {exc}")
+
+    from services.v2_strike_pricing import _pick_moneyness
+
+    for c in candidates:
+        m, pt, reason = _pick_moneyness(
+            c.id, ctx.nifty_ltp, c.option_kind, c.spot_stop_loss, c.spot_target, intra
+        )
+        c.strike_moneyness = m
+        c.pattern_tag = pt
+        if reason:
+            c.reasons = list(c.reasons) + [f"Strike {m}: {reason}"]
+
     ranked = sorted(candidates, key=lambda c: c.score, reverse=True)
     selected = ranked[0]
 
@@ -496,6 +518,8 @@ def analyze_fno_strategies(
             "rr_ratio": c.rr_ratio,
             "reasons": c.reasons,
             "warnings": c.warnings,
+            "strike_moneyness": c.strike_moneyness,
+            "pattern_tag": c.pattern_tag,
         }
 
     output_lines = [
