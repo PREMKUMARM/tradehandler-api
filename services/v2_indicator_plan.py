@@ -286,8 +286,8 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     sl_prem, tgt_prem, delta = premium_levels_from_indicators(
         entry_premium=float(entry_prem),
         spot_entry=spot_entry,
-        spot_stop_loss=spot_sl,
-        spot_target=spot_tgt,
+        spot_sl=spot_sl,
+        spot_tgt=spot_tgt,
         strike=int(plan.get("strike", 0)),
         kind=kind,
         vix=live.get("vix"),

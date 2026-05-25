@@ -22,7 +22,6 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
             
             # Handle case where no response is returned
             if response is None:
-                from fastapi import status
                 from datetime import datetime
                 request_id = getattr(request.state, "request_id", "unknown")
                 
