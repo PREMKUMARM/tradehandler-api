@@ -12,6 +12,7 @@ from services.push.option_contract_resolver import (
 )
 from services.commodity_config import COMMODITY_PRODUCT
 from services.commodity_instruments import lot_size, resolve_commodity_contract
+from services.commodity_instruments import future_token
 from services.commodity_live_indicators import recalculate_from_ticker
 from services.commodity_entry_pricing import EntryAnalysis, compute_strategy_entry
 from services.commodity_strike_pricing import (
@@ -84,6 +85,65 @@ def _apply_entry_analysis_to_plan(
     }
     updated["indicators"] = ind
     return updated
+
+
+def _last_closed_5m_candle_high_low(token: int) -> tuple[Optional[float], Optional[float]]:
+    """Return (high, low) of the last closed 5m candle for the underlying future."""
+    try:
+        kite = get_kite_instance()
+        # Today's 5m candles; last row can be the forming candle => use second last when available.
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        IST = ZoneInfo("Asia/Kolkata")
+        now = datetime.now(IST)
+        from_dt = datetime.combine(now.date(), datetime.min.time()).replace(tzinfo=IST)
+        rows = kite.historical_data(
+            token,
+            from_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            now.strftime("%Y-%m-%d %H:%M:%S"),
+            "5minute",
+            continuous=False,
+            oi=False,
+        ) or []
+        if not rows:
+            return None, None
+        bar = rows[-2] if len(rows) >= 2 else rows[-1]
+        hi = float(bar.get("high") or 0)
+        lo = float(bar.get("low") or 0)
+        if hi <= 0 or lo <= 0:
+            return None, None
+        return hi, lo
+    except Exception:
+        return None, None
+
+
+def _spot_levels_from_last_5m(
+    *,
+    spot_entry: float,
+    kind: str,
+    reward_ratio: float,
+    token: int,
+) -> tuple[Optional[float], Optional[float], str]:
+    """
+    Candle-structure exits:
+    - CE: SL below last closed 5m low; target = entry + R*(entry-SL)
+    - PE: SL above last closed 5m high; target = entry - R*(SL-entry)
+    """
+    hi, lo = _last_closed_5m_candle_high_low(token)
+    if hi is None or lo is None:
+        return None, None, ""
+    rng = max(1.0, hi - lo)
+    buf = max(6.0, rng * 0.15)
+    k = (kind or "CE").upper()
+    rr = max(0.5, min(5.0, float(reward_ratio or 2.0)))
+    if k == "CE":
+        sl = lo - buf
+        tgt = spot_entry + (spot_entry - sl) * rr
+        return sl, tgt, f"5m candle SL/TP: low {lo:.1f} − buf {buf:.1f}"
+    sl = hi + buf
+    tgt = spot_entry - (sl - spot_entry) * rr
+    return sl, tgt, f"5m candle SL/TP: high {hi:.1f} + buf {buf:.1f}"
 
 
 def premium_levels_from_indicators(
@@ -187,6 +247,19 @@ def build_indicator_trade_plan(
     spot_entry, spot_sl, spot_tgt, level_note = refine_spot_levels_from_candles(
         sid, spot, option_kind, spot_sl, spot_tgt, intra
     )
+
+    # Prefer candle-structure exits (last closed 5m high/low) over heuristics.
+    rr_struct = reward_pct / risk_pct if risk_pct > 0 else 2.0
+    sl5, tgt5, candle_note = _spot_levels_from_last_5m(
+        spot_entry=spot_entry,
+        kind=option_kind,
+        reward_ratio=rr_struct,
+        token=future_token(),
+    )
+    if sl5 is not None and tgt5 is not None:
+        spot_sl, spot_tgt = float(sl5), float(tgt5)
+        if candle_note:
+            level_note = (level_note + " · " + candle_note).strip(" ·")
     moneyness, pattern_tag, m_reason = _pick_moneyness(
         sid, spot_entry, option_kind, spot_sl, spot_tgt, intra
     )
@@ -350,6 +423,15 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     spot_entry, spot_sl, spot_tgt, _ = refine_spot_levels_from_candles(
         sid, spot_entry, kind, spot_sl, spot_tgt, intra
     )
+    rr_struct = (reward_percentage / risk_percentage) if (risk_percentage and risk_percentage > 0) else 2.0
+    sl5, tgt5, _ = _spot_levels_from_last_5m(
+        spot_entry=spot_entry,
+        kind=kind,
+        reward_ratio=rr_struct,
+        token=future_token(),
+    )
+    if sl5 is not None and tgt5 is not None:
+        spot_sl, spot_tgt = float(sl5), float(tgt5)
     sl_prem, tgt_prem, delta = premium_levels_from_indicators(
         entry_premium=float(entry_prem),
         spot_entry=spot_entry,
