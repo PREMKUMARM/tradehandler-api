@@ -181,6 +181,9 @@ class CommodityStrategyWatch:
         self._task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._placing = False
+        self._last_autonomous_block_reason: Optional[str] = None
+        self._last_skip_logged_msg: Optional[str] = None
+        self._last_skip_logged_at: Optional[datetime] = None
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
@@ -262,6 +265,47 @@ class CommodityStrategyWatch:
         self._events.appendleft(ev)
         self._persist()
 
+    def _skip_log_interval_sec(self) -> float:
+        try:
+            sec = float(os.getenv("COMMODITY_WATCH_SKIP_LOG_SECONDS", "90") or 90)
+            return max(15.0, min(600.0, sec))
+        except (TypeError, ValueError):
+            return 90.0
+
+    def _record_autonomous_skip(
+        self,
+        message: str,
+        plan: Dict[str, Any],
+    ) -> None:
+        """Rate-limited auto_skipped event + log when guard blocks placement."""
+        msg = (message or "Autonomous placement blocked").strip()[:240]
+        sym = str(plan.get("tradingsymbol") or "")
+        now = datetime.now(IST)
+        should_emit = False
+        with _lock:
+            self._last_autonomous_block_reason = msg
+            same = msg == self._last_skip_logged_msg
+            elapsed = (
+                (now - self._last_skip_logged_at).total_seconds()
+                if self._last_skip_logged_at
+                else 9999.0
+            )
+            if not same or elapsed >= self._skip_log_interval_sec():
+                should_emit = True
+                self._last_skip_logged_msg = msg
+                self._last_skip_logged_at = now
+        if should_emit:
+            log_info(f"[CommodityWatch] auto_skipped {sym} — {msg}")
+            self._push_event(
+                WatchEvent(
+                    at=now.isoformat(),
+                    kind="auto_skipped",
+                    message=msg,
+                    tradingsymbol=sym or None,
+                    block_reason=msg,
+                )
+            )
+
     def arm(
         self,
         *,
@@ -331,9 +375,17 @@ class CommodityStrategyWatch:
         return self.status()
 
     def status(self) -> Dict[str, Any]:
+        from services.watch_setup_status import describe_autonomous_setup
+
         with _lock:
             plan = self._last_trade_plan or {}
             cfg = self._cfg
+            min_score = min_entry_confirmation_score()
+            setup = describe_autonomous_setup(
+                plan,
+                min_score=min_score,
+                guard_message=self._last_autonomous_block_reason,
+            )
             return {
                 "armed": self._armed,
                 "mode": cfg.mode,
@@ -363,6 +415,11 @@ class CommodityStrategyWatch:
                 "strategy_name": plan.get("strategy_name"),
                 "tradingsymbol": plan.get("tradingsymbol"),
                 "nifty_spot": (plan.get("indicators") or {}).get("nifty_spot"),
+                "entry_confirmation_score": setup.get("entry_confirmation_score"),
+                "autonomous_eligible": setup.get("autonomous_eligible"),
+                "setup_phase": setup.get("setup_phase"),
+                "setup_detail": setup.get("setup_detail"),
+                "autonomous_block_reason": self._last_autonomous_block_reason,
                 "events": [e.to_dict() for e in list(self._events)],
             }
 
@@ -469,19 +526,28 @@ class CommodityStrategyWatch:
                     fire_signal = True
                     self._signal_fired_today = True
 
+            autonomous_armed = self._should_autonomous_place(cfg)
             if (
-                self._should_autonomous_place(cfg)
+                autonomous_armed
                 and checklist_ready
                 and can_execute
                 and not self._placing
             ):
-                allowed, _ = autonomous_place_allowed(
+                allowed, guard_msg = autonomous_place_allowed(
                     plan,
                     placed_today=self._placed_today,
                     placed_symbol_today=self._placed_symbol_today,
                 )
                 if allowed:
+                    self._last_autonomous_block_reason = None
                     try_autonomous = True
+                else:
+                    self._record_autonomous_skip(guard_msg, plan)
+            elif autonomous_armed and checklist_ready and not can_execute:
+                skip_msg = "Waiting for margin/validation or session (can_execute=false)"
+                if not can_place:
+                    skip_msg = "Waiting for margin/validation (can_place=false)"
+                self._record_autonomous_skip(skip_msg, plan)
 
         self._persist()
         return fire_signal, try_autonomous, preview, plan, can_execute

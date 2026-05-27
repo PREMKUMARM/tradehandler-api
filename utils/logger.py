@@ -3,39 +3,108 @@ Enterprise logging utility
 Centralized logging with structured format
 """
 import logging
+import os
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 # Create logs directory if it doesn't exist
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
+# --- Filters ---
+class RequestContextFilter(logging.Filter):
+    """Ensure request_id exists on every LogRecord."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not hasattr(record, "request_id"):
+            record.request_id = "N/A"
+        return True
+
+
+class RateLimitFilter(logging.Filter):
+    """
+    Drop repeated identical log lines for chatty loops.
+
+    This is intentionally simple: it rate-limits by (logger name + level + message).
+    """
+
+    def __init__(self, window_seconds: float) -> None:
+        super().__init__()
+        self.window_seconds = max(0.0, float(window_seconds or 0.0))
+        self._last: Dict[Tuple[str, int, str], float] = {}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self.window_seconds <= 0:
+            return True
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(getattr(record, "msg", ""))  # best-effort
+        key = (record.name, int(record.levelno), msg)
+        now = float(getattr(record, "created", 0.0) or 0.0)
+        last = self._last.get(key)
+        if last is not None and (now - last) < self.window_seconds:
+            return False
+        self._last[key] = now
+        return True
+
+
 # Configure root logger
 def setup_logging(log_level: str = "INFO"):
     """Setup enterprise-level logging configuration"""
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper()),
-        format='%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(LOG_DIR / "app.log", encoding="utf-8")
-        ]
-    )
+    level = getattr(logging, (log_level or "INFO").upper(), logging.INFO)
+    fmt = "%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] - %(message)s"
 
+    # Build handlers explicitly so we can attach filters (basicConfig does not
+    # guarantee filters run for third-party loggers).
+    stream = logging.StreamHandler(sys.stdout)
+    fileh = logging.FileHandler(LOG_DIR / "app.log", encoding="utf-8")
 
-class RequestContextFilter(logging.Filter):
-    """Add request ID to log records"""
-    def filter(self, record):
-        record.request_id = getattr(record, 'request_id', 'N/A')
-        return True
+    formatter = logging.Formatter(fmt)
+    stream.setFormatter(formatter)
+    fileh.setFormatter(formatter)
+
+    # Always provide request_id, even for httpx/uvicorn/etc.
+    ctx = RequestContextFilter()
+
+    # Drop identical repeated lines within the window (seconds).
+    rl_sec = float(os.getenv("LOG_RATE_LIMIT_SECONDS", "2") or 2)
+    rl = RateLimitFilter(rl_sec)
+
+    for h in (stream, fileh):
+        h.addFilter(ctx)
+        h.addFilter(rl)
+
+    root = logging.getLogger()
+    root.handlers = []
+    root.setLevel(level)
+    root.addHandler(stream)
+    root.addHandler(fileh)
+
+    # Reduce noisy third-party libraries (keeps app logs readable).
+    quiet = {
+        "uvicorn": logging.INFO,
+        "uvicorn.error": logging.INFO,
+        "uvicorn.access": logging.WARNING,
+        "httpx": logging.WARNING,
+        "httpcore": logging.WARNING,
+        "urllib3": logging.WARNING,
+        "asyncio": logging.WARNING,
+        "websockets": logging.WARNING,
+        "twisted": logging.WARNING,
+    }
+    for name, lvl in quiet.items():
+        logging.getLogger(name).setLevel(lvl)
 
 
 def get_logger(name: str) -> logging.Logger:
     """Get a logger instance with request context support"""
     logger = logging.getLogger(name)
-    logger.addFilter(RequestContextFilter())
+    # Avoid attaching duplicate filters on repeated calls.
+    if not any(isinstance(f, RequestContextFilter) for f in logger.filters):
+        logger.addFilter(RequestContextFilter())
     return logger
 
 

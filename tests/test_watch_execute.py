@@ -122,6 +122,32 @@ class TestV2WatchEvaluate:
         assert can_exec is False
 
 
+class TestCommodityWatchStatus:
+    def test_pdl_break_in_progress_detail(self):
+        from services.commodity_watch_status import describe_autonomous_setup
+
+        plan = {
+            "entry_ready": True,
+            "entry_confirmation_score": 55,
+            "strategy_name": "PDH / PDL breakout",
+            "option_type": "PE",
+            "indicators": {"pdl": 8746.0, "last_5m_close": 8860.0},
+        }
+        out = describe_autonomous_setup(plan, min_score=65)
+        assert out["setup_phase"] == "in_progress"
+        assert out["autonomous_eligible"] is False
+        assert "PDL break in progress" in out["setup_detail"]
+        assert "55/65" in out["setup_detail"]
+
+    def test_confirmed_when_score_meets_minimum(self):
+        from services.commodity_watch_status import describe_autonomous_setup
+
+        plan = {"entry_ready": True, "entry_confirmation_score": 80}
+        out = describe_autonomous_setup(plan, min_score=65)
+        assert out["setup_phase"] == "confirmed"
+        assert out["autonomous_eligible"] is True
+
+
 class TestCommodityWatchEvaluate:
     def test_autonomous_retries_without_rising_edge(self):
         from services.commodity_strategy_watch import CommodityStrategyWatch
