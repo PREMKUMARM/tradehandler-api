@@ -29,6 +29,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             "/healthz",
             "/api/health",
             "/api/v1/webhooks/tradingview/alert",
+            # High-frequency UI polling (safe, read-only)
+            "/api/v1/v2/trade/watch/status",
+            "/api/v1/v2/trade/checklist-live",
+            "/api/v1/commodity/trade/watch/status",
+            "/api/v1/commodity/trade/checklist-live",
+            # Token/status endpoints are polled by UI and should not 429-loop
+            "/api/v1/auth/kite/access-token",
         ]:
             return await call_next(request)
         
