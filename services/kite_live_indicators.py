@@ -227,6 +227,98 @@ def _live_session_5m_bars(
     return out
 
 
+def _fetch_today_5m_rows(kite, token: int, as_of: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Today's 5m candles from session open through `as_of` (Kite historical)."""
+    now = (as_of or datetime.now(IST)).astimezone(IST)
+    today = now.date()
+    try:
+        from_dt = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
+        return list(
+            kite.historical_data(
+                token,
+                from_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+                "5minute",
+                continuous=False,
+                oi=False,
+            )
+            or []
+        )
+    except Exception as exc:
+        log_warning(f"[KiteLiveIndicators] 5m today fetch: {exc}")
+        return []
+
+
+def _fetch_last_completed_5m_close(kite, token: int) -> Optional[float]:
+    """Latest *completed* 5m close (not the forming candle)."""
+    rows = _fetch_today_5m_rows(kite, token)
+    if not rows:
+        return None
+    if len(rows) >= 2:
+        return float(rows[-2]["close"])
+    return float(rows[-1]["close"])
+
+
+def _seed_today_5m_from_historical(st: InstrumentLiveState, kite) -> None:
+    """Bootstrap today's 5m bars when the ticker hasn't built them yet (e.g. MCX)."""
+    if st.closed_5m or st.cur_5m is not None:
+        return
+    if st.sources.get("session_5m_seeded"):
+        return
+    rows = _fetch_today_5m_rows(kite, st.token)
+    if not rows:
+        return
+    for row in rows[:-1]:
+        d = row.get("date")
+        if not d:
+            continue
+        ts = d.astimezone(IST)
+        st.closed_5m.append(
+            CandleBar(
+                start=ts,
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=float(row["close"]),
+            )
+        )
+    last = rows[-1]
+    d = last.get("date")
+    if d:
+        ts = d.astimezone(IST)
+        st.cur_5m = CandleBar(
+            start=ts,
+            open=float(last["open"]),
+            high=float(last["high"]),
+            low=float(last["low"]),
+            close=float(last["close"]),
+        )
+    if st.closed_5m:
+        st.last_5m_close = st.closed_5m[-1].close
+        st.sources["last_5m_close"] = "kite_historical_5m"
+    st.sources["session_5m_seeded"] = "true"
+
+
+def _refresh_last_completed_5m_if_needed(st: InstrumentLiveState, kite) -> None:
+    """Keep last_5m_close current when tick-built bars are missing (MCX cold start)."""
+    if st.sources.get("last_5m_close") == "kite_ticker" and st.closed_5m:
+        return
+    now = datetime.now(IST)
+    prev_raw = st.sources.get("last_5m_hist_refresh")
+    if prev_raw:
+        try:
+            prev = datetime.fromisoformat(prev_raw).astimezone(IST)
+            if (now - prev).total_seconds() < 30:
+                return
+        except ValueError:
+            pass
+    close = _fetch_last_completed_5m_close(kite, st.token)
+    if close is not None:
+        st.last_5m_close = close
+        st.sources["last_5m_close"] = "kite_historical_5m"
+    st.sources["last_5m_hist_refresh"] = now.isoformat()
+
+
 def _fetch_prior_5m_closes_before(
     kite,
     token: int,
@@ -375,13 +467,20 @@ def _ensure_ema_from_combined(st: InstrumentLiveState, kite) -> None:
         st.ema9 = ema
         st.sources["ema9"] = source
         _store_indicator_window_meta(st, meta, source)
-        live_bars = _live_session_5m_bars(st)
-        if live_bars:
-            st.last_5m_close = live_bars[-1][1]
+        if st.closed_5m:
+            st.last_5m_close = st.closed_5m[-1].close
             st.sources["last_5m_close"] = "kite_ticker"
-        elif combined:
-            st.last_5m_close = combined[-1]
-            st.sources["last_5m_close"] = source
+        else:
+            try:
+                hist_close = _fetch_last_completed_5m_close(kite, st.token)
+            except Exception:
+                hist_close = None
+            if hist_close is not None:
+                st.last_5m_close = hist_close
+                st.sources["last_5m_close"] = "kite_historical_5m"
+            elif combined:
+                st.last_5m_close = combined[-1]
+                st.sources["last_5m_close"] = source
 
 
 def _sync_or_levels(st: InstrumentLiveState) -> None:
@@ -484,7 +583,8 @@ def _on_ticks_batch(ticks: List[Dict[str, Any]]) -> None:
             _apply_tick_ohlc(st, tick)
             if token == NIFTY_TOKEN_DEFAULT:
                 _update_or_from_tick(st, ts, price)
-                _update_5m_and_ema(st, ts, price)
+            # 5m bars + EMA for every subscribed instrument (Nifty + MCX crude, etc.)
+            _update_5m_and_ema(st, ts, price)
 
 
 def ensure_kite_live_indicators_registered() -> None:
@@ -562,6 +662,9 @@ def _historical_fill_missing(st: InstrumentLiveState, kite) -> None:
                 st.sources["or_low"] = "kite_historical_15m"
         except Exception as exc:
             log_warning(f"[KiteLiveIndicators] OR hist: {exc}")
+
+    _seed_today_5m_from_historical(st, kite)
+    _refresh_last_completed_5m_if_needed(st, kite)
 
     live_session_n = len(_live_session_5m_bars(st))
     need_pad = (
