@@ -122,6 +122,9 @@ def _default_persisted() -> Dict[str, Any]:
         "session_date": _today_iso(),
         "placed_today": False,
         "placed_symbol_today": None,
+        "pending_entry_order_id": None,
+        "pending_gtt_trigger_id": None,
+        "pending_symbol": None,
         "signal_fired_today": False,
         "config": asdict(WatchConfig()),
         "events": [],
@@ -177,6 +180,9 @@ class CommodityStrategyWatch:
         self._signal_fired_today = False
         self._placed_today = False
         self._placed_symbol_today: Optional[str] = None
+        self._pending_entry_order_id: Optional[str] = None
+        self._pending_gtt_trigger_id: Optional[str] = None
+        self._pending_symbol: Optional[str] = None
         self._eval_count = 0
         self._events: Deque[WatchEvent] = deque(maxlen=_MAX_EVENTS)
         self._task: Optional[asyncio.Task] = None
@@ -195,6 +201,9 @@ class CommodityStrategyWatch:
                 data["session_date"] = today
                 data["placed_today"] = False
                 data["placed_symbol_today"] = None
+                data["pending_entry_order_id"] = None
+                data["pending_gtt_trigger_id"] = None
+                data["pending_symbol"] = None
                 data["signal_fired_today"] = False
                 data["last_entry_ready"] = None
                 data["last_checklist_ready"] = None
@@ -213,6 +222,9 @@ class CommodityStrategyWatch:
             self._armed = bool(data.get("armed"))
             self._placed_today = bool(data.get("placed_today"))
             self._placed_symbol_today = data.get("placed_symbol_today")
+            self._pending_entry_order_id = data.get("pending_entry_order_id")
+            self._pending_gtt_trigger_id = data.get("pending_gtt_trigger_id")
+            self._pending_symbol = data.get("pending_symbol")
             self._signal_fired_today = bool(data.get("signal_fired_today"))
             self._eval_count = int(data.get("eval_count") or 0)
             ler = data.get("last_entry_ready")
@@ -233,6 +245,9 @@ class CommodityStrategyWatch:
                 "session_date": _today_iso(),
                 "placed_today": self._placed_today,
                 "placed_symbol_today": self._placed_symbol_today,
+                "pending_entry_order_id": self._pending_entry_order_id,
+                "pending_gtt_trigger_id": self._pending_gtt_trigger_id,
+                "pending_symbol": self._pending_symbol,
                 "signal_fired_today": self._signal_fired_today,
                 "config": asdict(self._cfg),
                 "events": [e.to_dict() for e in list(self._events)],
@@ -258,9 +273,72 @@ class CommodityStrategyWatch:
             self._signal_fired_today = False
             self._placed_today = False
             self._placed_symbol_today = None
+            self._pending_entry_order_id = None
+            self._pending_gtt_trigger_id = None
+            self._pending_symbol = None
             self._last_entry_ready = None
             self._last_checklist_ready = None
             self._eval_count = 0
+
+    def _setup_invalidated(self, plan: Dict[str, Any]) -> tuple[bool, str]:
+        """B-mode: cancel only when setup invalidates (not time-based)."""
+        if not plan:
+            return True, "No plan (setup invalidated)"
+        if plan.get("entry_ready") is not True:
+            return True, str(plan.get("entry_block_reason") or "Entry no longer confirmed")
+        score = int(plan.get("entry_confirmation_score") or 0)
+        if score < min_entry_confirmation_score():
+            return True, f"Score dropped to {score} (<{min_entry_confirmation_score()})"
+        block = plan.get("entry_block_reason")
+        if block:
+            return True, str(block)
+        return False, ""
+
+    def _order_status(self, order_id: str) -> Optional[str]:
+        oid = (order_id or "").strip()
+        if not oid:
+            return None
+        try:
+            from utils.kite_utils import get_kite_instance
+
+            kite = get_kite_instance()
+            for o in kite.orders() or []:
+                if str(o.get("order_id") or "") == oid:
+                    return str(o.get("status") or "").upper() or None
+        except Exception:
+            return None
+        return None
+
+    def _cancel_pending(self, *, reason: str) -> None:
+        entry_id = self._pending_entry_order_id
+        gtt_id = self._pending_gtt_trigger_id
+        sym = self._pending_symbol
+        self._pending_entry_order_id = None
+        self._pending_gtt_trigger_id = None
+        self._pending_symbol = None
+        self._placed_today = False
+        self._placed_symbol_today = None
+        try:
+            from agent.tools.kite_tools import cancel_order_tool, delete_gtt_tool
+
+            if entry_id:
+                cancel_order_tool.invoke({"order_id": entry_id, "variety": "regular"})
+            if gtt_id:
+                try:
+                    delete_gtt_tool.invoke({"trigger_id": int(str(gtt_id))})
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._push_event(
+            WatchEvent(
+                at=datetime.now(IST).isoformat(),
+                kind="auto_cancelled",
+                message=f"Cancelled pending entry{f' {entry_id}' if entry_id else ''}"
+                f"{f' + GTT {gtt_id}' if gtt_id else ''}: {reason}"[:240],
+                tradingsymbol=sym,
+            )
+        )
 
     def _push_event(self, ev: WatchEvent) -> None:
         self._events.appendleft(ev)
@@ -448,14 +526,40 @@ class CommodityStrategyWatch:
                 if not self._armed:
                     break
             try:
-                if commodity_trade_service.is_mcx_session_open():
-                    fire_signal, try_autonomous, preview, plan, can_place = (
-                        await asyncio.to_thread(self._evaluate_sync)
+                session_open = commodity_trade_service.is_mcx_session_open()
+                if self._pending_entry_order_id:
+                    if not session_open:
+                        self._cancel_pending(reason="MCX session closed")
+                    else:
+                        status = self._order_status(self._pending_entry_order_id)
+                        if status in ("COMPLETE", "EXECUTED"):
+                            with _lock:
+                                self._pending_entry_order_id = None
+                                self._pending_gtt_trigger_id = None
+                                self._pending_symbol = None
+                                if self._cfg.disarm_after_place:
+                                    self._armed = False
+                            self._push_event(
+                                WatchEvent(
+                                    at=datetime.now(IST).isoformat(),
+                                    kind="auto_filled",
+                                    message="Entry filled — lifecycle complete"
+                                    + (" (watch disarmed)" if self._cfg.disarm_after_place else ""),
+                                )
+                            )
+                        elif status in ("CANCELLED", "REJECTED"):
+                            self._cancel_pending(reason=f"Order {status.lower()}")
+
+                if session_open:
+                    fire_signal, try_autonomous, preview, plan, can_place = await asyncio.to_thread(
+                        self._evaluate_sync
                     )
+                    if self._pending_entry_order_id and plan:
+                        invalid, why = self._setup_invalidated(plan)
+                        if invalid:
+                            self._cancel_pending(reason=why)
                     if fire_signal and preview is not None:
-                        await self._on_signal_ready(
-                            preview, plan, can_place, try_autonomous
-                        )
+                        await self._on_signal_ready(preview, plan, can_place, try_autonomous)
                     elif try_autonomous and preview is not None:
                         await self._try_auto_place(preview, plan)
             except asyncio.CancelledError:
@@ -478,6 +582,7 @@ class CommodityStrategyWatch:
             cfg.mode == "autonomous"
             and cfg.auto_place_on_signal
             and not self._placed_today
+            and not self._pending_entry_order_id
         )
 
     def _evaluate_sync(
@@ -714,8 +819,31 @@ class CommodityStrategyWatch:
                 sym = plan.get("tradingsymbol") or sym
 
                 if entry_submitted or placed:
+                    entry_limit = float(plan.get("entry_limit_price") or entry_px or 0)
+                    fair = float(plan.get("entry_fair_premium") or entry_limit or 0)
+                    sl_prem = float(plan.get("stop_loss_premium") or 0)
+                    tp_prem = float(plan.get("target_premium") or 0)
+                    spot_sl = plan.get("spot_stop_loss")
+                    spot_tp = plan.get("spot_target")
+                    style = str(plan.get("entry_style") or "")
+                    sid = str(plan.get("strategy_id") or "")
+                    score = int(plan.get("entry_confirmation_score") or 0)
+                    trig = plan.get("entry_spot_trigger")
                     msg = (
-                        f"Autonomous entry {entry_id} {sym} @ ₹{entry_px}"
+                        f"Autonomous entry {entry_id} {sym} @ ₹{entry_limit}"
+                        f" · SL ₹{sl_prem:.2f} TP ₹{tp_prem:.2f}"
+                        + (
+                            f" · spot SL {float(spot_sl):.0f} TP {float(spot_tp):.0f}"
+                            if spot_sl is not None and spot_tp is not None
+                            else ""
+                        )
+                        + (
+                            f" · fair ₹{fair:.2f} · {sid or 'strategy'} {style}".rstrip()
+                            if fair > 0 or sid or style
+                            else ""
+                        )
+                        + (f" · trig {float(trig):.0f}" if trig is not None else "")
+                        + (f" · score {score}" if score else "")
                         + (
                             f" · GTT {result.get('gtt_trigger_id')}"
                             if result.get("gtt_trigger_id")
@@ -725,8 +853,12 @@ class CommodityStrategyWatch:
                     with _lock:
                         self._placed_today = True
                         self._placed_symbol_today = sym
-                        if cfg.disarm_after_place:
-                            self._armed = False
+                        # Keep watch alive for lifecycle (cancel if setup invalidates / clear on fill).
+                        self._pending_entry_order_id = str(entry_id) if entry_id else None
+                        self._pending_gtt_trigger_id = (
+                            str(result.get("gtt_trigger_id")) if result.get("gtt_trigger_id") else None
+                        )
+                        self._pending_symbol = sym
                     kind = "auto_placed"
                 else:
                     msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"
