@@ -726,13 +726,18 @@ def place_trade(
         ]
 
     entry_ready = plan.get("entry_ready", True)
-    if not entry_ready and not (skip_session and allow_offhours_v2_place()):
+    manual_confirm = confirm and preview.get("checklist_ready")
+    if not entry_ready and not manual_confirm and not (skip_session and allow_offhours_v2_place()):
         reason = plan.get("entry_block_reason") or "Entry setup not confirmed by indicators"
         result["errors"].append(reason)
         result["errors"].append(
             "Refresh preview after OR/PDH/EMA conditions align; limit is set to patient mid, not market chase"
         )
         return result
+    if not entry_ready and manual_confirm:
+        result["messages"] = list(result.get("messages", [])) + [
+            "Manual confirm: placing despite entry_ready=false (user confirmed in UI)"
+        ]
 
     try:
         from services.paper_trading import is_paper_mode

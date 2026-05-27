@@ -78,6 +78,7 @@ class TestV2WatchEvaluate:
             "trade_plan": {
                 "tradingsymbol": "NIFTY24MAY100CE",
                 "entry_ready": True,
+                "entry_confirmation_score": 80,
                 "entry_limit_price": 50,
                 "quantity": 25,
             },
@@ -89,7 +90,11 @@ class TestV2WatchEvaluate:
                     "services.v2_strategy_watch.v2_trade_service.allow_offhours_v2_place",
                     return_value=False,
                 ):
-                    fire, auto, _, plan, can_exec = watch._evaluate_sync()
+                    with patch(
+                        "services.v2_order_guard.autonomous_place_allowed",
+                        return_value=(True, "OK"),
+                    ):
+                        fire, auto, _, plan, can_exec = watch._evaluate_sync()
 
         assert fire is True
         assert auto is True

@@ -33,6 +33,7 @@ _MAX_EVENTS = 40
 _DEFAULT_POLL_SEC = 5
 _STATE_PATH = Path(os.getenv("V2_WATCH_STATE_FILE", "data/v2_strategy_watch.json"))
 _lock = RLock()
+_place_lock = asyncio.Lock()
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -168,10 +169,12 @@ class V2StrategyWatch:
         self._last_eval_at: Optional[datetime] = None
         self._signal_fired_today = False
         self._placed_today = False
+        self._placed_symbol_today: Optional[str] = None
         self._eval_count = 0
         self._events: Deque[WatchEvent] = deque(maxlen=_MAX_EVENTS)
         self._task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._placing = False
         self._last_autonomous_block_reason: Optional[str] = None
         self._last_skip_logged_msg: Optional[str] = None
         self._last_skip_logged_at: Optional[datetime] = None
@@ -184,6 +187,7 @@ class V2StrategyWatch:
             if data.get("session_date") != today:
                 data["session_date"] = today
                 data["placed_today"] = False
+                data["placed_symbol_today"] = None
                 data["signal_fired_today"] = False
                 data["last_entry_ready"] = None
                 data["last_checklist_ready"] = None
@@ -201,6 +205,7 @@ class V2StrategyWatch:
             )
             self._armed = bool(data.get("armed"))
             self._placed_today = bool(data.get("placed_today"))
+            self._placed_symbol_today = data.get("placed_symbol_today")
             self._signal_fired_today = bool(data.get("signal_fired_today"))
             self._eval_count = int(data.get("eval_count") or 0)
             ler = data.get("last_entry_ready")
@@ -220,6 +225,7 @@ class V2StrategyWatch:
                 "armed": self._armed,
                 "session_date": _today_iso(),
                 "placed_today": self._placed_today,
+                "placed_symbol_today": self._placed_symbol_today,
                 "signal_fired_today": self._signal_fired_today,
                 "config": asdict(self._cfg),
                 "events": [e.to_dict() for e in list(self._events)],
@@ -244,6 +250,7 @@ class V2StrategyWatch:
             self._session_date = today
             self._signal_fired_today = False
             self._placed_today = False
+            self._placed_symbol_today = None
             self._last_entry_ready = None
             self._last_checklist_ready = None
             self._eval_count = 0
@@ -366,21 +373,7 @@ class V2StrategyWatch:
                 plan,
                 min_score=min_score,
                 guard_message=self._last_autonomous_block_reason,
-                enforce_score=False,
             )
-            checklist_ok = bool(self._last_checklist_ready)
-            can_exec = bool(self._last_can_execute)
-            entry_ok = bool(self._last_entry_ready)
-            if (
-                cfg.mode == "autonomous"
-                and checklist_ok
-                and can_exec
-                and entry_ok
-                and not self._placed_today
-            ):
-                setup["autonomous_eligible"] = True
-                if setup.get("setup_phase") != "waiting":
-                    setup["setup_phase"] = "confirmed"
             return {
                 "armed": self._armed,
                 "mode": cfg.mode,
@@ -405,6 +398,7 @@ class V2StrategyWatch:
                 "entry_block_reason": self._last_block_reason,
                 "signal_fired_today": self._signal_fired_today,
                 "placed_today": self._placed_today,
+                "placed_symbol_today": self._placed_symbol_today,
                 "strategy_name": plan.get("strategy_name"),
                 "tradingsymbol": plan.get("tradingsymbol"),
                 "nifty_spot": (plan.get("indicators") or {}).get("nifty_spot"),
@@ -494,9 +488,7 @@ class V2StrategyWatch:
         )
         plan = preview.get("trade_plan") or {}
         checklist_ready = bool(preview.get("checklist_ready"))
-        entry_ready = plan.get("entry_ready")
-        if entry_ready is None:
-            entry_ready = True
+        entry_ready = plan.get("entry_ready") is True
         can_place = bool(preview.get("can_place"))
         can_execute = resolve_can_execute(
             preview, plan, offhours_allowed=v2_trade_service.allow_offhours_v2_place()
@@ -515,7 +507,7 @@ class V2StrategyWatch:
             self._last_block_reason = block
             prev_chk = self._last_checklist_ready
             self._last_checklist_ready = checklist_ready
-            self._last_entry_ready = bool(entry_ready)
+            self._last_entry_ready = entry_ready
 
             if checklist_ready and not self._signal_fired_today and prev_chk is not True:
                 if prev_chk is False or (prev_chk is None and self._eval_count > 1):
@@ -523,9 +515,19 @@ class V2StrategyWatch:
                     self._signal_fired_today = True
 
             autonomous_armed = self._should_autonomous_place(cfg)
-            if autonomous_armed and checklist_ready and can_execute:
-                self._last_autonomous_block_reason = None
-                try_autonomous = True
+            if autonomous_armed and checklist_ready and can_execute and not self._placing:
+                from services.v2_order_guard import autonomous_place_allowed
+
+                allowed, guard_msg = autonomous_place_allowed(
+                    plan,
+                    placed_today=self._placed_today,
+                    placed_symbol_today=self._placed_symbol_today,
+                )
+                if allowed:
+                    self._last_autonomous_block_reason = None
+                    try_autonomous = True
+                else:
+                    self._record_autonomous_skip(guard_msg, plan)
             elif autonomous_armed and checklist_ready and not can_execute:
                 skip_msg = "Waiting for margin/validation (can_execute=false)"
                 if not can_place:
@@ -610,102 +612,133 @@ class V2StrategyWatch:
             await self._try_auto_place(preview, plan)
 
     async def _try_auto_place(self, preview: Dict[str, Any], plan: Dict[str, Any]) -> None:
-        with _lock:
-            if self._placed_today:
-                return
-            cfg = self._cfg
-            if not self._should_autonomous_place(cfg):
-                return
+        async with _place_lock:
+            with _lock:
+                if self._placed_today or self._placing:
+                    return
+                cfg = self._cfg
+                if not self._should_autonomous_place(cfg):
+                    return
 
-        try:
-            from services.paper_trading import is_paper_mode
-            from services.risk_gate import check_order_allowed, is_kill_switch_active
+                from services.v2_order_guard import autonomous_place_allowed
 
-            if is_kill_switch_active():
-                self._push_event(
-                    WatchEvent(
-                        at=datetime.now(IST).isoformat(),
-                        kind="auto_skipped",
-                        message="Kill switch ON — autonomous place blocked",
-                    )
+                allowed, guard_msg = autonomous_place_allowed(
+                    plan,
+                    placed_today=self._placed_today,
+                    placed_symbol_today=self._placed_symbol_today,
                 )
-                return
+                if not allowed:
+                    self._push_event(
+                        WatchEvent(
+                            at=datetime.now(IST).isoformat(),
+                            kind="auto_skipped",
+                            message=guard_msg[:240],
+                            tradingsymbol=plan.get("tradingsymbol"),
+                        )
+                    )
+                    return
+                self._placing = True
 
-            sym = plan.get("tradingsymbol") or ""
-            qty = int(plan.get("quantity") or 0)
-            entry_px = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
-            est_value = entry_px * qty
-            ok, gate_msg = check_order_allowed(
-                "NFO",
-                sym,
-                qty,
-                "BUY",
-                estimated_value_inr=est_value,
-            )
-            if not ok:
+            try:
+                from services.paper_trading import is_paper_mode
+                from services.risk_gate import check_order_allowed, is_kill_switch_active
+
+                if is_kill_switch_active():
+                    self._push_event(
+                        WatchEvent(
+                            at=datetime.now(IST).isoformat(),
+                            kind="auto_skipped",
+                            message="Kill switch ON — autonomous place blocked",
+                        )
+                    )
+                    return
+
+                sym = plan.get("tradingsymbol") or ""
+                qty = int(plan.get("quantity") or 0)
+                entry_px = float(
+                    plan.get("entry_limit_price") or plan.get("entry_premium") or 0
+                )
+                est_value = entry_px * qty
+                ok, gate_msg = check_order_allowed(
+                    "NFO",
+                    sym,
+                    qty,
+                    "BUY",
+                    estimated_value_inr=est_value,
+                )
+                if not ok:
+                    self._push_event(
+                        WatchEvent(
+                            at=datetime.now(IST).isoformat(),
+                            kind="auto_skipped",
+                            message=f"Risk gate: {gate_msg}",
+                            tradingsymbol=sym,
+                        )
+                    )
+                    return
+
+                if is_paper_mode():
+                    log_info("[V2Watch] Autonomous place in paper mode")
+
+                result = await asyncio.to_thread(
+                    v2_trade_service.place_trade,
+                    completed_steps=None,
+                    direction=cfg.direction,
+                    risk_percentage=cfg.risk_percentage,
+                    reward_percentage=cfg.reward_percentage,
+                    num_lots=cfg.num_lots,
+                    confirm=True,
+                    auto_execute=cfg.auto_execute_checklist,
+                    trade_plan_snapshot=plan,
+                )
+                placed = bool(result.get("placed"))
+                entry_id = result.get("entry_order_id")
+                entry_submitted = bool(entry_id)
+                sym = plan.get("tradingsymbol") or sym
+
+                if entry_submitted or placed:
+                    msg = f"Autonomous entry {entry_id} {sym} @ ₹{entry_px}"
+                    with _lock:
+                        self._placed_today = True
+                        self._placed_symbol_today = sym
+                        if cfg.disarm_after_place:
+                            self._armed = False
+                    kind = "auto_placed"
+                else:
+                    msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"
+                    kind = "auto_skipped"
+
                 self._push_event(
                     WatchEvent(
                         at=datetime.now(IST).isoformat(),
-                        kind="auto_skipped",
-                        message=f"Risk gate: {gate_msg}",
+                        kind=kind,
+                        message=msg[:240],
+                        placed=entry_submitted or placed,
                         tradingsymbol=sym,
                     )
                 )
-                return
-
-            if is_paper_mode():
-                log_info("[V2Watch] Autonomous place in paper mode")
-
-            result = await asyncio.to_thread(
-                v2_trade_service.place_trade,
-                completed_steps=None,
-                direction=cfg.direction,
-                risk_percentage=cfg.risk_percentage,
-                reward_percentage=cfg.reward_percentage,
-                num_lots=cfg.num_lots,
-                confirm=True,
-                auto_execute=cfg.auto_execute_checklist,
-                trade_plan_snapshot=plan,
-            )
-            placed = bool(result.get("placed"))
-            msg = (
-                f"Autonomous placed {sym} · entry {result.get('entry_order_id')}"
-                if placed
-                else f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"
-            )
-            with _lock:
-                if placed:
-                    self._placed_today = True
-                    if cfg.disarm_after_place:
-                        self._armed = False
-            self._push_event(
-                WatchEvent(
-                    at=datetime.now(IST).isoformat(),
-                    kind="auto_placed" if placed else "auto_skipped",
-                    message=msg[:240],
-                    placed=placed,
-                    tradingsymbol=sym,
+                self._persist()
+                await broadcast_agent_update(
+                    "V2_WATCH_AUTO_PLACE",
+                    {"placed": placed, "entry_submitted": entry_submitted, "result": result},
                 )
-            )
-            self._persist()
-            await broadcast_agent_update(
-                "V2_WATCH_AUTO_PLACE",
-                {"placed": placed, "autonomous": True, "result": result},
-            )
-            await push_service.send_to_user(
-                user_id="default",
-                title="V2 autonomous " + ("placed" if placed else "skipped"),
-                body=msg[:180],
-            )
-        except Exception as exc:
-            log_error(f"[V2Watch] autonomous place failed: {exc}")
-            self._push_event(
-                WatchEvent(
-                    at=datetime.now(IST).isoformat(),
-                    kind="auto_skipped",
-                    message=str(exc)[:200],
+                await push_service.send_to_user(
+                    user_id="default",
+                    title="V2 autonomous " + ("placed" if entry_submitted else "skipped"),
+                    body=msg[:180],
                 )
-            )
+            except Exception as exc:
+                log_error(f"[V2Watch] autonomous place failed: {exc}")
+                self._push_event(
+                    WatchEvent(
+                        at=datetime.now(IST).isoformat(),
+                        kind="auto_skipped",
+                        message=str(exc)[:200],
+                    )
+                )
+            finally:
+                with _lock:
+                    self._placing = False
 
 
 _watch = V2StrategyWatch()
