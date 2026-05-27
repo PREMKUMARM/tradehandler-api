@@ -50,6 +50,33 @@ def _within_session_ist() -> Tuple[bool, str]:
     return False, f"Outside trading session (IST {cfg.trading_start_time}-{cfg.trading_end_time})"
 
 
+def _within_session_for_exchange(exchange: str) -> Tuple[bool, str]:
+    """
+    Exchange-aware session window.
+    - NSE/NFO/BSE: use agent config (default 09:15–15:30 IST)
+    - MCX: use commodity session (default 09:00–23:30 IST)
+    """
+    ex = (exchange or "").upper()
+    if ex == "MCX":
+        try:
+            from services.commodity_config import MCX_OPEN_MINUTES, MCX_CLOSE_MINUTES
+
+            now = datetime.now(ZoneInfo("Asia/Kolkata"))
+            if now.weekday() > 4:
+                return False, "Outside trading session (IST 09:00-23:30)"
+            minutes = now.hour * 60 + now.minute
+            if MCX_OPEN_MINUTES <= minutes <= MCX_CLOSE_MINUTES:
+                return True, "ok"
+            return False, "Outside trading session (IST 09:00-23:30)"
+        except Exception:
+            # Safe fallback if commodity config is unavailable
+            now_t = datetime.now(ZoneInfo("Asia/Kolkata")).time()
+            if dt_time(9, 0) <= now_t <= dt_time(23, 30):
+                return True, "ok"
+            return False, "Outside trading session (IST 09:00-23:30)"
+    return _within_session_ist()
+
+
 def _exchange_allowed(exchange: str) -> Tuple[bool, str]:
     raw = os.getenv("ALLOWED_ORDER_EXCHANGES", "NFO,NSE,BSE")
     allowed = {x.strip().upper() for x in raw.split(",") if x.strip()}
@@ -76,7 +103,7 @@ def check_order_allowed(
         return False, msg_ex
 
     if not skip_session_check:
-        ok_s, msg_s = _within_session_ist()
+        ok_s, msg_s = _within_session_for_exchange(exchange)
         if not ok_s:
             return False, msg_s
 
