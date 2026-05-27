@@ -54,11 +54,11 @@ def describe_autonomous_setup(
             pdl = ind.get("pdl")
             if pdl:
                 pdl_f = float(pdl)
-                last_s = f"{float(last_5m):.0f}" if last_5m is not None else "—"
+                last_s = f"{float(last_5m):.2f}" if last_5m is not None else "—"
                 return {
                     "setup_phase": "in_progress",
                     "setup_detail": (
-                        f"PDL break in progress — spot below PDL {pdl_f:.0f} but "
+                        f"PDL break in progress — spot below PDL {pdl_f:.2f} but "
                         f"last 5m close {last_s} not below level yet "
                         f"(score {score}/{min_score})"
                     ),
@@ -69,11 +69,11 @@ def describe_autonomous_setup(
             pdh = ind.get("pdh")
             if pdh:
                 pdh_f = float(pdh)
-                last_s = f"{float(last_5m):.0f}" if last_5m is not None else "—"
+                last_s = f"{float(last_5m):.2f}" if last_5m is not None else "—"
                 return {
                     "setup_phase": "in_progress",
                     "setup_detail": (
-                        f"PDH break in progress — spot above PDH {pdh_f:.0f} but "
+                        f"PDH break in progress — spot above PDH {pdh_f:.2f} but "
                         f"last 5m close {last_s} not above level yet "
                         f"(score {score}/{min_score})"
                     ),
