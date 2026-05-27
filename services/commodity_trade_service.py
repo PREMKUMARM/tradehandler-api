@@ -15,6 +15,7 @@ from utils.margin_utils import parse_equity_margins
 from services.commodity_strategy_analysis import analyze_commodity_strategies
 from utils.kite_utils import get_kite_instance, get_access_token
 from utils.logger import log_error, log_info, log_warning
+from services.commodity_order_guard import has_pending_mcx_order, has_mcx_position
 from services.commodity_config import (
     allow_offhours_commodity_place,
     is_mcx_session_open,
@@ -540,13 +541,28 @@ def _preview_trade_impl(
 
         paper_mode = is_paper_mode()
         if paper_mode:
-            messages.append("Paper trading mode ON — live Zerodha orders are disabled")
+            messages.append("Paper trading mode ON — orders go to paper ledger when checklist is complete")
     except Exception:
         pass
+
+    preview_core = {
+        "can_place": can_place and not paper_mode,
+        "checklist_ready": checklist_ready,
+        "paper_trading_mode": paper_mode,
+        "trade_plan": trade_plan,
+    }
+    from services.watch_execute import resolve_can_execute
+
+    can_execute = resolve_can_execute(
+        preview_core,
+        trade_plan,
+        offhours_allowed=allow_offhours_commodity_place(),
+    )
 
     prod = get_active_product()
     return {
         "can_place": can_place and not paper_mode,
+        "can_execute": can_execute,
         "checklist_ready": checklist_ready,
         "missing_steps": missing,
         "step_statuses": [s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in statuses],
@@ -717,13 +733,17 @@ def place_trade(
 
     market_open = is_mcx_session_open()
     offhours_test = allow_offhours_commodity_place()
-    can_execute = bool(preview.get("can_place")) or (
-        offhours_test and plan
+    from services.watch_execute import resolve_can_execute
+
+    can_execute = resolve_can_execute(
+        preview,
+        plan,
+        offhours_allowed=offhours_test and not market_open,
     ) or (
-        bool(plan)
-        and plan.get("entry_ready")
-        and preview.get("checklist_ready")
-        and confirm
+        confirm
+        and not auto_execute
+        and bool(preview.get("checklist_ready"))
+        and bool(plan)
     )
     if not can_execute:
         result["errors"].append("Cannot place — fix checklist or validation first")
@@ -748,6 +768,27 @@ def place_trade(
     entry_limit = float(plan.get("entry_limit_price") or plan.get("entry_premium"))
     sl_prem = float(plan["stop_loss_premium"])
     tgt_prem = float(plan["target_premium"])
+
+    # Audit: capture intent + duplicate signals before broker calls
+    pending, pending_msg = has_pending_mcx_order(symbol)
+    pos, pos_msg = has_mcx_position(symbol)
+    log_info(
+        "[COMMODITY_ORDER_ATTEMPT]",
+        symbol=symbol,
+        qty_lots=qty,
+        entry_limit=entry_limit,
+        sl=sl_prem,
+        tp=tgt_prem,
+        entry_ready=bool(plan.get("entry_ready")),
+        can_place=bool(preview.get("can_place")),
+        checklist_ready=bool(preview.get("checklist_ready")),
+        pending_order=pending,
+        pending_msg=pending_msg,
+        has_position=pos,
+        position_msg=pos_msg,
+        confirm=bool(confirm),
+        auto_execute=bool(auto_execute),
+    )
 
     if not market_open and not skip_session:
         result["errors"].append(
@@ -880,5 +921,15 @@ def place_trade(
     except Exception as exc:
         log_error(f"V2 place_trade error: {exc}")
         result["errors"].append(str(exc))
+
+    log_info(
+        "[COMMODITY_ORDER_RESULT]",
+        symbol=plan.get("tradingsymbol") if plan else None,
+        placed=bool(result.get("placed")),
+        entry_order_id=result.get("entry_order_id"),
+        gtt_trigger_id=result.get("gtt_trigger_id"),
+        entry_paper=bool(result.get("entry_paper")),
+        errors=result.get("errors"),
+    )
 
     return result

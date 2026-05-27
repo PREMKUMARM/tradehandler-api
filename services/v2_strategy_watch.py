@@ -2,9 +2,9 @@
 V2 Strategy Watch — server-side deploy with optional full autonomy.
 
 Modes:
-  - alert: push/WS when entry_ready; user places manually.
+  - alert: push/WS when checklist completes; user places manually.
   - autonomous: persists to disk, survives API restart, auto LIMIT+GTT when
-    entry_ready + can_place (retries each poll until placed or disarmed).
+    checklist_ready + can_execute (live or paper; retries each poll until placed).
 
 Autonomous is blocked only by kill-switch env/file or V2_WATCH_AUTONOMOUS=0.
 """
@@ -119,6 +119,7 @@ def _default_persisted() -> Dict[str, Any]:
         "events": [],
         "eval_count": 0,
         "last_entry_ready": None,
+        "last_checklist_ready": None,
     }
 
 
@@ -159,7 +160,9 @@ class V2StrategyWatch:
         self._cfg = WatchConfig()
         self._session_date: Optional[date] = None
         self._last_entry_ready: Optional[bool] = None
+        self._last_checklist_ready: Optional[bool] = None
         self._last_can_place = False
+        self._last_can_execute = False
         self._last_block_reason: Optional[str] = None
         self._last_trade_plan: Optional[Dict[str, Any]] = None
         self._last_eval_at: Optional[datetime] = None
@@ -180,6 +183,7 @@ class V2StrategyWatch:
                 data["placed_today"] = False
                 data["signal_fired_today"] = False
                 data["last_entry_ready"] = None
+                data["last_checklist_ready"] = None
                 data["eval_count"] = 0
             cfg_raw = data.get("config") or {}
             self._cfg = WatchConfig(
@@ -198,6 +202,8 @@ class V2StrategyWatch:
             self._eval_count = int(data.get("eval_count") or 0)
             ler = data.get("last_entry_ready")
             self._last_entry_ready = ler if ler is None else bool(ler)
+            lcr = data.get("last_checklist_ready")
+            self._last_checklist_ready = lcr if lcr is None else bool(lcr)
             self._session_date = _today()
             for ev in (data.get("events") or [])[:_MAX_EVENTS]:
                 if isinstance(ev, dict):
@@ -216,6 +222,7 @@ class V2StrategyWatch:
                 "events": [e.to_dict() for e in list(self._events)],
                 "eval_count": self._eval_count,
                 "last_entry_ready": self._last_entry_ready,
+                "last_checklist_ready": self._last_checklist_ready,
             }
         _write_persisted(data)
 
@@ -235,6 +242,7 @@ class V2StrategyWatch:
             self._signal_fired_today = False
             self._placed_today = False
             self._last_entry_ready = None
+            self._last_checklist_ready = None
             self._eval_count = 0
 
     def _push_event(self, ev: WatchEvent) -> None:
@@ -326,7 +334,9 @@ class V2StrategyWatch:
                 "last_eval_at": self._last_eval_at.isoformat() if self._last_eval_at else None,
                 "eval_count": self._eval_count,
                 "entry_ready": self._last_entry_ready,
+                "checklist_ready": self._last_checklist_ready,
                 "can_place": self._last_can_place,
+                "can_execute": self._last_can_execute,
                 "entry_block_reason": self._last_block_reason,
                 "signal_fired_today": self._signal_fired_today,
                 "placed_today": self._placed_today,
@@ -401,6 +411,8 @@ class V2StrategyWatch:
             cfg = self._cfg
             self._reset_day_if_needed()
 
+        from services.watch_execute import resolve_can_execute
+
         preview = v2_trade_service.preview_trade(
             completed_steps=None,
             direction=cfg.direction,
@@ -410,10 +422,14 @@ class V2StrategyWatch:
             auto_execute=cfg.auto_execute_checklist,
         )
         plan = preview.get("trade_plan") or {}
+        checklist_ready = bool(preview.get("checklist_ready"))
         entry_ready = plan.get("entry_ready")
         if entry_ready is None:
             entry_ready = True
         can_place = bool(preview.get("can_place"))
+        can_execute = resolve_can_execute(
+            preview, plan, offhours_allowed=v2_trade_service.allow_offhours_v2_place()
+        )
         block = plan.get("entry_block_reason")
 
         fire_signal = False
@@ -424,24 +440,26 @@ class V2StrategyWatch:
             self._last_eval_at = datetime.now(IST)
             self._last_trade_plan = plan
             self._last_can_place = can_place
+            self._last_can_execute = can_execute
             self._last_block_reason = block
-            prev = self._last_entry_ready
+            prev_chk = self._last_checklist_ready
+            self._last_checklist_ready = checklist_ready
             self._last_entry_ready = bool(entry_ready)
 
-            if entry_ready and not self._signal_fired_today and prev is not True:
-                if prev is False or (prev is None and self._eval_count > 1):
+            if checklist_ready and not self._signal_fired_today and prev_chk is not True:
+                if prev_chk is False or (prev_chk is None and self._eval_count > 1):
                     fire_signal = True
                     self._signal_fired_today = True
 
             if (
                 self._should_autonomous_place(cfg)
-                and entry_ready
-                and can_place
+                and checklist_ready
+                and can_execute
             ):
                 try_autonomous = True
 
         self._persist()
-        return fire_signal, try_autonomous, preview, plan, can_place
+        return fire_signal, try_autonomous, preview, plan, can_execute
 
     async def _on_signal_ready(
         self,
@@ -455,17 +473,22 @@ class V2StrategyWatch:
             "selected_name", "V2"
         )
         limit_px = plan.get("entry_limit_price") or plan.get("entry_premium")
+        paper = bool(preview.get("paper_trading_mode"))
         with _lock:
             autonomous = self._cfg.mode == "autonomous"
-        title = f"V2 setup ready — {strat}"
+        title = f"V2 checklist complete — {strat}"
         if autonomous and try_autonomous:
-            body = f"{sym} — placing LIMIT+GTT autonomously"
+            venue = "paper ledger" if paper else "LIMIT+GTT"
+            body = f"{sym} — placing via {venue} autonomously"
         elif autonomous:
-            body = f"{sym} setup OK — waiting for risk gate ({plan.get('entry_block_reason') or 'validation'})"
+            body = (
+                f"{sym} checklist OK — "
+                f"{plan.get('entry_block_reason') or 'waiting for validation or margin'}"
+            )
         else:
             body = f"{sym} LIMIT ₹{limit_px} · confirm in wizard"
             if not can_place:
-                body += " (risk validation pending)"
+                body += " (validation or paper mode pending)"
 
         self._push_event(
             WatchEvent(
@@ -504,7 +527,10 @@ class V2StrategyWatch:
         except Exception as exc:
             log_warning(f"[V2Watch] push failed: {exc}")
 
-        log_info(f"[V2Watch] Signal ready {sym} can_place={can_place} autonomous={try_autonomous}")
+        log_info(
+            f"[V2Watch] Checklist complete {sym} can_execute={can_place} "
+            f"paper={bool(preview.get('paper_trading_mode'))} autonomous={try_autonomous}"
+        )
 
         if try_autonomous:
             await self._try_auto_place(preview, plan)

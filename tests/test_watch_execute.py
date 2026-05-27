@@ -1,0 +1,169 @@
+"""Tests for watch execute gates and strategy watch evaluation."""
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from services.watch_execute import is_paper_trading, resolve_can_execute
+
+
+class TestResolveCanExecute:
+    PLAN = {"tradingsymbol": "TEST24MAY100CE", "entry_limit_price": 100}
+
+    def test_live_can_place(self):
+        preview = {
+            "can_place": True,
+            "checklist_ready": True,
+            "paper_trading_mode": False,
+        }
+        assert resolve_can_execute(preview, self.PLAN) is True
+
+    def test_paper_requires_checklist(self):
+        preview = {
+            "can_place": False,
+            "checklist_ready": False,
+            "paper_trading_mode": True,
+        }
+        assert resolve_can_execute(preview, self.PLAN) is False
+
+    def test_paper_checklist_complete(self):
+        preview = {
+            "can_place": False,
+            "checklist_ready": True,
+            "paper_trading_mode": True,
+        }
+        assert resolve_can_execute(preview, self.PLAN) is True
+
+    def test_offhours_bypass(self):
+        preview = {
+            "can_place": False,
+            "checklist_ready": False,
+            "paper_trading_mode": False,
+        }
+        assert resolve_can_execute(preview, self.PLAN, offhours_allowed=True) is True
+
+    def test_no_plan(self):
+        preview = {"can_place": True, "checklist_ready": True}
+        assert resolve_can_execute(preview, None) is False
+
+    @patch("services.paper_trading.is_paper_mode", return_value=True)
+    def test_paper_from_env(self, _mock):
+        preview = {
+            "can_place": False,
+            "checklist_ready": True,
+            "paper_trading_mode": False,
+        }
+        assert is_paper_trading(preview) is True
+        assert resolve_can_execute(preview, self.PLAN) is True
+
+
+class TestV2WatchEvaluate:
+    def test_autonomous_when_checklist_complete_paper(self):
+        from services.v2_strategy_watch import V2StrategyWatch
+
+        watch = V2StrategyWatch()
+        watch._armed = True
+        watch._cfg.mode = "autonomous"
+        watch._cfg.auto_place_on_signal = True
+        watch._cfg.auto_execute_checklist = True
+        watch._eval_count = 1
+        watch._last_checklist_ready = False
+
+        preview = {
+            "checklist_ready": True,
+            "can_place": False,
+            "can_execute": True,
+            "paper_trading_mode": True,
+            "trade_plan": {
+                "tradingsymbol": "NIFTY24MAY100CE",
+                "entry_ready": True,
+                "entry_limit_price": 50,
+                "quantity": 25,
+            },
+        }
+
+        with patch.object(watch, "_persist"):
+            with patch("services.v2_strategy_watch.v2_trade_service.preview_trade", return_value=preview):
+                with patch(
+                    "services.v2_strategy_watch.v2_trade_service.allow_offhours_v2_place",
+                    return_value=False,
+                ):
+                    fire, auto, _, plan, can_exec = watch._evaluate_sync()
+
+        assert fire is True
+        assert auto is True
+        assert can_exec is True
+        assert plan["tradingsymbol"] == "NIFTY24MAY100CE"
+
+    def test_no_autonomous_when_checklist_incomplete(self):
+        from services.v2_strategy_watch import V2StrategyWatch
+
+        watch = V2StrategyWatch()
+        watch._armed = True
+        watch._cfg.mode = "autonomous"
+        watch._cfg.auto_place_on_signal = True
+        watch._eval_count = 2
+        watch._last_checklist_ready = False
+
+        preview = {
+            "checklist_ready": False,
+            "can_place": False,
+            "paper_trading_mode": True,
+            "trade_plan": {"tradingsymbol": "X", "entry_ready": True},
+        }
+
+        with patch.object(watch, "_persist"):
+            with patch("services.v2_strategy_watch.v2_trade_service.preview_trade", return_value=preview):
+                fire, auto, _, _, can_exec = watch._evaluate_sync()
+
+        assert fire is False
+        assert auto is False
+        assert can_exec is False
+
+
+class TestCommodityWatchEvaluate:
+    def test_autonomous_retries_without_rising_edge(self):
+        from services.commodity_strategy_watch import CommodityStrategyWatch
+
+        watch = CommodityStrategyWatch()
+        watch._armed = True
+        watch._cfg.mode = "autonomous"
+        watch._cfg.auto_place_on_signal = True
+        watch._eval_count = 5
+        watch._last_checklist_ready = True
+        watch._signal_fired_today = True
+
+        preview = {
+            "checklist_ready": True,
+            "can_place": True,
+            "can_execute": True,
+            "paper_trading_mode": False,
+            "trade_plan": {
+                "tradingsymbol": "CRUDEOILM26JUN8850PE",
+                "entry_ready": True,
+                "entry_confirmation_score": 72,
+                "entry_limit_price": 120,
+                "quantity": 1,
+                "lot_size": 10,
+            },
+        }
+
+        with patch.object(watch, "_persist"):
+            with patch(
+                "services.commodity_strategy_watch.commodity_trade_service.preview_trade",
+                return_value=preview,
+            ):
+                with patch(
+                    "services.commodity_strategy_watch.commodity_trade_service.allow_offhours_commodity_place",
+                    return_value=False,
+                ):
+                    with patch(
+                        "services.commodity_strategy_watch.autonomous_place_allowed",
+                        return_value=(True, "ok"),
+                    ):
+                        fire, auto, _, _, can_exec = watch._evaluate_sync()
+
+        assert fire is False
+        assert auto is True
+        assert can_exec is True

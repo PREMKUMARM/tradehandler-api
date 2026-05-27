@@ -491,12 +491,27 @@ def preview_trade(
 
         paper_mode = is_paper_mode()
         if paper_mode:
-            messages.append("Paper trading mode ON — live Zerodha orders are disabled")
+            messages.append("Paper trading mode ON — orders go to paper ledger when checklist is complete")
     except Exception:
         pass
 
+    preview_core = {
+        "can_place": can_place and not paper_mode,
+        "checklist_ready": checklist_ready,
+        "paper_trading_mode": paper_mode,
+        "trade_plan": trade_plan,
+    }
+    from services.watch_execute import resolve_can_execute
+
+    can_execute = resolve_can_execute(
+        preview_core,
+        trade_plan,
+        offhours_allowed=allow_offhours_v2_place(),
+    )
+
     return {
         "can_place": can_place and not paper_mode,
+        "can_execute": can_execute,
         "checklist_ready": checklist_ready,
         "missing_steps": missing,
         "step_statuses": [s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in statuses],
@@ -663,7 +678,18 @@ def place_trade(
 
     market_open = is_market_session_open()
     offhours_test = allow_offhours_v2_place()
-    can_execute = bool(preview.get("can_place")) or (offhours_test and plan)
+    from services.watch_execute import resolve_can_execute
+
+    can_execute = resolve_can_execute(
+        preview,
+        plan,
+        offhours_allowed=offhours_test and not market_open,
+    ) or (
+        confirm
+        and not auto_execute
+        and bool(preview.get("checklist_ready"))
+        and bool(plan)
+    )
     if not can_execute:
         result["errors"].append("Cannot place — fix checklist or validation first")
         return result
@@ -807,5 +833,15 @@ def place_trade(
     except Exception as exc:
         log_error(f"V2 place_trade error: {exc}")
         result["errors"].append(str(exc))
+
+    log_info(
+        "[V2_ORDER_RESULT]",
+        symbol=plan.get("tradingsymbol") if plan else None,
+        placed=bool(result.get("placed")),
+        entry_order_id=result.get("entry_order_id"),
+        gtt_trigger_id=result.get("gtt_trigger_id"),
+        entry_paper=bool(result.get("entry_paper")),
+        errors=result.get("errors"),
+    )
 
     return result

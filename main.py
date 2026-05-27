@@ -12,10 +12,16 @@ from core.exceptions import (
     AlgoFeastException, ValidationError, AuthenticationError, 
     NotFoundError, BusinessLogicError, ExternalAPIError
 )
-from utils.logger import log_info, log_error, log_warning, log_debug
+from utils.logger import log_info, log_error, log_warning, log_debug, setup_logging
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+
+# Ensure logs go to stdout + logs/app.log (required for EC2 audit trails)
+try:
+    setup_logging(os.getenv("LOG_LEVEL", "INFO"))
+except Exception:
+    pass
 
 import json
 from pprint import pprint
