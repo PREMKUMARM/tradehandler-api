@@ -107,29 +107,17 @@ def has_nfo_position(tradingsymbol: str) -> Tuple[bool, str]:
                     continue
                 qty = int(p.get("quantity") or 0)
                 if qty > 0:
-                    return True, f"Existing long position qty={qty} on {sym}"
+                    return True, f"Open position on {sym} (qty={qty}) — exit before re-entry"
         return False, ""
     except Exception as exc:
         log_warning(f"[V2Guard] positions check failed: {exc}")
         return True, f"Could not verify positions — blocked: {exc}"
 
 
-def _symbols_placed_today(
-    placed_symbol_today: Optional[str],
-    placed_symbols_today: Optional[List[str]] = None,
-) -> set[str]:
-    out = {str(s).upper() for s in (placed_symbols_today or []) if s}
-    if placed_symbol_today:
-        out.add(str(placed_symbol_today).upper())
-    return out
-
-
 def autonomous_place_allowed(
     plan: Dict[str, Any],
     *,
     placed_today: bool,
-    placed_symbol_today: Optional[str],
-    placed_symbols_today: Optional[List[str]] = None,
 ) -> Tuple[bool, str]:
     if placed_today:
         return False, "Max autonomous Nifty trades per day reached"
@@ -137,8 +125,6 @@ def autonomous_place_allowed(
     ok, msg = entry_quality_for_autonomous(plan)
     if not ok:
         return False, msg
-    if sym.upper() in _symbols_placed_today(placed_symbol_today, placed_symbols_today):
-        return False, f"Already placed {sym} today"
     pending, pend_msg = has_pending_nfo_order(sym)
     if pending:
         return False, pend_msg

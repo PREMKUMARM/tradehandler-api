@@ -680,8 +680,6 @@ class V2StrategyWatch:
                 allowed, guard_msg = autonomous_place_allowed(
                     plan,
                     placed_today=self._placed_count_today >= self._max_trades_per_day(),
-                    placed_symbol_today=self._placed_symbol_today,
-                    placed_symbols_today=list(self._placed_symbols_today),
                 )
                 if allowed:
                     self._last_autonomous_block_reason = None
@@ -787,8 +785,6 @@ class V2StrategyWatch:
                 allowed, guard_msg = autonomous_place_allowed(
                     plan,
                     placed_today=at_limit,
-                    placed_symbol_today=self._placed_symbol_today,
-                    placed_symbols_today=list(self._placed_symbols_today),
                 )
                 if not allowed:
                     self._push_event(

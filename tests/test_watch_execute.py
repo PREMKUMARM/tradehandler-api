@@ -259,3 +259,53 @@ class TestCommodityTryAutoPlace:
         guard.assert_called_once()
         assert guard.call_args.kwargs["placed_today"] is False
         assert watch._placed_count_today == 2
+
+
+class TestCommodityOrderGuard:
+    def test_allows_same_symbol_when_no_open_position(self):
+        from services.commodity_order_guard import autonomous_place_allowed
+
+        plan = {
+            "tradingsymbol": "CRUDEOILM26JUN8600PE",
+            "entry_ready": True,
+            "entry_confirmation_score": 80,
+            "entry_limit_price": 470,
+            "entry_fair_premium": 470,
+            "entry_style": "mid_patient",
+            "indicators": {"option_bid": 468, "option_ask": 472, "option_ltp": 470},
+        }
+        with patch(
+            "services.commodity_order_guard.has_pending_mcx_order",
+            return_value=(False, ""),
+        ):
+            with patch(
+                "services.commodity_order_guard.has_mcx_position",
+                return_value=(False, ""),
+            ):
+                ok, msg = autonomous_place_allowed(plan, placed_today=False)
+        assert ok is True
+        assert msg == "OK"
+
+    def test_blocks_same_symbol_with_open_position(self):
+        from services.commodity_order_guard import autonomous_place_allowed
+
+        plan = {
+            "tradingsymbol": "CRUDEOILM26JUN8600PE",
+            "entry_ready": True,
+            "entry_confirmation_score": 80,
+            "entry_limit_price": 470,
+            "entry_fair_premium": 470,
+            "entry_style": "mid_patient",
+            "indicators": {"option_bid": 468, "option_ask": 472, "option_ltp": 470},
+        }
+        with patch(
+            "services.commodity_order_guard.has_pending_mcx_order",
+            return_value=(False, ""),
+        ):
+            with patch(
+                "services.commodity_order_guard.has_mcx_position",
+                return_value=(True, "Open position on CRUDEOILM26JUN8600PE (qty=1)"),
+            ):
+                ok, msg = autonomous_place_allowed(plan, placed_today=False)
+        assert ok is False
+        assert "Open position" in msg
