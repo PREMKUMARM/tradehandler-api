@@ -910,6 +910,44 @@ def place_trade(
             ]
         else:
             gtt_err = gtt.get("error") or "GTT placement failed"
+            # Retry once if Zerodha rejects trigger too close to last price.
+            if (
+                isinstance(gtt_err, str)
+                and "too close" in gtt_err.lower()
+                and "0.25" in gtt_err
+                and last_price > 0
+            ):
+                bump = max(0.1, last_price * 0.0032)
+                sl_trigger_retry = round_to_tick(max(0.05, last_price - bump))
+                tp_trigger_retry = round_to_tick(last_price + bump)
+                gtt2 = place_gtt_tool.invoke(
+                    {
+                        "tradingsymbol": symbol,
+                        "exchange": "MCX",
+                        "trigger_type": "two-leg",
+                        "trigger_prices": [sl_trigger_retry, tp_trigger_retry],
+                        "last_price": last_price,
+                        "stop_loss_price": sl_prem,
+                        "target_price": tgt_prem,
+                        "quantity": qty,
+                        "transaction_type": "SELL",
+                        "product": product,
+                    }
+                )
+                if gtt2.get("status") == "success":
+                    tid = gtt2.get("trigger_id")
+                    if isinstance(tid, dict):
+                        tid = tid.get("trigger_id", tid)
+                    result["gtt_trigger_id"] = str(tid)
+                    result["placed"] = True
+                    venue = "paper" if result["entry_paper"] else "Zerodha"
+                    result["messages"] = list(preview.get("messages", [])) + [
+                        f"Entry order {entry_id} on {venue}",
+                        f"GTT OCO trigger {result['gtt_trigger_id']} (auto-adjusted triggers)",
+                    ]
+                    gtt = gtt2
+                    gtt_err = ""
+
             result["errors"].append(gtt_err)
             # Entry may still be live on Kite
             if entry_id:

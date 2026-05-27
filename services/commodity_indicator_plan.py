@@ -432,6 +432,25 @@ def gtt_triggers_from_plan(plan: Dict[str, Any]) -> Tuple[float, float, float]:
     sl_prem = float(plan["stop_loss_premium"])
     tgt_prem = float(plan["target_premium"])
     last_price = float(plan.get("entry_premium") or plan.get("entry_limit_price") or 0)
+    # Zerodha constraint: trigger must be sufficiently away from last_price
+    # (observed rejection: "difference should be more than 0.25%").
+    min_gap = max(0.05, last_price * 0.0026) if last_price > 0 else 0.05
+
     sl_trigger = round_to_tick(sl_prem * 1.002)
     tp_trigger = round_to_tick(tgt_prem * 0.998)
+
+    # For long options exits:
+    # - SL trigger should be below last_price with enough gap
+    # - TP trigger should be above last_price with enough gap
+    if last_price > 0:
+        if last_price - sl_trigger < min_gap:
+            sl_trigger = round_to_tick(max(0.05, last_price - min_gap))
+        if tp_trigger - last_price < min_gap:
+            tp_trigger = round_to_tick(last_price + min_gap)
+
+    # Keep triggers on correct sides of intended prices (avoid nonsensical inversions)
+    if sl_trigger >= last_price and last_price > 0:
+        sl_trigger = round_to_tick(max(0.05, last_price - min_gap))
+    if tp_trigger <= last_price and last_price > 0:
+        tp_trigger = round_to_tick(last_price + min_gap)
     return sl_trigger, tp_trigger, last_price
