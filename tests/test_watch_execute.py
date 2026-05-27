@@ -198,3 +198,56 @@ class TestCommodityWatchEvaluate:
         assert fire is False
         assert auto is True
         assert can_exec is True
+
+
+class TestCommodityTryAutoPlace:
+    def test_allows_second_trade_when_count_below_max(self):
+        from services.commodity_strategy_watch import CommodityStrategyWatch
+
+        watch = CommodityStrategyWatch()
+        watch._armed = True
+        watch._cfg.mode = "autonomous"
+        watch._cfg.auto_place_on_signal = True
+        watch._placed_today = True
+        watch._placed_count_today = 1
+        watch._placed_symbol_today = "CRUDEOILM26JUN8750PE"
+        watch._placed_symbols_today = ["CRUDEOILM26JUN8750PE"]
+        plan = {
+            "tradingsymbol": "CRUDEOILM26JUN8550PE",
+            "entry_ready": True,
+            "entry_confirmation_score": 80,
+            "entry_limit_price": 470,
+            "entry_fair_premium": 470,
+            "quantity": 1,
+            "lot_size": 10,
+        }
+        preview = {"checklist_ready": True, "can_place": True}
+
+        with patch.object(watch, "_persist"):
+            with patch(
+                "services.commodity_strategy_watch.autonomous_place_allowed",
+                return_value=(True, "OK"),
+            ) as guard:
+                with patch(
+                    "services.commodity_strategy_watch.commodity_trade_service.place_trade",
+                    return_value={"placed": True, "entry_order_id": "1", "gtt_trigger_id": "2"},
+                ):
+                    with patch(
+                        "services.risk_gate.check_order_allowed",
+                        return_value=(True, "ok"),
+                    ):
+                        with patch(
+                            "services.risk_gate.is_kill_switch_active",
+                            return_value=False,
+                        ):
+                            with patch(
+                                "services.paper_trading.is_paper_mode",
+                                return_value=False,
+                            ):
+                                import asyncio
+
+                                asyncio.run(watch._try_auto_place(preview, plan))
+
+        guard.assert_called_once()
+        assert guard.call_args.kwargs["placed_today"] is False
+        assert watch._placed_count_today == 2

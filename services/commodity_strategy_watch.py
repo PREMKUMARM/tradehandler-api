@@ -677,6 +677,7 @@ class CommodityStrategyWatch:
                     plan,
                     placed_today=self._placed_count_today >= self._max_trades_per_day(),
                     placed_symbol_today=self._placed_symbol_today,
+                    placed_symbols_today=list(self._placed_symbols_today),
                 )
                 if allowed:
                     self._last_autonomous_block_reason = None
@@ -770,15 +771,17 @@ class CommodityStrategyWatch:
     async def _try_auto_place(self, preview: Dict[str, Any], plan: Dict[str, Any]) -> None:
         async with _place_lock:
             with _lock:
-                if self._placed_today or self._placing:
+                at_limit = self._placed_count_today >= self._max_trades_per_day()
+                if at_limit or self._placing:
                     return
                 cfg = self._cfg
                 if not self._should_autonomous_place(cfg):
                     return
                 allowed, guard_msg = autonomous_place_allowed(
                     plan,
-                    placed_today=self._placed_today,
+                    placed_today=at_limit,
                     placed_symbol_today=self._placed_symbol_today,
+                    placed_symbols_today=list(self._placed_symbols_today),
                 )
                 if not allowed:
                     self._push_event(

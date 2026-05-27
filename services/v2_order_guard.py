@@ -114,19 +114,30 @@ def has_nfo_position(tradingsymbol: str) -> Tuple[bool, str]:
         return True, f"Could not verify positions — blocked: {exc}"
 
 
+def _symbols_placed_today(
+    placed_symbol_today: Optional[str],
+    placed_symbols_today: Optional[List[str]] = None,
+) -> set[str]:
+    out = {str(s).upper() for s in (placed_symbols_today or []) if s}
+    if placed_symbol_today:
+        out.add(str(placed_symbol_today).upper())
+    return out
+
+
 def autonomous_place_allowed(
     plan: Dict[str, Any],
     *,
     placed_today: bool,
     placed_symbol_today: Optional[str],
+    placed_symbols_today: Optional[List[str]] = None,
 ) -> Tuple[bool, str]:
     if placed_today:
-        return False, "Already placed one Nifty trade today (autonomous)"
+        return False, "Max autonomous Nifty trades per day reached"
     sym = str(plan.get("tradingsymbol") or "")
     ok, msg = entry_quality_for_autonomous(plan)
     if not ok:
         return False, msg
-    if placed_symbol_today and placed_symbol_today.upper() == sym.upper():
+    if sym.upper() in _symbols_placed_today(placed_symbol_today, placed_symbols_today):
         return False, f"Already placed {sym} today"
     pending, pend_msg = has_pending_nfo_order(sym)
     if pending:
