@@ -32,6 +32,7 @@ from services.commodity_order_guard import (
     autonomous_place_allowed,
     min_entry_confirmation_score,
 )
+from agent.config import get_agent_config
 from services.push.push_service import push_service
 from utils.logger import log_error, log_info, log_warning
 
@@ -120,8 +121,10 @@ def _default_persisted() -> Dict[str, Any]:
     return {
         "armed": False,
         "session_date": _today_iso(),
-        "placed_today": False,
-        "placed_symbol_today": None,
+        "placed_today": False,  # backward-compatible (derived from placed_count_today > 0)
+        "placed_symbol_today": None,  # backward-compatible (last traded symbol)
+        "placed_count_today": 0,
+        "placed_symbols_today": [],
         "pending_entry_order_id": None,
         "pending_gtt_trigger_id": None,
         "pending_symbol": None,
@@ -180,6 +183,8 @@ class CommodityStrategyWatch:
         self._signal_fired_today = False
         self._placed_today = False
         self._placed_symbol_today: Optional[str] = None
+        self._placed_count_today: int = 0
+        self._placed_symbols_today: List[str] = []
         self._pending_entry_order_id: Optional[str] = None
         self._pending_gtt_trigger_id: Optional[str] = None
         self._pending_symbol: Optional[str] = None
@@ -201,6 +206,8 @@ class CommodityStrategyWatch:
                 data["session_date"] = today
                 data["placed_today"] = False
                 data["placed_symbol_today"] = None
+                data["placed_count_today"] = 0
+                data["placed_symbols_today"] = []
                 data["pending_entry_order_id"] = None
                 data["pending_gtt_trigger_id"] = None
                 data["pending_symbol"] = None
@@ -220,8 +227,13 @@ class CommodityStrategyWatch:
                 disarm_after_place=bool(cfg_raw.get("disarm_after_place", True)),
             )
             self._armed = bool(data.get("armed"))
-            self._placed_today = bool(data.get("placed_today"))
-            self._placed_symbol_today = data.get("placed_symbol_today")
+            self._placed_count_today = int(data.get("placed_count_today") or 0)
+            syms = data.get("placed_symbols_today") or []
+            self._placed_symbols_today = [str(s).upper() for s in syms if s]
+            self._placed_today = bool(data.get("placed_today")) or self._placed_count_today > 0
+            self._placed_symbol_today = data.get("placed_symbol_today") or (
+                self._placed_symbols_today[-1] if self._placed_symbols_today else None
+            )
             self._pending_entry_order_id = data.get("pending_entry_order_id")
             self._pending_gtt_trigger_id = data.get("pending_gtt_trigger_id")
             self._pending_symbol = data.get("pending_symbol")
@@ -243,8 +255,10 @@ class CommodityStrategyWatch:
             data = {
                 "armed": self._armed,
                 "session_date": _today_iso(),
-                "placed_today": self._placed_today,
+                "placed_today": bool(self._placed_count_today > 0),
                 "placed_symbol_today": self._placed_symbol_today,
+                "placed_count_today": int(self._placed_count_today),
+                "placed_symbols_today": list(self._placed_symbols_today),
                 "pending_entry_order_id": self._pending_entry_order_id,
                 "pending_gtt_trigger_id": self._pending_gtt_trigger_id,
                 "pending_symbol": self._pending_symbol,
@@ -273,12 +287,28 @@ class CommodityStrategyWatch:
             self._signal_fired_today = False
             self._placed_today = False
             self._placed_symbol_today = None
+            self._placed_count_today = 0
+            self._placed_symbols_today = []
             self._pending_entry_order_id = None
             self._pending_gtt_trigger_id = None
             self._pending_symbol = None
             self._last_entry_ready = None
             self._last_checklist_ready = None
             self._eval_count = 0
+
+    @staticmethod
+    def _max_trades_per_day() -> int:
+        """Configurable per-day autonomous trade cap (default 10)."""
+        try:
+            raw = os.getenv("COMMODITY_WATCH_MAX_TRADES_PER_DAY", "").strip()
+            if raw:
+                return max(1, min(50, int(raw)))
+        except Exception:
+            pass
+        try:
+            return max(1, min(50, int(get_agent_config().max_trades_per_day or 10)))
+        except Exception:
+            return 10
 
     def _setup_invalidated(self, plan: Dict[str, Any]) -> tuple[bool, str]:
         """B-mode: cancel only when setup invalidates (not time-based)."""
@@ -581,7 +611,7 @@ class CommodityStrategyWatch:
         return (
             cfg.mode == "autonomous"
             and cfg.auto_place_on_signal
-            and not self._placed_today
+            and self._placed_count_today < self._max_trades_per_day()
             and not self._pending_entry_order_id
         )
 
@@ -645,7 +675,7 @@ class CommodityStrategyWatch:
             ):
                 allowed, guard_msg = autonomous_place_allowed(
                     plan,
-                    placed_today=self._placed_today,
+                    placed_today=self._placed_count_today >= self._max_trades_per_day(),
                     placed_symbol_today=self._placed_symbol_today,
                 )
                 if allowed:
@@ -851,8 +881,13 @@ class CommodityStrategyWatch:
                         )
                     )
                     with _lock:
+                        self._placed_count_today += 1
                         self._placed_today = True
                         self._placed_symbol_today = sym
+                        if sym:
+                            up = sym.upper()
+                            if up not in self._placed_symbols_today:
+                                self._placed_symbols_today.append(up)
                         # Keep watch alive for lifecycle (cancel if setup invalidates / clear on fill).
                         self._pending_entry_order_id = str(entry_id) if entry_id else None
                         self._pending_gtt_trigger_id = (
