@@ -221,10 +221,10 @@ def _validate_checklist_auto(
             ok = dir_ok and (plan is not None or direction.upper() in ("CE", "PE"))
             if direction.upper() == "AUTO" and plan:
                 msg = f"Direction AUTO → {opt}"
-                out = f"Nifty {plan.get('nifty_spot')} vs prior close → {opt}"
+                out = f"Crude {plan.get('nifty_spot')} vs prior close → {opt}"
             elif direction.upper() in ("CE", "PE"):
                 msg = f"Direction: {direction.upper()}"
-                out = f"Hypothesis: buy Nifty {direction.upper()}"
+                out = f"Hypothesis: buy Crude {direction.upper()}"
             else:
                 msg = "Could not resolve direction"
                 out = plan_error
@@ -251,7 +251,7 @@ def _validate_checklist_auto(
         elif i == 4:
             ok = plan is not None
             out = (
-                f"Nifty spot {plan.get('nifty_spot')} · focus ATM/near-ATM {opt} liquidity"
+                f"Crude spot {plan.get('nifty_spot')} · focus ATM/near-ATM {opt} liquidity"
                 if plan
                 else plan_error
             )
@@ -281,7 +281,7 @@ def _validate_checklist_auto(
             ok = plan is not None
             out = (
                 f"SL premium ₹{plan.get('stop_loss_premium')} · Target ₹{plan.get('target_premium')} · "
-                f"Nifty SL {plan.get('spot_stop_loss')} · Tgt {plan.get('spot_target')}"
+                f"Crude SL {plan.get('spot_stop_loss')} · Tgt {plan.get('spot_target')}"
                 if plan
                 else plan_error
             )
@@ -494,7 +494,7 @@ def _preview_trade_impl(
         can_place = _resolve_can_place(trade_plan, validation, market_open)
         if trade_plan:
             messages.append(
-                f"Live Nifty {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
+                f"Live Crude {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
             )
             if not validation or not validation.get("is_good_trade"):
                 messages.append("Risk/reward validation failed — adjust size or levels")
@@ -526,12 +526,12 @@ def _preview_trade_impl(
             strategy_analysis = live.get("strategy_analysis")
             can_place = _resolve_can_place(trade_plan, validation, market_open)
             messages.append(
-                f"Live Nifty {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
+                f"Live Crude {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
             )
         if not checklist_ready:
             messages.append(f"Complete checklist steps: {[i + 1 for i in missing]}")
         if not market_open and not allow_offhours_commodity_place():
-            messages.append("Live orders only during market hours (9:15 AM–3:30 PM IST, Mon–Fri)")
+            messages.append("Live orders only during market hours (9:00 AM–11:30 PM IST, Mon–Fri)")
         elif not market_open and allow_offhours_commodity_place():
             messages.append("Test mode: off-hours place enabled (COMMODITY_ALLOW_OFFHOURS_PLACE)")
 
@@ -792,7 +792,7 @@ def place_trade(
 
     if not market_open and not skip_session:
         result["errors"].append(
-            "Market is closed. Enable COMMODITY_ALLOW_OFFHOURS_PLACE for test bypass or place during 9:15 AM–3:30 PM IST."
+            "Market is closed. Enable COMMODITY_ALLOW_OFFHOURS_PLACE for test bypass or place during 9:00 AM–11:30 PM IST."
         )
         return result
 
@@ -831,7 +831,7 @@ def place_trade(
             (
                 f"Entry {entry_style} LIMIT ₹{entry_limit} (fair ₹{plan.get('entry_fair_premium', entry_limit)}) · "
                 f"{plan.get('num_lots')} lots × {plan.get('lot_size')} = {qty} qty · "
-                f"Nifty SL {plan.get('spot_stop_loss')} TP {plan.get('spot_target')} · "
+                f"Crude SL {plan.get('spot_stop_loss')} TP {plan.get('spot_target')} · "
                 f"GTT SL ₹{sl_prem} TP ₹{tgt_prem}"
             ),
             (
@@ -868,7 +868,7 @@ def place_trade(
             result["errors"].append(err)
             if not market_open:
                 result["errors"].append(
-                    "Zerodha rejects orders outside market hours — test during 9:15 AM–3:30 PM IST Mon–Fri"
+                    "Zerodha rejects orders outside market hours — test during 9:00 AM–11:30 PM IST Mon–Fri"
                 )
             return result
 
@@ -876,7 +876,7 @@ def place_trade(
         result["entry_order_id"] = entry_id
         result["entry_paper"] = bool(entry.get("paper"))
         log_info(
-            f"V2 LIMIT entry {entry_id} {symbol} @ {entry_limit} qty={qty} "
+            f"Commodity LIMIT entry {entry_id} {symbol} @ {entry_limit} qty={qty} "
             f"paper={result['entry_paper']}"
         )
 

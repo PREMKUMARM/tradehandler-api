@@ -317,7 +317,7 @@ def build_indicator_trade_plan(
         "indicators": indicator_snapshot,
     }
     messages.append(
-        f"Indicators: Nifty {spot_entry:.0f} | OR {ind.get('or_low')}-{ind.get('or_high')} | "
+        f"Indicators: Crude {spot_entry:.0f} | OR {ind.get('or_low')}-{ind.get('or_high')} | "
         f"PDH {ind.get('pdh')} PDL {ind.get('pdl')} | EMA9 {ind.get('ema9')} | VIX {ind.get('vix')}"
     )
     messages.append(

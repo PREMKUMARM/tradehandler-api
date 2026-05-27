@@ -172,6 +172,7 @@ class CommodityStrategyWatch:
         self._last_can_execute = False
         self._last_block_reason: Optional[str] = None
         self._last_trade_plan: Optional[Dict[str, Any]] = None
+        self._last_strategy_analysis: Optional[Dict[str, Any]] = None
         self._last_eval_at: Optional[datetime] = None
         self._signal_fired_today = False
         self._placed_today = False
@@ -379,6 +380,7 @@ class CommodityStrategyWatch:
 
         with _lock:
             plan = self._last_trade_plan or {}
+            sa = self._last_strategy_analysis or {}
             cfg = self._cfg
             min_score = min_entry_confirmation_score()
             setup = describe_autonomous_setup(
@@ -415,6 +417,7 @@ class CommodityStrategyWatch:
                 "strategy_name": plan.get("strategy_name"),
                 "tradingsymbol": plan.get("tradingsymbol"),
                 "nifty_spot": (plan.get("indicators") or {}).get("nifty_spot"),
+                "strategy_candidates": (sa.get("strategies") or [])[:5] if isinstance(sa, dict) else [],
                 "entry_confirmation_score": setup.get("entry_confirmation_score"),
                 "autonomous_eligible": setup.get("autonomous_eligible"),
                 "setup_phase": setup.get("setup_phase"),
@@ -497,6 +500,7 @@ class CommodityStrategyWatch:
             auto_execute=cfg.auto_execute_checklist,
         )
         plan = preview.get("trade_plan") or {}
+        strategy_analysis = preview.get("strategy_analysis") or {}
         checklist_ready = bool(preview.get("checklist_ready"))
         entry_ready = plan.get("entry_ready") is True
         can_place = bool(preview.get("can_place"))
@@ -514,6 +518,7 @@ class CommodityStrategyWatch:
             self._eval_count += 1
             self._last_eval_at = datetime.now(IST)
             self._last_trade_plan = plan
+            self._last_strategy_analysis = strategy_analysis if isinstance(strategy_analysis, dict) else {}
             self._last_can_place = can_place
             self._last_can_execute = can_execute
             self._last_block_reason = block

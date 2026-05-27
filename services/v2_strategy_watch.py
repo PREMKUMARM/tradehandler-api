@@ -166,6 +166,7 @@ class V2StrategyWatch:
         self._last_can_execute = False
         self._last_block_reason: Optional[str] = None
         self._last_trade_plan: Optional[Dict[str, Any]] = None
+        self._last_strategy_analysis: Optional[Dict[str, Any]] = None
         self._last_eval_at: Optional[datetime] = None
         self._signal_fired_today = False
         self._placed_today = False
@@ -331,13 +332,23 @@ class V2StrategyWatch:
                 disarm_after_place=bool(disarm_after_place),
             )
             self._armed = True
+        auto_suffix = ""
+        if mode == "autonomous":
+            try:
+                from services.v2_order_guard import min_entry_confirmation_score
+
+                auto_suffix = (
+                    f" · auto on confirmed entry (score≥{min_entry_confirmation_score()})"
+                )
+            except Exception:
+                auto_suffix = " · auto on confirmed entry"
         self._push_event(
             WatchEvent(
                 at=datetime.now(IST).isoformat(),
                 kind="armed",
                 message=(
                     f"Watch armed ({mode}) — {self._cfg.direction}, {self._cfg.num_lots} lot(s)"
-                    + (" · autonomous LIMIT+GTT" if mode == "autonomous" else "")
+                    + auto_suffix
                 ),
             )
         )
@@ -367,6 +378,7 @@ class V2StrategyWatch:
 
         with _lock:
             plan = self._last_trade_plan or {}
+            sa = self._last_strategy_analysis or {}
             cfg = self._cfg
             min_score = int(os.getenv("NIFTY_AUTO_MIN_ENTRY_SCORE", "65") or 65)
             setup = describe_autonomous_setup(
@@ -402,6 +414,7 @@ class V2StrategyWatch:
                 "strategy_name": plan.get("strategy_name"),
                 "tradingsymbol": plan.get("tradingsymbol"),
                 "nifty_spot": (plan.get("indicators") or {}).get("nifty_spot"),
+                "strategy_candidates": (sa.get("strategies") or [])[:5] if isinstance(sa, dict) else [],
                 "min_entry_score": min_score,
                 "entry_confirmation_score": setup.get("entry_confirmation_score"),
                 "autonomous_eligible": setup.get("autonomous_eligible"),
@@ -487,6 +500,7 @@ class V2StrategyWatch:
             auto_execute=cfg.auto_execute_checklist,
         )
         plan = preview.get("trade_plan") or {}
+        strategy_analysis = preview.get("strategy_analysis") or {}
         checklist_ready = bool(preview.get("checklist_ready"))
         entry_ready = plan.get("entry_ready") is True
         can_place = bool(preview.get("can_place"))
@@ -502,6 +516,7 @@ class V2StrategyWatch:
             self._eval_count += 1
             self._last_eval_at = datetime.now(IST)
             self._last_trade_plan = plan
+            self._last_strategy_analysis = strategy_analysis if isinstance(strategy_analysis, dict) else {}
             self._last_can_place = can_place
             self._last_can_execute = can_execute
             self._last_block_reason = block
@@ -550,12 +565,13 @@ class V2StrategyWatch:
         )
         limit_px = plan.get("entry_limit_price") or plan.get("entry_premium")
         paper = bool(preview.get("paper_trading_mode"))
+        score = plan.get("entry_confirmation_score")
         with _lock:
             autonomous = self._cfg.mode == "autonomous"
         title = f"V2 checklist complete — {strat}"
         if autonomous and try_autonomous:
             venue = "paper ledger" if paper else "LIMIT+GTT"
-            body = f"{sym} — placing via {venue} autonomously"
+            body = f"{sym} — placing via {venue} (score {score})"
         elif autonomous:
             body = (
                 f"{sym} checklist OK — "

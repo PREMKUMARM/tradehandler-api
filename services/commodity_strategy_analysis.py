@@ -466,7 +466,7 @@ def analyze_commodity_strategies(
 
     output_lines = [
         f"Selected: {selected.name} (score {selected.score}/100, {selected.fit})",
-        f"Leg: BUY Nifty {selected.option_kind} · SL {selected.spot_stop_loss:.0f} · Tgt {selected.spot_target:.0f}",
+        f"Leg: BUY Crude {selected.option_kind} · SL {selected.spot_stop_loss:.0f} · Tgt {selected.spot_target:.0f}",
     ]
     if selected.reasons:
         output_lines.append("Why: " + "; ".join(selected.reasons[:3]))
