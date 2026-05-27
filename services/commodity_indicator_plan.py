@@ -423,7 +423,11 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     spot_entry, spot_sl, spot_tgt, _ = refine_spot_levels_from_candles(
         sid, spot_entry, kind, spot_sl, spot_tgt, intra
     )
-    rr_struct = (reward_percentage / risk_percentage) if (risk_percentage and risk_percentage > 0) else 2.0
+    ind_meta = plan.get("indicators") or {}
+    risk_pct = float(ind_meta.get("risk_pct") or 1.0)
+    rr_struct = float(plan.get("reward_ratio") or 2.0)
+    if rr_struct <= 0:
+        rr_struct = 2.0
     sl5, tgt5, _ = _spot_levels_from_last_5m(
         spot_entry=spot_entry,
         kind=kind,
@@ -452,9 +456,7 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         prev_close=float(live.get("prev_close") or 0),
     )
     entry_limit = entry_analysis.entry_limit_price
-    ind_meta = plan.get("indicators") or {}
     capital = float(ind_meta.get("margin") or 0)
-    risk_pct = float(ind_meta.get("risk_pct") or 1.0)
     lot_size = int(plan.get("lot_size") or 75)
     num_lots = int(plan.get("num_lots") or 1)
     if capital > 0:

@@ -244,9 +244,17 @@ class TestCommodityTryAutoPlace:
                                 "services.paper_trading.is_paper_mode",
                                 return_value=False,
                             ):
-                                import asyncio
+                                with patch(
+                                    "services.commodity_strategy_watch.broadcast_agent_update",
+                                    return_value=None,
+                                ):
+                                    with patch(
+                                        "services.commodity_strategy_watch.push_service.send_to_user",
+                                        return_value=None,
+                                    ):
+                                        import asyncio
 
-                                asyncio.run(watch._try_auto_place(preview, plan))
+                                        asyncio.run(watch._try_auto_place(preview, plan))
 
         guard.assert_called_once()
         assert guard.call_args.kwargs["placed_today"] is False
