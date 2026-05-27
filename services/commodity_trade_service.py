@@ -758,7 +758,11 @@ def place_trade(
     # UI allows off-hours test; risk gate normally blocks outside 9:15–15:30 IST.
     skip_session = offhours_test and not market_open
 
-    from services.commodity_indicator_plan import gtt_triggers_from_plan, refresh_plan_at_execution
+    from services.commodity_indicator_plan import (
+        _normalize_long_option_exits,
+        gtt_triggers_from_plan,
+        refresh_plan_at_execution,
+    )
 
     plan = refresh_plan_at_execution(plan)
     result["trade_plan"] = plan
@@ -766,8 +770,13 @@ def place_trade(
     symbol = plan["tradingsymbol"]
     qty = int(plan.get("num_lots") or plan.get("quantity") or 1)
     entry_limit = float(plan.get("entry_limit_price") or plan.get("entry_premium"))
-    sl_prem = float(plan["stop_loss_premium"])
-    tgt_prem = float(plan["target_premium"])
+    sl_prem, tgt_prem = _normalize_long_option_exits(
+        entry_limit,
+        float(plan["stop_loss_premium"]),
+        float(plan["target_premium"]),
+    )
+    plan["stop_loss_premium"] = sl_prem
+    plan["target_premium"] = tgt_prem
 
     # Audit: capture intent + duplicate signals before broker calls
     pending, pending_msg = has_pending_mcx_order(symbol)

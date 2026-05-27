@@ -146,6 +146,28 @@ def _spot_levels_from_last_5m(
     return sl, tgt, f"5m candle SL/TP: high {hi:.1f} + buf {buf:.1f}"
 
 
+def _normalize_long_option_exits(
+    entry_premium: float,
+    sl_prem: float,
+    tgt_prem: float,
+    *,
+    min_gap: float = 0.05,
+) -> Tuple[float, float]:
+    """Long CE/PE: SL below entry, target above entry (exit SELL limits)."""
+    entry = float(entry_premium)
+    sl = float(sl_prem)
+    tp = float(tgt_prem)
+    gap = max(min_gap, entry * 0.01)
+    if sl >= entry:
+        sl = max(0.05, entry - gap)
+    if tp <= entry:
+        tp = entry + gap
+    if sl >= tp:
+        sl = max(0.05, entry - gap)
+        tp = entry + gap
+    return round_to_tick(sl), round_to_tick(tp)
+
+
 def premium_levels_from_indicators(
     *,
     entry_premium: float,
@@ -162,10 +184,7 @@ def premium_levels_from_indicators(
     spot_reward = abs(spot_tgt - spot_entry)
     sl_prem = max(0.05, entry_premium - spot_risk * delta)
     tgt_prem = entry_premium + spot_reward * delta
-    if sl_prem >= entry_premium:
-        sl_prem = max(0.05, entry_premium - 0.05)
-    if tgt_prem <= entry_premium:
-        tgt_prem = entry_premium + max(0.05, spot_reward * delta)
+    sl_prem, tgt_prem = _normalize_long_option_exits(entry_premium, sl_prem, tgt_prem)
     return round_to_tick(sl_prem), round_to_tick(tgt_prem), delta
 
 
@@ -436,8 +455,23 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     )
     if sl5 is not None and tgt5 is not None:
         spot_sl, spot_tgt = float(sl5), float(tgt5)
+    entry_analysis = compute_strategy_entry(
+        strategy_id=sid,
+        option_kind=kind,
+        quote=quote,
+        spot=spot_entry,
+        strike=int(plan.get("strike", 0)),
+        delta=estimate_delta_from_spot(
+            spot_entry, int(plan.get("strike", 0)), kind, vix=live.get("vix")
+        ),
+        intra={**intra, "last_5m_close": live.get("last_5m_close")},
+        prev_close=float(live.get("prev_close") or 0),
+    )
+    entry_limit = entry_analysis.entry_limit_price
+    # Exits must anchor to the LIMIT we actually place, not the higher live LTP.
+    exit_anchor = float(entry_limit or entry_prem or 0)
     sl_prem, tgt_prem, delta = premium_levels_from_indicators(
-        entry_premium=float(entry_prem),
+        entry_premium=exit_anchor,
         spot_entry=spot_entry,
         spot_sl=spot_sl,
         spot_tgt=spot_tgt,
@@ -445,17 +479,6 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         kind=kind,
         vix=live.get("vix"),
     )
-    entry_analysis = compute_strategy_entry(
-        strategy_id=sid,
-        option_kind=kind,
-        quote=quote,
-        spot=spot_entry,
-        strike=int(plan.get("strike", 0)),
-        delta=delta,
-        intra={**intra, "last_5m_close": live.get("last_5m_close")},
-        prev_close=float(live.get("prev_close") or 0),
-    )
-    entry_limit = entry_analysis.entry_limit_price
     capital = float(ind_meta.get("margin") or 0)
     lot_size = int(plan.get("lot_size") or 75)
     num_lots = int(plan.get("num_lots") or 1)
@@ -515,7 +538,9 @@ def gtt_triggers_from_plan(plan: Dict[str, Any]) -> Tuple[float, float, float]:
     """OCO trigger prices and last_price for GTT placement."""
     sl_prem = float(plan["stop_loss_premium"])
     tgt_prem = float(plan["target_premium"])
-    last_price = float(plan.get("entry_premium") or plan.get("entry_limit_price") or 0)
+    entry_ref = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
+    sl_prem, tgt_prem = _normalize_long_option_exits(entry_ref, sl_prem, tgt_prem)
+    last_price = entry_ref
     # Zerodha constraint: trigger must be sufficiently away from last_price
     # (observed rejection: "difference should be more than 0.25%").
     min_gap = max(0.05, last_price * 0.0026) if last_price > 0 else 0.05
