@@ -128,6 +128,7 @@ def _default_persisted() -> Dict[str, Any]:
         "pending_entry_order_id": None,
         "pending_gtt_trigger_id": None,
         "pending_symbol": None,
+        "pending_trade_plan": None,
         "signal_fired_today": False,
         "config": asdict(WatchConfig()),
         "events": [],
@@ -188,6 +189,7 @@ class CommodityStrategyWatch:
         self._pending_entry_order_id: Optional[str] = None
         self._pending_gtt_trigger_id: Optional[str] = None
         self._pending_symbol: Optional[str] = None
+        self._pending_trade_plan: Optional[Dict[str, Any]] = None
         self._eval_count = 0
         self._events: Deque[WatchEvent] = deque(maxlen=_MAX_EVENTS)
         self._task: Optional[asyncio.Task] = None
@@ -211,6 +213,7 @@ class CommodityStrategyWatch:
                 data["pending_entry_order_id"] = None
                 data["pending_gtt_trigger_id"] = None
                 data["pending_symbol"] = None
+                data["pending_trade_plan"] = None
                 data["signal_fired_today"] = False
                 data["last_entry_ready"] = None
                 data["last_checklist_ready"] = None
@@ -237,6 +240,7 @@ class CommodityStrategyWatch:
             self._pending_entry_order_id = data.get("pending_entry_order_id")
             self._pending_gtt_trigger_id = data.get("pending_gtt_trigger_id")
             self._pending_symbol = data.get("pending_symbol")
+            self._pending_trade_plan = data.get("pending_trade_plan")
             self._signal_fired_today = bool(data.get("signal_fired_today"))
             self._eval_count = int(data.get("eval_count") or 0)
             ler = data.get("last_entry_ready")
@@ -262,6 +266,7 @@ class CommodityStrategyWatch:
                 "pending_entry_order_id": self._pending_entry_order_id,
                 "pending_gtt_trigger_id": self._pending_gtt_trigger_id,
                 "pending_symbol": self._pending_symbol,
+                "pending_trade_plan": self._pending_trade_plan,
                 "signal_fired_today": self._signal_fired_today,
                 "config": asdict(self._cfg),
                 "events": [e.to_dict() for e in list(self._events)],
@@ -292,6 +297,7 @@ class CommodityStrategyWatch:
             self._pending_entry_order_id = None
             self._pending_gtt_trigger_id = None
             self._pending_symbol = None
+            self._pending_trade_plan = None
             self._last_entry_ready = None
             self._last_checklist_ready = None
             self._eval_count = 0
@@ -339,6 +345,75 @@ class CommodityStrategyWatch:
             return None
         return None
 
+    def _order_fill_price(self, order_id: str) -> Optional[float]:
+        oid = (order_id or "").strip()
+        if not oid:
+            return None
+        try:
+            from utils.kite_utils import get_kite_instance
+
+            kite = get_kite_instance()
+            for o in kite.orders() or []:
+                if str(o.get("order_id") or "") == oid:
+                    avg = o.get("average_price")
+                    if avg is not None and float(avg) > 0:
+                        return float(avg)
+                    px = o.get("price")
+                    if px is not None and float(px) > 0:
+                        return float(px)
+        except Exception:
+            return None
+        return None
+
+    async def _on_entry_filled(self) -> None:
+        with _lock:
+            entry_id = self._pending_entry_order_id
+            plan = copy.deepcopy(self._pending_trade_plan) if self._pending_trade_plan else None
+            sym = self._pending_symbol
+            disarm = self._cfg.disarm_after_place
+
+        fill_px = self._order_fill_price(entry_id or "") if entry_id else None
+        gtt_id: Optional[str] = None
+        gtt_detail = ""
+        executed_plan = plan
+
+        if plan:
+            gtt_result = await asyncio.to_thread(
+                commodity_trade_service.place_gtt_for_plan,
+                plan,
+                fill_price=fill_px,
+            )
+            executed_plan = gtt_result.get("trade_plan") or plan
+            gtt_id = gtt_result.get("gtt_trigger_id")
+            if gtt_id:
+                sl_prem = float(executed_plan.get("stop_loss_premium") or 0)
+                tp_prem = float(executed_plan.get("target_premium") or 0)
+                gtt_detail = f"GTT OCO {gtt_id} · SL ₹{sl_prem:.2f} TP ₹{tp_prem:.2f}"
+            else:
+                errs = "; ".join(gtt_result.get("errors") or ["GTT failed"])
+                gtt_detail = f"GTT failed: {errs}"[:180]
+
+        fill_bit = f" @ ₹{fill_px:.2f}" if fill_px else ""
+        with _lock:
+            self._pending_entry_order_id = None
+            self._pending_trade_plan = None
+            self._pending_gtt_trigger_id = str(gtt_id) if gtt_id else None
+            self._pending_symbol = None
+            if disarm:
+                self._armed = False
+
+        self._push_event(
+            WatchEvent(
+                at=datetime.now(IST).isoformat(),
+                kind="auto_gtt_placed" if gtt_id else "auto_gtt_failed",
+                message=(
+                    f"Entry {entry_id} filled{fill_bit} — {gtt_detail or 'no exit plan'}"
+                    + (" (watch disarmed)" if disarm else "")
+                )[:240],
+                tradingsymbol=sym,
+            )
+        )
+
     def _cancel_pending(self, *, reason: str) -> None:
         entry_id = self._pending_entry_order_id
         gtt_id = self._pending_gtt_trigger_id
@@ -346,6 +421,7 @@ class CommodityStrategyWatch:
         self._pending_entry_order_id = None
         self._pending_gtt_trigger_id = None
         self._pending_symbol = None
+        self._pending_trade_plan = None
         self._placed_today = False
         self._placed_symbol_today = None
         try:
@@ -563,20 +639,7 @@ class CommodityStrategyWatch:
                     else:
                         status = self._order_status(self._pending_entry_order_id)
                         if status in ("COMPLETE", "EXECUTED"):
-                            with _lock:
-                                self._pending_entry_order_id = None
-                                self._pending_gtt_trigger_id = None
-                                self._pending_symbol = None
-                                if self._cfg.disarm_after_place:
-                                    self._armed = False
-                            self._push_event(
-                                WatchEvent(
-                                    at=datetime.now(IST).isoformat(),
-                                    kind="auto_filled",
-                                    message="Entry filled — lifecycle complete"
-                                    + (" (watch disarmed)" if self._cfg.disarm_after_place else ""),
-                                )
-                            )
+                            await self._on_entry_filled()
                         elif status in ("CANCELLED", "REJECTED"):
                             self._cancel_pending(reason=f"Order {status.lower()}")
 
@@ -841,23 +904,25 @@ class CommodityStrategyWatch:
                     confirm=True,
                     auto_execute=cfg.auto_execute_checklist,
                     trade_plan_snapshot=plan,
+                    defer_gtt_until_fill=True,
                 )
                 placed = bool(result.get("placed"))
                 entry_id = result.get("entry_order_id")
                 entry_submitted = bool(entry_id)
                 sym = plan.get("tradingsymbol") or sym
+                trade_plan = result.get("trade_plan") or plan
 
                 if entry_submitted or placed:
-                    entry_limit = float(plan.get("entry_limit_price") or entry_px or 0)
-                    fair = float(plan.get("entry_fair_premium") or entry_limit or 0)
-                    sl_prem = float(plan.get("stop_loss_premium") or 0)
-                    tp_prem = float(plan.get("target_premium") or 0)
-                    spot_sl = plan.get("spot_stop_loss")
-                    spot_tp = plan.get("spot_target")
-                    style = str(plan.get("entry_style") or "")
-                    sid = str(plan.get("strategy_id") or "")
-                    score = int(plan.get("entry_confirmation_score") or 0)
-                    trig = plan.get("entry_spot_trigger")
+                    entry_limit = float(trade_plan.get("entry_limit_price") or entry_px or 0)
+                    fair = float(trade_plan.get("entry_fair_premium") or entry_limit or 0)
+                    sl_prem = float(trade_plan.get("stop_loss_premium") or 0)
+                    tp_prem = float(trade_plan.get("target_premium") or 0)
+                    spot_sl = trade_plan.get("spot_stop_loss")
+                    spot_tp = trade_plan.get("spot_target")
+                    style = str(trade_plan.get("entry_style") or "")
+                    sid = str(trade_plan.get("strategy_id") or "")
+                    score = int(trade_plan.get("entry_confirmation_score") or 0)
+                    trig = trade_plan.get("entry_spot_trigger")
                     msg = (
                         f"Autonomous entry {entry_id} {sym} @ ₹{entry_limit}"
                         f" · SL ₹{sl_prem:.2f} TP ₹{tp_prem:.2f}"
@@ -874,9 +939,13 @@ class CommodityStrategyWatch:
                         + (f" · trig {float(trig):.0f}" if trig is not None else "")
                         + (f" · score {score}" if score else "")
                         + (
-                            f" · GTT {result.get('gtt_trigger_id')}"
-                            if result.get("gtt_trigger_id")
-                            else " · set exit manually if GTT pending"
+                            " · GTT after fill"
+                            if result.get("gtt_deferred")
+                            else (
+                                f" · GTT {result.get('gtt_trigger_id')}"
+                                if result.get("gtt_trigger_id")
+                                else " · set exit manually if GTT pending"
+                            )
                         )
                     )
                     with _lock:
@@ -893,6 +962,9 @@ class CommodityStrategyWatch:
                             str(result.get("gtt_trigger_id")) if result.get("gtt_trigger_id") else None
                         )
                         self._pending_symbol = sym
+                        self._pending_trade_plan = (
+                            copy.deepcopy(trade_plan) if result.get("gtt_deferred") else None
+                        )
                     kind = "auto_placed"
                 else:
                     msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"

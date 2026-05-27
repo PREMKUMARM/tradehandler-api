@@ -230,7 +230,12 @@ class TestCommodityTryAutoPlace:
             ) as guard:
                 with patch(
                     "services.commodity_strategy_watch.commodity_trade_service.place_trade",
-                    return_value={"placed": True, "entry_order_id": "1", "gtt_trigger_id": "2"},
+                    return_value={
+                        "placed": True,
+                        "entry_order_id": "1",
+                        "gtt_deferred": True,
+                        "trade_plan": plan,
+                    },
                 ):
                     with patch(
                         "services.risk_gate.check_order_allowed",
@@ -309,3 +314,82 @@ class TestCommodityOrderGuard:
                 ok, msg = autonomous_place_allowed(plan, placed_today=False)
         assert ok is False
         assert "Open position" in msg
+
+
+class TestCommodityDeferredGtt:
+    def test_place_trade_defers_gtt_by_default(self):
+        from services import commodity_trade_service
+
+        plan = {
+            "tradingsymbol": "CRUDEOILM26JUN8600PE",
+            "entry_ready": True,
+            "entry_limit_price": 470.0,
+            "entry_premium": 470.0,
+            "stop_loss_premium": 450.0,
+            "target_premium": 510.0,
+            "num_lots": 1,
+            "lot_size": 10,
+            "product": "NRML",
+            "indicators": {},
+        }
+        preview = {
+            "checklist_ready": True,
+            "can_place": True,
+            "trade_plan": plan,
+            "messages": [],
+        }
+        with patch.object(commodity_trade_service, "preview_trade", return_value=preview):
+            with patch.object(commodity_trade_service, "is_mcx_session_open", return_value=True):
+                with patch.object(commodity_trade_service, "has_pending_mcx_order", return_value=(False, "")):
+                    with patch.object(commodity_trade_service, "has_mcx_position", return_value=(False, "")):
+                        with patch(
+                            "services.commodity_trade_service.place_order_tool.invoke",
+                            return_value={"status": "success", "order_id": "E1"},
+                        ):
+                            with patch(
+                                "services.commodity_trade_service.place_gtt_for_plan",
+                            ) as gtt_fn:
+                                result = commodity_trade_service.place_trade(
+                                    confirm=True,
+                                    trade_plan_snapshot=plan,
+                                )
+        gtt_fn.assert_not_called()
+        assert result["placed"] is True
+        assert result["gtt_deferred"] is True
+        assert result["entry_order_id"] == "E1"
+        assert result.get("gtt_trigger_id") is None
+
+    def test_on_entry_filled_places_gtt(self):
+        from services.commodity_strategy_watch import CommodityStrategyWatch
+
+        watch = CommodityStrategyWatch()
+        watch._pending_entry_order_id = "E1"
+        watch._pending_symbol = "CRUDEOILM26JUN8600PE"
+        watch._pending_trade_plan = {
+            "tradingsymbol": "CRUDEOILM26JUN8600PE",
+            "entry_limit_price": 476.1,
+            "stop_loss_premium": 460.0,
+            "target_premium": 500.0,
+            "num_lots": 1,
+        }
+        with patch.object(watch, "_order_fill_price", return_value=476.1):
+            with patch(
+                "services.commodity_strategy_watch.commodity_trade_service.place_gtt_for_plan",
+                return_value={
+                    "gtt_trigger_id": "G321",
+                    "trade_plan": {
+                        "stop_loss_premium": 460.0,
+                        "target_premium": 500.0,
+                    },
+                },
+            ):
+                with patch.object(watch, "_persist"):
+                    import asyncio
+
+                    asyncio.run(watch._on_entry_filled())
+
+        assert watch._pending_entry_order_id is None
+        assert watch._pending_trade_plan is None
+        assert watch._pending_gtt_trigger_id == "G321"
+        assert watch._events[0].kind == "auto_gtt_placed"
+        assert "G321" in watch._events[0].message

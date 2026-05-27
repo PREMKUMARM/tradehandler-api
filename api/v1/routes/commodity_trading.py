@@ -86,7 +86,7 @@ async def preview_commodity_trade(request: Request, body: CommodityTradePreviewR
 
 @router.post("/place")
 async def place_commodity_trade(request: Request, body: CommodityTradePlaceRequest):
-    """Validate checklist, place entry LIMIT, then GTT OCO exit on MCX."""
+    """Validate checklist, place entry LIMIT; GTT OCO attaches after entry fills."""
     data = commodity_trade_service.place_trade(
         completed_steps=body.completed_steps,
         direction=body.direction,
