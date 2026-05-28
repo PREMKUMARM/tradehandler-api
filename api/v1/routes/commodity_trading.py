@@ -8,6 +8,7 @@ from services.commodity_strategy_watch import (
     disarm_watch,
     get_watch_events,
     get_watch_status,
+    nuclear_reset_watch,
     watch_autonomous_allowed,
     watch_auto_place_allowed,
 )
@@ -132,6 +133,15 @@ async def arm_commodity_watch(request: Request, body: CommodityWatchArmRequest):
 async def disarm_commodity_watch(request: Request):
     data = disarm_watch()
     return SuccessResponse(data=data, message="Strategy watch stopped")
+
+
+@router.post("/watch/nuclear-reset")
+async def nuclear_reset_commodity_watch(request: Request):
+    data = nuclear_reset_watch()
+    return SuccessResponse(
+        data=data,
+        message="Commodity watch state reset — event log and daily counters cleared",
+    )
 
 
 @router.get("/watch/status")

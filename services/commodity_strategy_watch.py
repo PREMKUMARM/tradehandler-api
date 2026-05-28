@@ -198,6 +198,10 @@ class CommodityStrategyWatch:
         self._last_autonomous_block_reason: Optional[str] = None
         self._last_skip_logged_msg: Optional[str] = None
         self._last_skip_logged_at: Optional[datetime] = None
+        self._last_step_statuses: List[Dict[str, Any]] = []
+        self._last_market_open = False
+        self._last_paper_mode = False
+        self._last_kite_connected = False
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
@@ -559,6 +563,58 @@ class CommodityStrategyWatch:
         log_info("[CommodityWatch] Disarmed")
         return self.status()
 
+    def _clear_runtime_state(self) -> None:
+        self._armed = False
+        self._cfg = WatchConfig()
+        self._session_date = _today()
+        self._last_entry_ready = None
+        self._last_checklist_ready = None
+        self._last_can_place = False
+        self._last_can_execute = False
+        self._last_block_reason = None
+        self._last_trade_plan = None
+        self._last_strategy_analysis = None
+        self._last_eval_at = None
+        self._signal_fired_today = False
+        self._placed_today = False
+        self._placed_symbol_today = None
+        self._placed_count_today = 0
+        self._placed_symbols_today = []
+        self._pending_entry_order_id = None
+        self._pending_gtt_trigger_id = None
+        self._pending_symbol = None
+        self._pending_trade_plan = None
+        self._eval_count = 0
+        self._events.clear()
+        self._placing = False
+        self._last_autonomous_block_reason = None
+        self._last_skip_logged_msg = None
+        self._last_skip_logged_at = None
+        self._last_step_statuses = []
+        self._last_market_open = False
+        self._last_paper_mode = False
+        self._last_kite_connected = False
+
+    def nuclear_reset(self) -> Dict[str, Any]:
+        """Stop watch, wipe persisted state file, and clear in-memory counters/events."""
+        with _lock:
+            self._clear_runtime_state()
+        try:
+            if _STATE_PATH.exists():
+                _STATE_PATH.unlink()
+        except Exception as exc:
+            log_error(f"[CommodityWatch] nuclear reset unlink failed: {exc}")
+            _write_persisted(_default_persisted())
+        self._push_event(
+            WatchEvent(
+                at=datetime.now(IST).isoformat(),
+                kind="nuclear_reset",
+                message="Commodity watch state cleared — event log and daily counters reset",
+            )
+        )
+        log_info("[CommodityWatch] Nuclear reset")
+        return self.status()
+
     def status(self) -> Dict[str, Any]:
         from services.watch_setup_status import describe_autonomous_setup
 
@@ -572,7 +628,10 @@ class CommodityStrategyWatch:
                 min_score=min_score,
                 guard_message=self._last_autonomous_block_reason,
             )
-            return {
+            from services.watch_readiness import build_readiness_payload
+
+            ind = plan.get("indicators") or {}
+            base = {
                 "armed": self._armed,
                 "mode": cfg.mode,
                 "autonomous": cfg.mode == "autonomous",
@@ -600,7 +659,7 @@ class CommodityStrategyWatch:
                 "placed_symbol_today": self._placed_symbol_today,
                 "strategy_name": plan.get("strategy_name"),
                 "tradingsymbol": plan.get("tradingsymbol"),
-                "nifty_spot": (plan.get("indicators") or {}).get("nifty_spot"),
+                "nifty_spot": ind.get("nifty_spot") or ind.get("crude_spot") or ind.get("spot"),
                 "strategy_candidates": (sa.get("strategies") or [])[:5] if isinstance(sa, dict) else [],
                 "entry_confirmation_score": setup.get("entry_confirmation_score"),
                 "autonomous_eligible": setup.get("autonomous_eligible"),
@@ -609,6 +668,26 @@ class CommodityStrategyWatch:
                 "autonomous_block_reason": self._last_autonomous_block_reason,
                 "events": [e.to_dict() for e in list(self._events)],
             }
+            extras = build_readiness_payload(
+                armed=self._armed,
+                autonomous_mode=cfg.mode == "autonomous",
+                plan=plan,
+                checklist_ready=bool(self._last_checklist_ready),
+                entry_ready=self._last_entry_ready,
+                can_place=bool(self._last_can_place),
+                can_execute=bool(self._last_can_execute),
+                autonomous_eligible=bool(setup.get("autonomous_eligible")),
+                kill_switch_active=self._kill_switch_active(),
+                market_open=bool(self._last_market_open),
+                paper_trading_mode=bool(self._last_paper_mode),
+                kite_connected=bool(self._last_kite_connected),
+                guard_message=self._last_autonomous_block_reason,
+                min_entry_score=min_score,
+                entry_confirmation_score=setup.get("entry_confirmation_score"),
+                pending_entry_order_id=self._pending_entry_order_id,
+                step_statuses=self._last_step_statuses,
+            )
+            return {**base, **extras}
 
     def events(self, limit: int = 20) -> List[Dict[str, Any]]:
         with _lock:
@@ -689,6 +768,7 @@ class CommodityStrategyWatch:
 
         from services.watch_execute import resolve_can_execute
 
+        market_open = commodity_trade_service.is_mcx_session_open()
         preview = commodity_trade_service.preview_trade(
             completed_steps=None,
             direction=cfg.direction,
@@ -712,6 +792,23 @@ class CommodityStrategyWatch:
         fire_signal = False
         try_autonomous = False
 
+        step_rows: List[Dict[str, Any]] = []
+        for st in preview.get("step_statuses") or []:
+            if isinstance(st, dict):
+                step_rows.append(st)
+            elif hasattr(st, "model_dump"):
+                step_rows.append(st.model_dump())
+            elif hasattr(st, "dict"):
+                step_rows.append(st.dict())
+
+        ind = (plan or {}).get("indicators") or {}
+        kite_connected = (
+            ind.get("nifty_spot") is not None
+            or ind.get("crude_spot") is not None
+            or ind.get("spot") is not None
+            or ind.get("option_ltp") is not None
+        )
+
         with _lock:
             self._eval_count += 1
             self._last_eval_at = datetime.now(IST)
@@ -720,6 +817,10 @@ class CommodityStrategyWatch:
             self._last_can_place = can_place
             self._last_can_execute = can_execute
             self._last_block_reason = block
+            self._last_step_statuses = step_rows
+            self._last_market_open = market_open
+            self._last_paper_mode = bool(preview.get("paper_trading_mode"))
+            self._last_kite_connected = kite_connected
             prev_chk = self._last_checklist_ready
             self._last_checklist_ready = checklist_ready
             self._last_entry_ready = entry_ready
@@ -1012,6 +1113,10 @@ def arm_watch(**kwargs: Any) -> Dict[str, Any]:
 
 def disarm_watch() -> Dict[str, Any]:
     return _watch.disarm()
+
+
+def nuclear_reset_watch() -> Dict[str, Any]:
+    return _watch.nuclear_reset()
 
 
 def get_watch_status() -> Dict[str, Any]:
