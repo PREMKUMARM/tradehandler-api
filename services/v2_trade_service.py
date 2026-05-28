@@ -637,6 +637,69 @@ def get_checklist_live(
     }
 
 
+def place_gtt_for_plan(
+    plan: Dict[str, Any],
+    *,
+    fill_price: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Place OCO GTT exit (SL + target) for a long NFO option."""
+    from services.v2_indicator_plan import gtt_triggers_from_plan, refresh_plan_at_execution
+
+    result: Dict[str, Any] = {
+        "gtt_trigger_id": None,
+        "errors": [],
+        "messages": [],
+        "ok": False,
+        "trade_plan": None,
+    }
+    plan = refresh_plan_at_execution(dict(plan))
+    if fill_price is not None and fill_price > 0:
+        plan["entry_limit_price"] = fill_price
+        plan["entry_premium"] = fill_price
+
+    symbol = plan.get("tradingsymbol")
+    if not symbol:
+        result["errors"].append("No tradingsymbol in plan")
+        return result
+
+    qty = int(plan.get("quantity") or plan.get("num_lots") or 1)
+    sl_prem = float(plan["stop_loss_premium"])
+    tgt_prem = float(plan["target_premium"])
+    result["trade_plan"] = plan
+
+    product = resolve_v2_nfo_product(plan)
+    sl_trigger, tp_trigger, last_price = gtt_triggers_from_plan(plan)
+    if fill_price is not None and fill_price > 0:
+        last_price = fill_price
+
+    gtt = place_gtt_tool.invoke(
+        {
+            "tradingsymbol": symbol,
+            "exchange": "NFO",
+            "trigger_type": "two-leg",
+            "trigger_prices": [sl_trigger, tp_trigger],
+            "last_price": last_price,
+            "stop_loss_price": sl_prem,
+            "target_price": tgt_prem,
+            "quantity": qty,
+            "transaction_type": "SELL",
+            "product": product,
+        }
+    )
+
+    if gtt.get("status") == "success":
+        tid = gtt.get("trigger_id")
+        if isinstance(tid, dict):
+            tid = tid.get("trigger_id", tid)
+        result["gtt_trigger_id"] = str(tid)
+        result["ok"] = True
+        result["messages"].append(f"GTT OCO trigger {result['gtt_trigger_id']}")
+    else:
+        result["errors"].append(gtt.get("error") or "GTT placement failed")
+
+    return result
+
+
 def place_trade(
     completed_steps: Optional[List[bool]] = None,
     direction: str = "AUTO",
@@ -646,6 +709,7 @@ def place_trade(
     confirm: bool = False,
     auto_execute: bool = False,
     trade_plan_snapshot: Optional[Dict[str, Any]] = None,
+    defer_gtt_until_fill: bool = False,
 ) -> Dict[str, Any]:
     preview = preview_trade(
         completed_steps,
@@ -800,36 +864,27 @@ def place_trade(
             f"paper={result['entry_paper']}"
         )
 
-        sl_trigger, tp_trigger, last_price = gtt_triggers_from_plan(plan)
-
-        gtt = place_gtt_tool.invoke(
-            {
-                "tradingsymbol": symbol,
-                "exchange": "NFO",
-                "trigger_type": "two-leg",
-                "trigger_prices": [sl_trigger, tp_trigger],
-                "last_price": last_price,
-                "stop_loss_price": sl_prem,
-                "target_price": tgt_prem,
-                "quantity": qty,
-                "transaction_type": "SELL",
-                "product": product,
-            }
-        )
-
-        if gtt.get("status") == "success":
-            result["gtt_trigger_id"] = str(gtt.get("trigger_id"))
+        venue = "paper" if result["entry_paper"] else "Zerodha"
+        if defer_gtt_until_fill:
             result["placed"] = True
-            venue = "paper" if result["entry_paper"] else "Zerodha"
+            result["gtt_deferred"] = True
+            result["trade_plan"] = plan
             result["messages"] = list(preview.get("messages", [])) + [
                 f"Entry order {entry_id} on {venue}",
-                f"GTT OCO trigger {result['gtt_trigger_id']}",
+                "GTT OCO will attach after entry fills",
             ]
         else:
-            gtt_err = gtt.get("error") or "GTT placement failed"
-            result["errors"].append(gtt_err)
-            # Entry may still be live on Kite
-            if entry_id:
+            gtt_result = place_gtt_for_plan(plan)
+            result["trade_plan"] = gtt_result.get("trade_plan") or plan
+            if gtt_result.get("gtt_trigger_id"):
+                result["gtt_trigger_id"] = gtt_result["gtt_trigger_id"]
+                result["placed"] = True
+                result["messages"] = list(preview.get("messages", [])) + [
+                    f"Entry order {entry_id} on {venue}",
+                    *gtt_result.get("messages", []),
+                ]
+            else:
+                result["errors"].extend(gtt_result.get("errors") or [])
                 result["placed"] = False
                 result["messages"] = list(preview.get("messages", [])) + [
                     f"Entry order {entry_id} placed on Zerodha; exit GTT failed — set SL/target manually in Kite",

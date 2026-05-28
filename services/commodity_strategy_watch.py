@@ -717,6 +717,10 @@ class CommodityStrategyWatch:
                 if not self._armed:
                     break
             try:
+                from services.pnl_sync import maybe_sync_pnl_for_watch
+
+                maybe_sync_pnl_for_watch("commodity")
+
                 session_open = commodity_trade_service.is_mcx_session_open()
                 if self._pending_entry_order_id:
                     if not session_open:
@@ -734,11 +738,23 @@ class CommodityStrategyWatch:
                                         self._cancel_pending(reason=f"Entry timeout ({int(age)}s)")
                         except Exception:
                             pass
+                        from services.watch_reconcile import reconcile_pending_watch
+
+                        with _lock:
+                            rec = reconcile_pending_watch(
+                                entry_order_id=self._pending_entry_order_id,
+                                gtt_trigger_id=self._pending_gtt_trigger_id,
+                                pending_trade_plan=self._pending_trade_plan,
+                                order_status=self._order_status,
+                            )
+                        if rec.get("clear_gtt"):
+                            with _lock:
+                                self._pending_gtt_trigger_id = None
                         status = self._order_status(self._pending_entry_order_id)
-                        if status in ("COMPLETE", "EXECUTED"):
+                        if status in ("COMPLETE", "EXECUTED") or rec.get("attach_gtt"):
                             await self._on_entry_filled()
-                        elif status in ("CANCELLED", "REJECTED"):
-                            self._cancel_pending(reason=f"Order {status.lower()}")
+                        elif status in ("CANCELLED", "REJECTED") or rec.get("clear_entry"):
+                            self._cancel_pending(reason=f"Order {status.lower() if status else 'reconciled'}")
 
                 if session_open:
                     fire_signal, try_autonomous, preview, plan, can_place = await asyncio.to_thread(
@@ -1067,6 +1083,19 @@ class CommodityStrategyWatch:
                             )
                         )
                     )
+                    if entry_submitted or placed:
+                        try:
+                            from services.risk_gate import record_order_placed
+
+                            qty = int(trade_plan.get("quantity") or 0)
+                            px = float(
+                                trade_plan.get("entry_limit_price")
+                                or trade_plan.get("entry_premium")
+                                or 0
+                            )
+                            record_order_placed(max(0.0, qty * px))
+                        except Exception:
+                            pass
                     with _lock:
                         self._placed_count_today += 1
                         self._placed_today = True

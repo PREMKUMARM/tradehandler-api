@@ -121,6 +121,7 @@ def _default_persisted() -> Dict[str, Any]:
         "placed_symbols_today": [],
         "pending_entry_order_id": None,
         "pending_entry_placed_at": None,
+        "pending_trade_plan": None,
         "pending_gtt_trigger_id": None,
         "pending_symbol": None,
         "signal_fired_today": False,
@@ -183,6 +184,7 @@ class V2StrategyWatch:
         self._placed_symbols_today: List[str] = []
         self._pending_entry_order_id: Optional[str] = None
         self._pending_entry_placed_at: Optional[str] = None
+        self._pending_trade_plan: Optional[Dict[str, Any]] = None
         self._pending_gtt_trigger_id: Optional[str] = None
         self._pending_symbol: Optional[str] = None
         self._eval_count = 0
@@ -210,6 +212,8 @@ class V2StrategyWatch:
                 data["placed_count_today"] = 0
                 data["placed_symbols_today"] = []
                 data["pending_entry_order_id"] = None
+                data["pending_entry_placed_at"] = None
+                data["pending_trade_plan"] = None
                 data["pending_gtt_trigger_id"] = None
                 data["pending_symbol"] = None
                 data["signal_fired_today"] = False
@@ -237,6 +241,7 @@ class V2StrategyWatch:
             )
             self._pending_entry_order_id = data.get("pending_entry_order_id")
             self._pending_entry_placed_at = data.get("pending_entry_placed_at")
+            self._pending_trade_plan = data.get("pending_trade_plan")
             self._pending_gtt_trigger_id = data.get("pending_gtt_trigger_id")
             self._pending_symbol = data.get("pending_symbol")
             self._signal_fired_today = bool(data.get("signal_fired_today"))
@@ -263,6 +268,7 @@ class V2StrategyWatch:
                 "placed_symbols_today": list(self._placed_symbols_today),
                 "pending_entry_order_id": self._pending_entry_order_id,
                 "pending_entry_placed_at": self._pending_entry_placed_at,
+                "pending_trade_plan": self._pending_trade_plan,
                 "pending_gtt_trigger_id": self._pending_gtt_trigger_id,
                 "pending_symbol": self._pending_symbol,
                 "signal_fired_today": self._signal_fired_today,
@@ -294,6 +300,7 @@ class V2StrategyWatch:
             self._placed_symbols_today = []
             self._pending_entry_order_id = None
             self._pending_entry_placed_at = None
+            self._pending_trade_plan = None
             self._pending_gtt_trigger_id = None
             self._pending_symbol = None
             self._last_entry_ready = None
@@ -349,12 +356,83 @@ class V2StrategyWatch:
             return None
         return None
 
+    def _order_fill_price(self, order_id: str) -> Optional[float]:
+        oid = (order_id or "").strip()
+        if not oid:
+            return None
+        try:
+            from utils.kite_utils import get_kite_instance
+
+            kite = get_kite_instance()
+            for o in kite.orders() or []:
+                if str(o.get("order_id") or "") == oid:
+                    avg = o.get("average_price")
+                    if avg is not None and float(avg) > 0:
+                        return float(avg)
+                    px = o.get("price")
+                    if px is not None and float(px) > 0:
+                        return float(px)
+        except Exception:
+            return None
+        return None
+
+    async def _on_entry_filled(self) -> None:
+        with _lock:
+            entry_id = self._pending_entry_order_id
+            plan = copy.deepcopy(self._pending_trade_plan) if self._pending_trade_plan else None
+            sym = self._pending_symbol
+            disarm = self._cfg.disarm_after_place
+
+        fill_px = self._order_fill_price(entry_id or "") if entry_id else None
+        gtt_id: Optional[str] = None
+        gtt_detail = ""
+        executed_plan = plan
+
+        if plan:
+            gtt_result = await asyncio.to_thread(
+                v2_trade_service.place_gtt_for_plan,
+                plan,
+                fill_price=fill_px,
+            )
+            executed_plan = gtt_result.get("trade_plan") or plan
+            gtt_id = gtt_result.get("gtt_trigger_id")
+            if gtt_id:
+                sl_prem = float(executed_plan.get("stop_loss_premium") or 0)
+                tp_prem = float(executed_plan.get("target_premium") or 0)
+                gtt_detail = f"GTT OCO {gtt_id} · SL ₹{sl_prem:.2f} TP ₹{tp_prem:.2f}"
+            else:
+                errs = "; ".join(gtt_result.get("errors") or ["GTT failed"])
+                gtt_detail = f"GTT failed: {errs}"[:180]
+
+        fill_bit = f" @ ₹{fill_px:.2f}" if fill_px else ""
+        with _lock:
+            self._pending_entry_order_id = None
+            self._pending_entry_placed_at = None
+            self._pending_trade_plan = None
+            self._pending_gtt_trigger_id = str(gtt_id) if gtt_id else None
+            self._pending_symbol = None
+            if disarm:
+                self._armed = False
+
+        self._push_event(
+            WatchEvent(
+                at=datetime.now(IST).isoformat(),
+                kind="auto_gtt_placed" if gtt_id else "auto_gtt_failed",
+                message=(
+                    f"Entry {entry_id} filled{fill_bit} — {gtt_detail or 'no exit plan'}"
+                    + (" (watch disarmed)" if disarm else "")
+                )[:240],
+                tradingsymbol=sym,
+            )
+        )
+
     def _cancel_pending(self, *, reason: str) -> None:
         entry_id = self._pending_entry_order_id
         gtt_id = self._pending_gtt_trigger_id
         sym = self._pending_symbol
         self._pending_entry_order_id = None
         self._pending_entry_placed_at = None
+        self._pending_trade_plan = None
         self._pending_gtt_trigger_id = None
         self._pending_symbol = None
         self._placed_today = False
@@ -516,6 +594,8 @@ class V2StrategyWatch:
         self._placed_count_today = 0
         self._placed_symbols_today = []
         self._pending_entry_order_id = None
+        self._pending_entry_placed_at = None
+        self._pending_trade_plan = None
         self._pending_gtt_trigger_id = None
         self._pending_symbol = None
         self._eval_count = 0
@@ -644,6 +724,10 @@ class V2StrategyWatch:
                 if not self._armed:
                     break
             try:
+                from services.pnl_sync import maybe_sync_pnl_for_watch
+
+                maybe_sync_pnl_for_watch("v2")
+
                 session_open = v2_trade_service.is_market_session_open()
                 if self._pending_entry_order_id:
                     if not session_open:
@@ -661,25 +745,23 @@ class V2StrategyWatch:
                                         self._cancel_pending(reason=f"Entry timeout ({int(age)}s)")
                         except Exception:
                             pass
-                        status = self._order_status(self._pending_entry_order_id)
-                        if status in ("COMPLETE", "EXECUTED"):
-                            with _lock:
-                                self._pending_entry_order_id = None
-                                self._pending_entry_placed_at = None
-                                self._pending_gtt_trigger_id = None
-                                self._pending_symbol = None
-                                if self._cfg.disarm_after_place:
-                                    self._armed = False
-                            self._push_event(
-                                WatchEvent(
-                                    at=datetime.now(IST).isoformat(),
-                                    kind="auto_filled",
-                                    message="Entry filled — lifecycle complete"
-                                    + (" (watch disarmed)" if self._cfg.disarm_after_place else ""),
-                                )
+                        from services.watch_reconcile import reconcile_pending_watch
+
+                        with _lock:
+                            rec = reconcile_pending_watch(
+                                entry_order_id=self._pending_entry_order_id,
+                                gtt_trigger_id=self._pending_gtt_trigger_id,
+                                pending_trade_plan=self._pending_trade_plan,
+                                order_status=self._order_status,
                             )
-                        elif status in ("CANCELLED", "REJECTED"):
-                            self._cancel_pending(reason=f"Order {status.lower()}")
+                        if rec.get("clear_gtt"):
+                            with _lock:
+                                self._pending_gtt_trigger_id = None
+                        status = self._order_status(self._pending_entry_order_id)
+                        if status in ("COMPLETE", "EXECUTED") or rec.get("attach_gtt"):
+                            await self._on_entry_filled()
+                        elif status in ("CANCELLED", "REJECTED") or rec.get("clear_entry"):
+                            self._cancel_pending(reason=f"Order {status.lower() if status else 'reconciled'}")
 
                 if session_open:
                     (
@@ -962,6 +1044,7 @@ class V2StrategyWatch:
                     confirm=True,
                     auto_execute=cfg.auto_execute_checklist,
                     trade_plan_snapshot=plan,
+                    defer_gtt_until_fill=True,
                 )
                 placed = bool(result.get("placed"))
                 entry_id = result.get("entry_order_id")
@@ -994,7 +1077,27 @@ class V2StrategyWatch:
                         )
                         + (f" · trig {float(trig):.0f}" if trig is not None else "")
                         + (f" · score {score}" if score else "")
+                        + (
+                            " · GTT after fill"
+                            if result.get("gtt_deferred")
+                            else (
+                                f" · GTT {result.get('gtt_trigger_id')}"
+                                if result.get("gtt_trigger_id")
+                                else ""
+                            )
+                        )
                     )
+                    if entry_submitted or placed:
+                        try:
+                            from services.risk_gate import record_order_placed
+
+                            qty = int(plan.get("quantity") or 0)
+                            px = float(
+                                plan.get("entry_limit_price") or plan.get("entry_premium") or 0
+                            )
+                            record_order_placed(max(0.0, qty * px))
+                        except Exception:
+                            pass
                     with _lock:
                         self._placed_count_today += 1
                         self._placed_today = True
@@ -1010,6 +1113,9 @@ class V2StrategyWatch:
                             str(result.get("gtt_trigger_id")) if result.get("gtt_trigger_id") else None
                         )
                         self._pending_symbol = sym
+                        self._pending_trade_plan = (
+                            copy.deepcopy(plan) if result.get("gtt_deferred") else None
+                        )
                     kind = "auto_placed"
                 else:
                     msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"

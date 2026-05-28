@@ -126,16 +126,20 @@ class TradeLimits:
             else:
                 # If no investment amount, add absolute profit
                 self.limits["profit_today"] += pnl_amount
-            log_info(f"Profit recorded: {pnl_amount:.2f} ({profit_pct*100:.2f}%)")
+            if investment_amount > 0:
+                log_info(f"Profit recorded: {pnl_amount:.2f} ({profit_pct*100:.2f}%)")
+            else:
+                log_info(f"Profit recorded: {pnl_amount:.2f}")
         elif pnl_amount < 0:
             # Calculate loss as percentage of investment
             if investment_amount > 0:
                 loss_pct = abs(pnl_amount) / investment_amount
                 self.limits["loss_today"] += loss_pct
+                log_info(f"Loss recorded: {abs(pnl_amount):.2f} ({loss_pct*100:.2f}%)")
             else:
                 # If no investment amount, add absolute loss
                 self.limits["loss_today"] += abs(pnl_amount)
-            log_info(f"Loss recorded: {abs(pnl_amount):.2f} ({loss_pct*100:.2f}%)")
+                log_info(f"Loss recorded: {abs(pnl_amount):.2f}")
         
         self._save_limits(self.limits)
     

@@ -123,3 +123,8 @@ def check_order_allowed(
 
 def record_order_placed(investment_amount: float = 0.0) -> None:
     trade_limits.record_trade(investment_amount)
+
+
+def get_risk_limits_snapshot() -> dict:
+    """Daily caps and P&L for watch status / UI."""
+    return trade_limits.get_limits_status()

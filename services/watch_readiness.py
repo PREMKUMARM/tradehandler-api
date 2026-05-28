@@ -4,6 +4,31 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 
+def _gate(
+    *,
+    id: str,
+    label: str,
+    ok: bool,
+    detail: str,
+    value: Optional[Any] = None,
+    threshold: Optional[Any] = None,
+    action_hint: Optional[str] = None,
+) -> Dict[str, Any]:
+    row: Dict[str, Any] = {
+        "id": id,
+        "label": label,
+        "ok": ok,
+        "detail": detail,
+    }
+    if value is not None:
+        row["value"] = value
+    if threshold is not None:
+        row["threshold"] = threshold
+    if action_hint and not ok:
+        row["action_hint"] = action_hint
+    return row
+
+
 def _trade_plan_preview(plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not plan or not plan.get("tradingsymbol"):
         return None
@@ -55,6 +80,15 @@ def _step_live_summary(step_statuses: Optional[List[Any]]) -> List[Dict[str, Any
     return sorted(out, key=lambda x: x["index"])
 
 
+def _risk_limits_status() -> Dict[str, Any]:
+    try:
+        from utils.trade_limits import trade_limits
+
+        return trade_limits.get_limits_status()
+    except Exception:
+        return {}
+
+
 def build_readiness_payload(
     *,
     armed: bool,
@@ -82,6 +116,15 @@ def build_readiness_payload(
     entry_ok = entry_ready is True
 
     guards_ok = not (guard_message or "").strip()
+    risk = _risk_limits_status()
+    can_trade_limits = bool(risk.get("can_trade", True))
+    pnl_inr = float(risk.get("pnl_inr_today") or 0)
+    max_loss_inr = float(risk.get("max_loss_inr_per_day") or 0)
+    premium_spent = float(risk.get("premium_spent_inr_today") or 0)
+    max_premium_inr = float(risk.get("max_premium_inr_per_day") or 0)
+    loss_cap_hit = max_loss_inr > 0 and pnl_inr <= -abs(max_loss_inr)
+    premium_cap_hit = max_premium_inr > 0 and premium_spent >= max_premium_inr
+
     can_auto_place = (
         armed
         and autonomous_mode
@@ -91,64 +134,114 @@ def build_readiness_payload(
         and can_execute
         and guards_ok
         and not kill_switch_active
+        and can_trade_limits
+        and not loss_cap_hit
+        and not premium_cap_hit
     )
 
     gates: List[Dict[str, Any]] = [
-        {
-            "id": "armed",
-            "label": "Watch armed",
-            "ok": armed,
-            "detail": "Autonomous loop polling live Kite data"
+        _gate(
+            id="armed",
+            label="Watch armed",
+            ok=armed,
+            detail="Autonomous loop polling live Kite data"
             if armed
             else "Start autonomous to evaluate live market",
-        },
-        {
-            "id": "kite",
-            "label": "Kite connected",
-            "ok": kite_connected,
-            "detail": "Live quotes and checklist" if kite_connected else "Connect Kite token",
-        },
-        {
-            "id": "session",
-            "label": "Market session",
-            "ok": market_open or paper_trading_mode,
-            "detail": "Exchange open for live orders"
+            action_hint="Press Start autonomous",
+        ),
+        _gate(
+            id="kite",
+            label="Kite connected",
+            ok=kite_connected,
+            detail="Live quotes and checklist" if kite_connected else "Connect Kite token",
+            action_hint="Settings → connect Zerodha / refresh token",
+        ),
+        _gate(
+            id="session",
+            label="Market session",
+            ok=market_open or paper_trading_mode,
+            detail="Exchange open for live orders"
             if market_open
-            else ("Paper mode" if paper_trading_mode else "Closed — preview only until session"),
-        },
-        {
-            "id": "checklist",
-            "label": "Live checklist",
-            "ok": checklist_ready,
-            "detail": "All live steps pass on server"
+            else ("Paper mode — simulated orders" if paper_trading_mode else "Closed — preview only until session"),
+            action_hint="Wait for market open or enable paper mode in Settings",
+        ),
+        _gate(
+            id="checklist",
+            label="Live checklist",
+            ok=checklist_ready,
+            detail="All live steps pass on server"
             if checklist_ready
             else "Waiting for live step validation",
-        },
-        {
-            "id": "entry",
-            "label": "Entry setup",
-            "ok": entry_ok,
-            "detail": plan.get("entry_block_reason") or "Indicators confirm direction",
-        },
-        {
-            "id": "score",
-            "label": f"Confirmation score ≥ {min_score}",
-            "ok": score_ok,
-            "detail": f"Score {score} / {min_score}",
-        },
-        {
-            "id": "execute",
-            "label": "Margin & validation",
-            "ok": can_execute,
-            "detail": "can_execute" if can_execute else "Risk/margin or session block",
-        },
-        {
-            "id": "guards",
-            "label": "Position & duplicate guards",
-            "ok": guards_ok,
-            "detail": guard_message or "No block",
-        },
+            action_hint="Complete wizard steps or wait for auto-execute",
+        ),
+        _gate(
+            id="entry",
+            label="Entry setup",
+            ok=entry_ok,
+            detail=plan.get("entry_block_reason") or "Indicators confirm direction",
+            action_hint="Wait for OR/EMA/PDH alignment or adjust direction",
+        ),
+        _gate(
+            id="score",
+            label=f"Confirmation score ≥ {min_score}",
+            ok=score_ok,
+            detail=f"Score {score} / {min_score}",
+            value=score,
+            threshold=min_score,
+            action_hint=f"Need {max(0, min_score - score)} more points — wait for stronger setup",
+        ),
+        _gate(
+            id="execute",
+            label="Margin & validation",
+            ok=can_execute,
+            detail="Margin and validation OK" if can_execute else "Risk/margin or session block",
+            action_hint="Check buying power and validation errors in preview",
+        ),
+        _gate(
+            id="guards",
+            label="Position & duplicate guards",
+            ok=guards_ok,
+            detail=guard_message or "No block",
+            action_hint="Close duplicate position or wait for pending order to clear",
+        ),
     ]
+
+    if kill_switch_active:
+        gates.append(
+            _gate(
+                id="kill_switch",
+                label="Kill switch",
+                ok=False,
+                detail="Execution kill switch is ON",
+                action_hint="Turn off kill switch in Settings",
+            )
+        )
+
+    if max_loss_inr > 0:
+        gates.append(
+            _gate(
+                id="loss_cap_inr",
+                label="Daily loss cap (INR)",
+                ok=not loss_cap_hit,
+                detail=f"P&L ₹{pnl_inr:.0f} · cap -₹{abs(max_loss_inr):.0f}",
+                value=round(pnl_inr, 2),
+                threshold=-abs(max_loss_inr),
+                action_hint="Stop trading for today or raise MAX_LOSS_INR_PER_DAY",
+            )
+        )
+
+    if max_premium_inr > 0:
+        gates.append(
+            _gate(
+                id="premium_cap_inr",
+                label="Daily premium cap (INR)",
+                ok=not premium_cap_hit,
+                detail=f"Spent ₹{premium_spent:.0f} · cap ₹{max_premium_inr:.0f}",
+                value=round(premium_spent, 2),
+                threshold=max_premium_inr,
+                action_hint="Reduce size or wait until tomorrow",
+            )
+        )
 
     steps = _step_live_summary(step_statuses)
     passed = sum(1 for s in steps if s.get("server_ok"))
@@ -166,4 +259,5 @@ def build_readiness_payload(
         "kite_connected": kite_connected,
         "pending_entry_order_id": pending_entry_order_id,
         "live_data_stale": not armed,
+        "risk_limits_status": risk,
     }
