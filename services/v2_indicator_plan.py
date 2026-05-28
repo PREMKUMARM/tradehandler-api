@@ -19,7 +19,7 @@ from services.v2_strike_pricing import (
     _pick_moneyness,
     refine_spot_levels_from_candles,
 )
-from utils.kite_order_utils import round_to_tick
+from utils.kite_order_utils import merge_quote_with_circuit, round_to_tick, validate_buy_limit_price
 from utils.kite_utils import get_kite_instance
 from utils.logger import log_warning
 
@@ -41,7 +41,8 @@ def live_option_quote(tradingsymbol: str, exchange: str = "NFO") -> Dict[str, fl
     if ltp <= 0:
         o = row.get("ohlc") or {}
         ltp = float(o.get("close") or o.get("open") or 0)
-    return {"bid": bid, "ask": ask, "ltp": ltp}
+    base = {"bid": bid, "ask": ask, "ltp": ltp}
+    return merge_quote_with_circuit(base, row)
 
 
 def precise_entry_limit_price(quote: Dict[str, float], transaction_type: str = "BUY") -> float:
@@ -369,6 +370,20 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         prev_close=float(live.get("prev_close") or 0),
     )
     entry_limit = entry_analysis.entry_limit_price
+    entry_limit, limit_ok, limit_msg = validate_buy_limit_price(entry_limit, quote=quote)
+    if not limit_ok:
+        entry_analysis = EntryAnalysis(
+            entry_ready=False,
+            entry_limit_price=entry_limit,
+            fair_premium=entry_analysis.fair_premium,
+            entry_style="circuit_blocked",
+            spot_trigger=entry_analysis.spot_trigger,
+            confirmation_score=entry_analysis.confirmation_score,
+            notes=list(entry_analysis.notes) + ([limit_msg] if limit_msg else []),
+            block_reason=limit_msg,
+        )
+    elif limit_msg:
+        entry_analysis.notes.append(limit_msg)
     ind_meta = plan.get("indicators") or {}
     capital = float(ind_meta.get("margin") or 0)
     risk_pct = float(ind_meta.get("risk_pct") or 1.0)

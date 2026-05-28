@@ -968,6 +968,19 @@ def place_trade(
             plan["product"] = product
             result["trade_plan"] = plan
 
+        from services.commodity_indicator_plan import live_option_quote
+        from utils.kite_order_utils import validate_buy_limit_price
+
+        quote = live_option_quote(symbol, exchange="MCX")
+        entry_limit, limit_ok, limit_msg = validate_buy_limit_price(entry_limit, quote=quote)
+        plan["entry_limit_price"] = entry_limit
+        result["trade_plan"] = plan
+        if not limit_ok:
+            result["errors"].append(limit_msg)
+            return result
+        if limit_msg:
+            result["messages"] = list(result.get("messages", [])) + [limit_msg]
+
         mcx_open = is_mcx_session_open()
         skip_session_check = skip_session or mcx_open
         entry = place_order_tool.invoke(

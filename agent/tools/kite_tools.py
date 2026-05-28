@@ -132,6 +132,26 @@ def place_order_tool(
         if trigger_price is not None:
             order_params["trigger_price"] = trigger_price
 
+        if (
+            (order_type or "").upper() == "LIMIT"
+            and (transaction_type or "").upper() == "BUY"
+            and price is not None
+        ):
+            try:
+                from utils.kite_order_utils import merge_quote_with_circuit, validate_buy_limit_price
+
+                key = f"{exchange}:{tradingsymbol}"
+                row = (kite.quote(key) or {}).get(key, {}) or {}
+                quote = merge_quote_with_circuit({"ltp": float(row.get("last_price") or price)}, row)
+                adj, ok, msg = validate_buy_limit_price(float(price), quote=quote)
+                if not ok:
+                    return {"status": "error", "error": msg}
+                if adj != float(price):
+                    order_params["price"] = adj
+                    order_payload["price"] = adj
+            except Exception:
+                pass
+
         order_id = place_kite_order(kite, order_params)
 
         record_order_placed(est_value)

@@ -835,6 +835,19 @@ def place_trade(
             plan["product"] = product
             result["trade_plan"] = plan
 
+        from services.v2_indicator_plan import live_option_quote
+        from utils.kite_order_utils import validate_buy_limit_price
+
+        quote = live_option_quote(symbol, exchange="NFO")
+        entry_limit, limit_ok, limit_msg = validate_buy_limit_price(entry_limit, quote=quote)
+        plan["entry_limit_price"] = entry_limit
+        result["trade_plan"] = plan
+        if not limit_ok:
+            result["errors"].append(limit_msg)
+            return result
+        if limit_msg:
+            result["messages"] = list(result.get("messages", [])) + [limit_msg]
+
         entry = place_order_tool.invoke(
             {
                 "tradingsymbol": symbol,
