@@ -376,6 +376,13 @@ async def startup_event():
     except Exception as e:
         log_error(f"[Startup] Commodity strategy watch registration failed: {e}")
 
+    try:
+        from services.crypto_strategy_watch import register_crypto_strategy_watch
+
+        register_crypto_strategy_watch(asyncio.get_running_loop())
+    except Exception as e:
+        log_error(f"[Startup] Crypto strategy watch registration failed: {e}")
+
 # Simulation state and helpers moved to simulation/ module
 
 # Legacy endpoint removed - use /api/v1/simulation/live-logs instead

@@ -1,0 +1,300 @@
+"""Crypto (Binance BTCUSDT perp) wizard — checklist, preview, place."""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from services.crypto_config import (
+    DEFAULT_LEVERAGE,
+    SYMBOL,
+    allow_offhours_crypto_place,
+    is_crypto_session_open,
+)
+from services.crypto_indicator_plan import build_trade_plan, refresh_plan_at_execution
+from services.crypto_live_indicators import recalculate_from_ticker
+from utils.binance_order_utils import (
+    get_binance_credentials,
+    get_usdt_balance,
+    place_limit_order,
+    place_stop_market,
+    set_margin_type,
+)
+from utils.logger import log_error, log_info
+
+STEP_TITLES = [
+    "Binance API & USDT balance",
+    "Market session (24/7)",
+    "Direction hypothesis (LONG / SHORT)",
+    "Structure: OR / PDH / PDL / VWAP",
+    "Entry setup vs EMA",
+    "Position size & leverage",
+    "Stop loss & take profit",
+    "Final order review",
+]
+
+REQUIRED_MARKED_STEPS = [0, 2, 5, 7]
+
+
+def _step_statuses_from_live(
+  plan: Dict[str, Any],
+  live: Dict[str, Any],
+  balance: float,
+) -> List[Dict[str, Any]]:
+    side = plan.get("side") or "LONG"
+    spot = float(live.get("btc_spot") or 0)
+    out: List[Dict[str, Any]] = []
+    checks = [
+        balance > 10,
+        is_crypto_session_open(),
+        side in ("LONG", "SHORT"),
+        spot > 0 and live.get("or_high"),
+        bool(plan.get("entry_ready")),
+        float(plan.get("quantity") or 0) > 0,
+        float(plan.get("stop_loss_premium") or 0) > 0,
+        float(plan.get("entry_limit_price") or 0) > 0,
+    ]
+    for i, title in enumerate(STEP_TITLES):
+        ok = bool(checks[i]) if i < len(checks) else False
+        out.append(
+            {
+                "index": i,
+                "title": title,
+                "completed": ok,
+                "server_ok": ok,
+                "message": "Pass" if ok else "Needs attention",
+                "output": "",
+            }
+        )
+    return out
+
+
+def get_checklist_live(
+    *,
+    direction: str = "AUTO",
+    risk_percentage: Optional[float] = None,
+    reward_percentage: Optional[float] = None,
+    quantity_btc: Optional[float] = None,
+) -> Dict[str, Any]:
+    try:
+        get_binance_credentials()
+        balance = get_usdt_balance()
+        connected = True
+        msg = f"Binance connected · USDT available ${balance:,.2f}"
+    except Exception as exc:
+        balance = 0.0
+        connected = False
+        msg = str(exc)
+
+    plan, messages = build_trade_plan(
+        direction=direction,
+        risk_percentage=risk_percentage,
+        reward_percentage=reward_percentage,
+        quantity_btc=quantity_btc,
+    )
+    live = plan.get("indicators") or recalculate_from_ticker()
+    steps = _step_statuses_from_live(plan, live, balance)
+    missing = [s["index"] for s in steps if not s["server_ok"]]
+    ready = len(missing) == 0
+
+    return {
+        "connected": connected,
+        "message": msg,
+        "checklist_ready": ready,
+        "missing_steps": missing,
+        "step_statuses": steps,
+        "trade_plan": plan or None,
+        "can_place": ready and connected and bool(plan),
+        "market_open": is_crypto_session_open(),
+        "allow_test_place": allow_offhours_crypto_place(),
+        "paper_trading_mode": False,
+        "messages": messages,
+        "binance_balance_usdt": balance,
+        "leverage": DEFAULT_LEVERAGE,
+    }
+
+
+def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
+    plan, _ = build_trade_plan(direction=direction)
+    side = plan.get("side") or "LONG"
+    return {
+        "selected_id": "btc_trend",
+        "selected_name": f"BTCUSDT {side}",
+        "selected_score": int(plan.get("entry_confirmation_score") or 60),
+        "selected_fit": "good" if plan.get("entry_ready") else "wait",
+        "selected_option_kind": side,
+        "strategies": [
+            {
+                "id": "btc_trend",
+                "name": f"BTCUSDT {side} {DEFAULT_LEVERAGE}x",
+                "score": int(plan.get("entry_confirmation_score") or 60),
+                "fit": "good" if plan.get("entry_ready") else "wait",
+                "option_kind": side,
+            }
+        ],
+        "output_summary": plan.get("note") or f"{SYMBOL} {side} perp",
+    }
+
+
+def get_checklist_analyze(
+    *,
+    step: int,
+    direction: str = "AUTO",
+    risk_percentage: Optional[float] = None,
+    reward_percentage: Optional[float] = None,
+    quantity_btc: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Parity endpoint with Nifty/Commodity: return live checklist + highlight one step.
+    (Crypto MVP runs auto_execute checklist; step analysis is informational.)
+    """
+    data = get_checklist_live(
+        direction=direction,
+        risk_percentage=risk_percentage,
+        reward_percentage=reward_percentage,
+        quantity_btc=quantity_btc,
+    )
+    try:
+        idx = int(step)
+    except Exception:
+        idx = 0
+    rows = list(data.get("step_statuses") or [])
+    focus = next((r for r in rows if int(r.get("index", -1)) == idx), None)
+    if focus:
+        data["messages"] = list(data.get("messages", [])) + [
+            f"Analyze step {idx}: {focus.get('title')} — {focus.get('message')}"
+        ]
+    return data
+
+
+def preview_trade(
+    completed_steps: Optional[List[bool]] = None,
+    direction: str = "AUTO",
+    risk_percentage: Optional[float] = None,
+    reward_percentage: Optional[float] = None,
+    quantity_btc: float = 0.001,
+    auto_execute: bool = False,
+) -> Dict[str, Any]:
+    live_data = get_checklist_live(
+        direction=direction,
+        risk_percentage=risk_percentage,
+        reward_percentage=reward_percentage,
+        quantity_btc=quantity_btc or None,
+    )
+    plan = live_data.get("trade_plan") or {}
+    can_place = bool(live_data.get("can_place"))
+    if completed_steps and not auto_execute:
+        for idx in REQUIRED_MARKED_STEPS:
+            if idx < len(completed_steps) and not completed_steps[idx]:
+                can_place = False
+    return {
+        **live_data,
+        "can_execute": can_place,
+        "validation": {
+            "is_good_trade": can_place,
+            "risk_amount": plan.get("risk_inr"),
+            "reward_amount": plan.get("reward_inr"),
+        },
+    }
+
+
+def place_trade(
+    completed_steps: Optional[List[bool]] = None,
+    direction: str = "AUTO",
+    risk_percentage: Optional[float] = None,
+    reward_percentage: Optional[float] = None,
+    quantity_btc: float = 0.001,
+    confirm: bool = False,
+    auto_execute: bool = False,
+    trade_plan_snapshot: Optional[Dict[str, Any]] = None,
+    defer_exits_until_fill: bool = True,
+) -> Dict[str, Any]:
+    preview = preview_trade(
+        completed_steps,
+        direction,
+        risk_percentage,
+        reward_percentage,
+        quantity_btc,
+        auto_execute=auto_execute,
+    )
+    result = {
+        **preview,
+        "placed": False,
+        "entry_order_id": None,
+        "sl_order_id": None,
+        "tp_order_id": None,
+        "errors": [],
+        "entry_paper": False,
+    }
+
+    if not confirm:
+        result["errors"].append("Set confirm=true to place orders")
+        return result
+
+    plan = trade_plan_snapshot or preview.get("trade_plan")
+    if not plan:
+        result["errors"].append("No trade plan")
+        return result
+
+    plan = refresh_plan_at_execution(plan)
+    result["trade_plan"] = plan
+
+    if not preview.get("can_execute") and not (confirm and preview.get("checklist_ready")):
+        result["errors"].append("Checklist not ready")
+        return result
+
+    side = str(plan.get("side") or "LONG").upper()
+    order_side = "BUY" if side == "LONG" else "SELL"
+    exit_side = "SELL" if side == "LONG" else "BUY"
+    qty = float(plan.get("quantity") or 0.001)
+    entry_limit = float(plan.get("entry_limit_price") or 0)
+    sl_px = float(plan.get("stop_loss_premium") or 0)
+    tp_px = float(plan.get("target_premium") or 0)
+
+    try:
+        set_margin_type(SYMBOL, "ISOLATED")
+        entry = place_limit_order(
+            symbol=SYMBOL,
+            side=order_side,
+            quantity=qty,
+            price=entry_limit,
+            leverage=DEFAULT_LEVERAGE,
+        )
+        if not entry.get("ok"):
+            result["errors"].append(entry.get("error") or "Entry failed")
+            return result
+
+        entry_id = entry.get("order_id")
+        result["entry_order_id"] = entry_id
+        result["placed"] = True
+        result["messages"] = list(preview.get("messages", [])) + [
+            f"Entry {order_side} LIMIT {qty} BTC @ ${entry_limit:,.2f} ({DEFAULT_LEVERAGE}x)",
+        ]
+
+        if not defer_exits_until_fill:
+            sl = place_stop_market(
+                symbol=SYMBOL, side=exit_side, quantity=qty, stop_price=sl_px
+            )
+            if sl.get("ok"):
+                result["sl_order_id"] = sl.get("order_id")
+                result["messages"].append(f"SL STOP_MARKET @ ${sl_px:,.2f}")
+            tp = place_limit_order(
+                symbol=SYMBOL,
+                side=exit_side,
+                quantity=qty,
+                price=tp_px,
+                reduce_only=True,
+            )
+            if tp.get("ok"):
+                result["tp_order_id"] = tp.get("order_id")
+                result["messages"].append(f"TP LIMIT @ ${tp_px:,.2f}")
+        else:
+            result["exits_deferred"] = True
+            result["messages"].append("SL/TP will attach after entry fills (watch)")
+
+        from services.risk_gate import record_order_placed
+
+        record_order_placed(qty * entry_limit)
+    except Exception as exc:
+        log_error(f"[Crypto] place_trade: {exc}")
+        result["errors"].append(str(exc))
+
+    return result
