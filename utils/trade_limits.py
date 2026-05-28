@@ -17,11 +17,17 @@ class TradeLimits:
             "max_trades_per_day": 10,
             "max_profit_per_day": 0.02,  # 2%
             "max_loss_per_day": 0.05,    # 5%
+            # Absolute caps (INR). 0 = disabled.
+            "max_premium_inr_per_day": float(os.getenv("MAX_PREMIUM_INR_PER_DAY", "0") or 0),
+            "max_loss_inr_per_day": float(os.getenv("MAX_LOSS_INR_PER_DAY", "0") or 0),
             "current_day": str(date.today()),
             "trades_today": 0,
             "profit_today": 0.0,
             "loss_today": 0.0,
-            "total_investment_today": 0.0
+            # Options premium / capital deployed (INR)
+            "total_investment_today": 0.0,
+            # Net realized P&L for the day (INR). Negative = loss.
+            "pnl_inr_today": 0.0,
         }
         self.limits = self._load_limits()
     
@@ -60,6 +66,30 @@ class TradeLimits:
     
     def can_place_trade(self, investment_amount: float = 0) -> tuple[bool, str]:
         """Check if a new trade can be placed"""
+        # Absolute premium cap (INR)
+        try:
+            max_prem = float(self.limits.get("max_premium_inr_per_day") or 0)
+            spent = float(self.limits.get("total_investment_today") or 0)
+            if max_prem > 0 and (spent + float(investment_amount or 0)) > max_prem:
+                return (
+                    False,
+                    f"Daily premium cap reached (spent ₹{spent:.0f}, cap ₹{max_prem:.0f})",
+                )
+        except Exception:
+            pass
+
+        # Absolute max loss cap (INR)
+        try:
+            max_loss_inr = float(self.limits.get("max_loss_inr_per_day") or 0)
+            pnl = float(self.limits.get("pnl_inr_today") or 0)
+            if max_loss_inr > 0 and pnl <= -abs(max_loss_inr):
+                return (
+                    False,
+                    f"Daily loss cap reached (P&L ₹{pnl:.0f}, cap -₹{abs(max_loss_inr):.0f})",
+                )
+        except Exception:
+            pass
+
         # Check trade count limit
         if self.limits["trades_today"] >= self.limits["max_trades_per_day"]:
             return False, f"Daily trade limit reached ({self.limits['max_trades_per_day']} trades)"
@@ -83,6 +113,11 @@ class TradeLimits:
     
     def record_profit_loss(self, pnl_amount: float, investment_amount: float = 0):
         """Record profit/loss from a closed position"""
+        try:
+            self.limits["pnl_inr_today"] = float(self.limits.get("pnl_inr_today") or 0) + float(pnl_amount or 0)
+        except Exception:
+            pass
+
         if pnl_amount > 0:
             # Calculate profit as percentage of investment
             if investment_amount > 0:
@@ -110,6 +145,10 @@ class TradeLimits:
             "max_trades_per_day": self.limits["max_trades_per_day"],
             "trades_today": self.limits["trades_today"],
             "trades_remaining": max(0, self.limits["max_trades_per_day"] - self.limits["trades_today"]),
+            "max_premium_inr_per_day": float(self.limits.get("max_premium_inr_per_day") or 0),
+            "premium_spent_inr_today": float(self.limits.get("total_investment_today") or 0),
+            "max_loss_inr_per_day": float(self.limits.get("max_loss_inr_per_day") or 0),
+            "pnl_inr_today": float(self.limits.get("pnl_inr_today") or 0),
             "max_profit_per_day_pct": self.limits["max_profit_per_day"] * 100,
             "profit_today_pct": self.limits["profit_today"] * 100,
             "profit_remaining_pct": max(0, (self.limits["max_profit_per_day"] - self.limits["profit_today"]) * 100),
@@ -127,7 +166,8 @@ class TradeLimits:
             "trades_today": 0,
             "profit_today": 0.0,
             "loss_today": 0.0,
-            "total_investment_today": 0.0
+            "total_investment_today": 0.0,
+            "pnl_inr_today": 0.0,
         })
         self._save_limits(self.limits)
         log_info("Daily trade limits reset")

@@ -126,6 +126,7 @@ def _default_persisted() -> Dict[str, Any]:
         "placed_count_today": 0,
         "placed_symbols_today": [],
         "pending_entry_order_id": None,
+        "pending_entry_placed_at": None,
         "pending_gtt_trigger_id": None,
         "pending_symbol": None,
         "pending_trade_plan": None,
@@ -187,6 +188,7 @@ class CommodityStrategyWatch:
         self._placed_count_today: int = 0
         self._placed_symbols_today: List[str] = []
         self._pending_entry_order_id: Optional[str] = None
+        self._pending_entry_placed_at: Optional[str] = None
         self._pending_gtt_trigger_id: Optional[str] = None
         self._pending_symbol: Optional[str] = None
         self._pending_trade_plan: Optional[Dict[str, Any]] = None
@@ -242,6 +244,7 @@ class CommodityStrategyWatch:
                 self._placed_symbols_today[-1] if self._placed_symbols_today else None
             )
             self._pending_entry_order_id = data.get("pending_entry_order_id")
+            self._pending_entry_placed_at = data.get("pending_entry_placed_at")
             self._pending_gtt_trigger_id = data.get("pending_gtt_trigger_id")
             self._pending_symbol = data.get("pending_symbol")
             self._pending_trade_plan = data.get("pending_trade_plan")
@@ -268,6 +271,7 @@ class CommodityStrategyWatch:
                 "placed_count_today": int(self._placed_count_today),
                 "placed_symbols_today": list(self._placed_symbols_today),
                 "pending_entry_order_id": self._pending_entry_order_id,
+                "pending_entry_placed_at": self._pending_entry_placed_at,
                 "pending_gtt_trigger_id": self._pending_gtt_trigger_id,
                 "pending_symbol": self._pending_symbol,
                 "pending_trade_plan": self._pending_trade_plan,
@@ -299,6 +303,7 @@ class CommodityStrategyWatch:
             self._placed_count_today = 0
             self._placed_symbols_today = []
             self._pending_entry_order_id = None
+            self._pending_entry_placed_at = None
             self._pending_gtt_trigger_id = None
             self._pending_symbol = None
             self._pending_trade_plan = None
@@ -423,6 +428,7 @@ class CommodityStrategyWatch:
         gtt_id = self._pending_gtt_trigger_id
         sym = self._pending_symbol
         self._pending_entry_order_id = None
+        self._pending_entry_placed_at = None
         self._pending_gtt_trigger_id = None
         self._pending_symbol = None
         self._pending_trade_plan = None
@@ -716,6 +722,18 @@ class CommodityStrategyWatch:
                     if not session_open:
                         self._cancel_pending(reason="MCX session closed")
                     else:
+                        # Cancel stale LIMIT entry if it sits too long unfilled.
+                        try:
+                            timeout_sec = float(os.getenv("COMMODITY_WATCH_ENTRY_TIMEOUT_SEC", "900") or 900)
+                            if self._pending_entry_placed_at and timeout_sec > 0:
+                                placed_at = datetime.fromisoformat(str(self._pending_entry_placed_at))
+                                age = (datetime.now(IST) - placed_at).total_seconds()
+                                if age > timeout_sec:
+                                    st = self._order_status(self._pending_entry_order_id)
+                                    if st in (None, "OPEN", "TRIGGER PENDING", "PENDING"):
+                                        self._cancel_pending(reason=f"Entry timeout ({int(age)}s)")
+                        except Exception:
+                            pass
                         status = self._order_status(self._pending_entry_order_id)
                         if status in ("COMPLETE", "EXECUTED"):
                             await self._on_entry_filled()
@@ -1059,6 +1077,7 @@ class CommodityStrategyWatch:
                                 self._placed_symbols_today.append(up)
                         # Keep watch alive for lifecycle (cancel if setup invalidates / clear on fill).
                         self._pending_entry_order_id = str(entry_id) if entry_id else None
+                        self._pending_entry_placed_at = datetime.now(IST).isoformat() if entry_id else None
                         self._pending_gtt_trigger_id = (
                             str(result.get("gtt_trigger_id")) if result.get("gtt_trigger_id") else None
                         )
