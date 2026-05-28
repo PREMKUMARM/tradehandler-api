@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field, field_validator
 
 class KillSwitchUpdate(BaseModel):
     active: bool
+    segment: Optional[str] = Field(
+        default=None,
+        description="nifty | commodity — omit for global legacy kill switch",
+    )
 
 
 class BasketLeg(BaseModel):

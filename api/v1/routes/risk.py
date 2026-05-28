@@ -11,7 +11,7 @@ from services.paper_trading import (
     paper_trading_env_locks_ui,
     set_paper_trading_active,
 )
-from services.risk_gate import is_kill_switch_active, set_kill_switch
+from services.risk_gate import get_kill_switch_status, is_kill_switch_active, set_kill_switch
 from services.strategy_auto_trader import get_config as get_auto_trade_config
 from services.strategy_auto_trader import update_config as update_auto_trade_config
 
@@ -21,9 +21,11 @@ router = APIRouter(prefix="/risk", tags=["Risk"])
 @router.get("/execution-status")
 def get_execution_status():
     """Kill switch + paper mode + whether paper is locked by PAPER_TRADING_MODE in .env."""
+    ks = get_kill_switch_status()
     return {
         "data": {
             "kill_switch_active": is_kill_switch_active(),
+            "kill_switch": ks,
             "paper_trading_mode": is_paper_mode(),
             "paper_trading_env_locks_ui": paper_trading_env_locks_ui(),
         }
@@ -32,13 +34,13 @@ def get_execution_status():
 
 @router.get("/kill-switch")
 def get_kill_switch():
-    return {"data": {"active": is_kill_switch_active()}}
+    return {"data": get_kill_switch_status()}
 
 
 @router.post("/kill-switch")
 def post_kill_switch(body: KillSwitchUpdate):
-    set_kill_switch(body.active)
-    return {"data": {"active": is_kill_switch_active()}}
+    set_kill_switch(body.active, segment=body.segment)
+    return {"data": get_kill_switch_status()}
 
 
 @router.post("/paper-trading")

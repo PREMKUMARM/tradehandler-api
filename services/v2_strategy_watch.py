@@ -34,7 +34,6 @@ _MAX_EVENTS = 40
 _DEFAULT_POLL_SEC = 5
 _STATE_PATH = Path(os.getenv("V2_WATCH_STATE_FILE", "data/v2_strategy_watch.json"))
 _lock = RLock()
-_place_lock = asyncio.Lock()
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -191,7 +190,9 @@ class V2StrategyWatch:
         self._events: Deque[WatchEvent] = deque(maxlen=_MAX_EVENTS)
         self._task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._place_lock: Optional[asyncio.Lock] = None
         self._placing = False
+        self._gtt_attach_in_progress = False
         self._last_autonomous_block_reason: Optional[str] = None
         self._last_skip_logged_msg: Optional[str] = None
         self._last_skip_logged_at: Optional[datetime] = None
@@ -285,9 +286,14 @@ class V2StrategyWatch:
         try:
             from services.risk_gate import is_kill_switch_active
 
-            return is_kill_switch_active()
+            return is_kill_switch_active("nifty")
         except Exception:
-            return False
+            return True
+
+    def _get_place_lock(self) -> asyncio.Lock:
+        if self._place_lock is None:
+            self._place_lock = asyncio.Lock()
+        return self._place_lock
 
     def _reset_day_if_needed(self) -> None:
         today = _today()
@@ -378,65 +384,107 @@ class V2StrategyWatch:
 
     async def _on_entry_filled(self) -> None:
         with _lock:
+            if self._gtt_attach_in_progress:
+                return
             entry_id = self._pending_entry_order_id
+            if not entry_id:
+                return
+            self._gtt_attach_in_progress = True
             plan = copy.deepcopy(self._pending_trade_plan) if self._pending_trade_plan else None
             sym = self._pending_symbol
             disarm = self._cfg.disarm_after_place
-
-        fill_px = self._order_fill_price(entry_id or "") if entry_id else None
-        gtt_id: Optional[str] = None
-        gtt_detail = ""
-        executed_plan = plan
-
-        if plan:
-            gtt_result = await asyncio.to_thread(
-                v2_trade_service.place_gtt_for_plan,
-                plan,
-                fill_price=fill_px,
-            )
-            executed_plan = gtt_result.get("trade_plan") or plan
-            gtt_id = gtt_result.get("gtt_trigger_id")
-            if gtt_id:
-                sl_prem = float(executed_plan.get("stop_loss_premium") or 0)
-                tp_prem = float(executed_plan.get("target_premium") or 0)
-                gtt_detail = f"GTT OCO {gtt_id} · SL ₹{sl_prem:.2f} TP ₹{tp_prem:.2f}"
-            else:
-                errs = "; ".join(gtt_result.get("errors") or ["GTT failed"])
-                gtt_detail = f"GTT failed: {errs}"[:180]
-
-        fill_bit = f" @ ₹{fill_px:.2f}" if fill_px else ""
-        with _lock:
             self._pending_entry_order_id = None
             self._pending_entry_placed_at = None
             self._pending_trade_plan = None
-            self._pending_gtt_trigger_id = str(gtt_id) if gtt_id else None
-            self._pending_symbol = None
-            if disarm:
-                self._armed = False
 
-        self._push_event(
-            WatchEvent(
-                at=datetime.now(IST).isoformat(),
-                kind="auto_gtt_placed" if gtt_id else "auto_gtt_failed",
-                message=(
-                    f"Entry {entry_id} filled{fill_bit} — {gtt_detail or 'no exit plan'}"
-                    + (" (watch disarmed)" if disarm else "")
-                )[:240],
-                tradingsymbol=sym,
+        gtt_id: Optional[str] = None
+        gtt_detail = ""
+        try:
+            fill_px = self._order_fill_price(entry_id or "") if entry_id else None
+            executed_plan = plan
+
+            if plan:
+                gtt_result = await asyncio.to_thread(
+                    v2_trade_service.place_gtt_for_plan,
+                    plan,
+                    fill_price=fill_px,
+                )
+                executed_plan = gtt_result.get("trade_plan") or plan
+                gtt_id = gtt_result.get("gtt_trigger_id")
+                if gtt_id:
+                    sl_prem = float(executed_plan.get("stop_loss_premium") or 0)
+                    tp_prem = float(executed_plan.get("target_premium") or 0)
+                    gtt_detail = f"GTT OCO {gtt_id} · SL ₹{sl_prem:.2f} TP ₹{tp_prem:.2f}"
+                else:
+                    errs = "; ".join(gtt_result.get("errors") or ["GTT failed"])
+                    gtt_detail = f"GTT failed: {errs}"[:180]
+
+                try:
+                    from services.risk_gate import record_order_placed
+
+                    qty = int(plan.get("quantity") or 0)
+                    px = float(
+                        fill_px
+                        or plan.get("entry_limit_price")
+                        or plan.get("entry_premium")
+                        or 0
+                    )
+                    record_order_placed(max(0.0, qty * px))
+                except Exception:
+                    pass
+
+            fill_bit = f" @ ₹{fill_px:.2f}" if fill_px else ""
+            with _lock:
+                self._pending_gtt_trigger_id = str(gtt_id) if gtt_id else None
+                self._pending_symbol = None
+                if disarm:
+                    self._armed = False
+
+            self._push_event(
+                WatchEvent(
+                    at=datetime.now(IST).isoformat(),
+                    kind="auto_gtt_placed" if gtt_id else "auto_gtt_failed",
+                    message=(
+                        f"Entry {entry_id} filled{fill_bit} — {gtt_detail or 'no exit plan'}"
+                        + (" (watch disarmed)" if disarm else "")
+                    )[:240],
+                    tradingsymbol=sym,
+                )
             )
-        )
+        finally:
+            with _lock:
+                self._gtt_attach_in_progress = False
 
-    def _cancel_pending(self, *, reason: str) -> None:
-        entry_id = self._pending_entry_order_id
-        gtt_id = self._pending_gtt_trigger_id
-        sym = self._pending_symbol
-        self._pending_entry_order_id = None
-        self._pending_entry_placed_at = None
-        self._pending_trade_plan = None
-        self._pending_gtt_trigger_id = None
-        self._pending_symbol = None
-        self._placed_today = False
-        self._placed_symbol_today = None
+    def _cancel_pending(self, *, reason: str, rollback_slot: bool = True) -> None:
+        with _lock:
+            entry_id = self._pending_entry_order_id
+            gtt_id = self._pending_gtt_trigger_id
+            sym = self._pending_symbol
+            plan = self._pending_trade_plan
+            had_entry = bool(entry_id)
+            self._pending_entry_order_id = None
+            self._pending_entry_placed_at = None
+            self._pending_trade_plan = None
+            self._pending_gtt_trigger_id = None
+            self._pending_symbol = None
+            if rollback_slot and had_entry and self._placed_count_today > 0:
+                self._placed_count_today -= 1
+            self._placed_today = self._placed_count_today > 0
+            if not self._placed_today:
+                self._placed_symbol_today = None
+            elif sym:
+                up = sym.upper()
+                if up in self._placed_symbols_today and self._placed_count_today <= 0:
+                    self._placed_symbols_today = [s for s in self._placed_symbols_today if s != up]
+        if rollback_slot and had_entry and plan:
+            try:
+                from services.risk_gate import rollback_order_reserved
+
+                qty = int(plan.get("quantity") or 0)
+                px = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
+                rollback_order_reserved(max(0.0, qty * px))
+            except Exception:
+                pass
         try:
             from agent.tools.kite_tools import cancel_order_tool, delete_gtt_tool
 
@@ -743,8 +791,8 @@ class V2StrategyWatch:
                                     st = self._order_status(self._pending_entry_order_id)
                                     if st in (None, "OPEN", "TRIGGER PENDING", "PENDING"):
                                         self._cancel_pending(reason=f"Entry timeout ({int(age)}s)")
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            log_warning(f"[V2Watch] entry timeout parse failed: {exc}")
                         from services.watch_reconcile import reconcile_pending_watch
 
                         with _lock:
@@ -966,8 +1014,10 @@ class V2StrategyWatch:
             await self._try_auto_place(preview, plan)
 
     async def _try_auto_place(self, preview: Dict[str, Any], plan: Dict[str, Any]) -> None:
-        async with _place_lock:
+        async with self._get_place_lock():
             with _lock:
+                if self._pending_entry_order_id:
+                    return
                 at_limit = self._placed_count_today >= self._max_trades_per_day()
                 if at_limit or self._placing:
                     return
@@ -997,7 +1047,7 @@ class V2StrategyWatch:
                 from services.paper_trading import is_paper_mode
                 from services.risk_gate import check_order_allowed, is_kill_switch_active
 
-                if is_kill_switch_active():
+                if is_kill_switch_active("nifty"):
                     self._push_event(
                         WatchEvent(
                             at=datetime.now(IST).isoformat(),
@@ -1087,17 +1137,6 @@ class V2StrategyWatch:
                             )
                         )
                     )
-                    if entry_submitted or placed:
-                        try:
-                            from services.risk_gate import record_order_placed
-
-                            qty = int(plan.get("quantity") or 0)
-                            px = float(
-                                plan.get("entry_limit_price") or plan.get("entry_premium") or 0
-                            )
-                            record_order_placed(max(0.0, qty * px))
-                        except Exception:
-                            pass
                     with _lock:
                         self._placed_count_today += 1
                         self._placed_today = True

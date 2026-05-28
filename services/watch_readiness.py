@@ -213,7 +213,7 @@ def build_readiness_payload(
                 label="Kill switch",
                 ok=False,
                 detail="Execution kill switch is ON",
-                action_hint="Turn off kill switch in Settings",
+                action_hint="Operations → Risk Control: turn off kill switch",
             )
         )
 

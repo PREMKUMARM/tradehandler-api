@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Optional
 
 from zoneinfo import ZoneInfo
 
@@ -15,13 +15,12 @@ _last_sync_at: Optional[datetime] = None
 
 def sync_daily_pnl_from_kite(
     *,
-    exchanges: Optional[Set[str]] = None,
     force: bool = False,
     min_interval_sec: float = 60.0,
 ) -> Dict[str, Any]:
     """
-    Overwrite pnl_inr_today from Kite net positions (source of truth for open + closed day P&L).
-    exchanges: e.g. {"NFO"} or {"MCX"} — None means all net legs.
+    Overwrite pnl_inr_today from all Kite net positions (source of truth).
+    Always sums every exchange so Nifty + commodity watches do not overwrite each other.
     """
     global _last_sync_at
     now = datetime.now(IST)
@@ -44,13 +43,9 @@ def sync_daily_pnl_from_kite(
         for p in net:
             if not isinstance(p, dict):
                 continue
-            ex = str(p.get("exchange") or "").upper()
-            if exchanges and ex not in exchanges:
-                continue
             total += float(p.get("pnl") or 0)
 
-        trade_limits.limits["pnl_inr_today"] = total
-        trade_limits._save_limits(trade_limits.limits)
+        trade_limits.set_pnl_inr_today(total)
         _last_sync_at = now
         return {"ok": True, "pnl_inr_today": total, "legs": len(net)}
     except Exception as exc:
@@ -58,11 +53,6 @@ def sync_daily_pnl_from_kite(
         return {"ok": False, "error": str(exc)}
 
 
-def maybe_sync_pnl_for_watch(segment: str) -> None:
-    """Throttled sync used by strategy watch loops."""
-    ex_map = {
-        "nifty": {"NFO", "NSE"},
-        "commodity": {"MCX"},
-        "v2": {"NFO", "NSE"},
-    }
-    sync_daily_pnl_from_kite(exchanges=ex_map.get(segment.lower()))
+def maybe_sync_pnl_for_watch(_segment: str = "") -> None:
+    """Throttled sync used by strategy watch loops (segment ignored — always full book)."""
+    sync_daily_pnl_from_kite()

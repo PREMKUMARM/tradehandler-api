@@ -7,7 +7,7 @@ import json
 import os
 from datetime import datetime, time as dt_time
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from zoneinfo import ZoneInfo
 
@@ -18,23 +18,88 @@ from utils.trade_limits import trade_limits
 KILL_SWITCH_PATH = Path(os.getenv("KILL_SWITCH_FILE", "data/kill_switch.json"))
 
 
-def is_kill_switch_active() -> bool:
+def _normalize_segment(segment: Optional[str]) -> Optional[str]:
+    if not segment:
+        return None
+    s = segment.strip().lower()
+    if s in ("v2", "nifty", "nifty50", "nfo"):
+        return "nifty"
+    if s in ("commodity", "mcx", "crude"):
+        return "commodity"
+    return s
+
+
+def _read_kill_switch_data() -> Dict[str, Any]:
+    if not KILL_SWITCH_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(KILL_SWITCH_PATH.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception as e:
+        log_warning(f"[RiskGate] Kill-switch file read failed (fail-closed): {e}")
+        return {"_read_error": True}
+
+
+def is_kill_switch_active(segment: Optional[str] = None) -> bool:
+    """Global env/file `active` or per-segment `nifty` / `commodity` flags."""
     env = os.getenv("EXECUTION_KILL_SWITCH", "").strip().lower()
     if env in ("1", "true", "yes", "on"):
         return True
-    try:
-        if KILL_SWITCH_PATH.exists():
-            data = json.loads(KILL_SWITCH_PATH.read_text(encoding="utf-8"))
-            return bool(data.get("active"))
-    except Exception as e:
-        log_warning(f"[RiskGate] Kill-switch file read failed: {e}")
-    return False
+
+    data = _read_kill_switch_data()
+    if data.get("_read_error"):
+        return True
+
+    if bool(data.get("active")):
+        return True
+
+    seg = _normalize_segment(segment)
+    if seg == "nifty":
+        return bool(data.get("nifty") or data.get("nifty50"))
+    if seg == "commodity":
+        return bool(data.get("commodity"))
+    return bool(data.get("nifty") or data.get("nifty50") or data.get("commodity"))
 
 
-def set_kill_switch(active: bool) -> None:
+def get_kill_switch_status() -> Dict[str, Any]:
+    data = _read_kill_switch_data()
+    return {
+        "active": is_kill_switch_active(),
+        "global_active": bool(data.get("active")),
+        "nifty": bool(data.get("nifty") or data.get("nifty50")),
+        "commodity": bool(data.get("commodity")),
+        "read_error": bool(data.get("_read_error")),
+    }
+
+
+def set_kill_switch(active: bool, segment: Optional[str] = None) -> None:
     KILL_SWITCH_PATH.parent.mkdir(parents=True, exist_ok=True)
-    KILL_SWITCH_PATH.write_text(json.dumps({"active": bool(active)}, indent=2), encoding="utf-8")
-    log_info(f"[RiskGate] Kill switch set to active={active}")
+    data = _read_kill_switch_data()
+    data.pop("_read_error", None)
+
+    seg = _normalize_segment(segment)
+    if seg is None:
+        data["active"] = bool(active)
+        log_info(f"[RiskGate] Global kill switch set to active={active}")
+    elif seg == "nifty":
+        data["nifty"] = bool(active)
+        log_info(f"[RiskGate] Nifty kill switch set to active={active}")
+    elif seg == "commodity":
+        data["commodity"] = bool(active)
+        log_info(f"[RiskGate] Commodity kill switch set to active={active}")
+    else:
+        data[seg] = bool(active)
+
+    KILL_SWITCH_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _segment_for_exchange(exchange: str) -> Optional[str]:
+    ex = (exchange or "").upper()
+    if ex == "MCX":
+        return "commodity"
+    if ex in ("NFO", "NSE", "BSE"):
+        return "nifty"
+    return None
 
 
 def _within_session_ist() -> Tuple[bool, str]:
@@ -69,7 +134,6 @@ def _within_session_for_exchange(exchange: str) -> Tuple[bool, str]:
                 return True, "ok"
             return False, "Outside trading session (IST 09:00-23:30)"
         except Exception:
-            # Safe fallback if commodity config is unavailable
             now_t = datetime.now(ZoneInfo("Asia/Kolkata")).time()
             if dt_time(9, 0) <= now_t <= dt_time(23, 30):
                 return True, "ok"
@@ -94,9 +158,12 @@ def check_order_allowed(
     estimated_value_inr: float = 0.0,
     *,
     skip_session_check: bool = False,
+    segment: Optional[str] = None,
 ) -> Tuple[bool, str]:
-    if is_kill_switch_active():
-        return False, "Execution kill switch is ON — orders blocked."
+    seg = _normalize_segment(segment) or _segment_for_exchange(exchange)
+    if is_kill_switch_active(seg):
+        label = f" ({seg})" if seg else ""
+        return False, f"Execution kill switch is ON{label} — orders blocked."
 
     ok_ex, msg_ex = _exchange_allowed(exchange)
     if not ok_ex:
@@ -123,6 +190,11 @@ def check_order_allowed(
 
 def record_order_placed(investment_amount: float = 0.0) -> None:
     trade_limits.record_trade(investment_amount)
+
+
+def rollback_order_reserved(investment_amount: float = 0.0) -> None:
+    """Undo a reserved slot when a submitted entry is cancelled before fill."""
+    trade_limits.rollback_trade(investment_amount)
 
 
 def get_risk_limits_snapshot() -> dict:

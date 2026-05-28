@@ -4,6 +4,7 @@ Trade limits management service
 import json
 import os
 from datetime import datetime, date
+from threading import RLock
 from typing import Dict, Optional
 from utils.logger import log_info, log_warning, log_error
 
@@ -12,6 +13,7 @@ class TradeLimits:
     """Manages daily trade limits and profit targets"""
     
     def __init__(self):
+        self._lock = RLock()
         self.limits_file = "data/trade_limits.json"
         self.default_limits = {
             "max_trades_per_day": 10,
@@ -63,6 +65,11 @@ class TradeLimits:
                 json.dump(limits, f, indent=2)
         except Exception as e:
             log_error(f"Error saving trade limits: {e}")
+
+    def set_pnl_inr_today(self, value: float) -> None:
+        with self._lock:
+            self.limits["pnl_inr_today"] = float(value or 0)
+            self._save_limits(self.limits)
     
     def can_place_trade(self, investment_amount: float = 0) -> tuple[bool, str]:
         """Check if a new trade can be placed"""
@@ -106,42 +113,57 @@ class TradeLimits:
     
     def record_trade(self, investment_amount: float = 0):
         """Record a new trade"""
-        self.limits["trades_today"] += 1
-        self.limits["total_investment_today"] += investment_amount
-        self._save_limits(self.limits)
-        log_info(f"Trade recorded: {self.limits['trades_today']}/{self.limits['max_trades_per_day']} trades today")
+        with self._lock:
+            self.limits["trades_today"] += 1
+            self.limits["total_investment_today"] += float(investment_amount or 0)
+            self._save_limits(self.limits)
+            log_info(
+                f"Trade recorded: {self.limits['trades_today']}/"
+                f"{self.limits['max_trades_per_day']} trades today"
+            )
+
+    def rollback_trade(self, investment_amount: float = 0) -> None:
+        """Reverse record_trade when an unfilled entry is cancelled."""
+        with self._lock:
+            self.limits["trades_today"] = max(0, int(self.limits.get("trades_today") or 0) - 1)
+            self.limits["total_investment_today"] = max(
+                0.0,
+                float(self.limits.get("total_investment_today") or 0) - float(investment_amount or 0),
+            )
+            self._save_limits(self.limits)
+            log_info(
+                f"Trade slot rolled back: {self.limits['trades_today']}/"
+                f"{self.limits['max_trades_per_day']} trades today"
+            )
     
     def record_profit_loss(self, pnl_amount: float, investment_amount: float = 0):
         """Record profit/loss from a closed position"""
-        try:
-            self.limits["pnl_inr_today"] = float(self.limits.get("pnl_inr_today") or 0) + float(pnl_amount or 0)
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self.limits["pnl_inr_today"] = float(self.limits.get("pnl_inr_today") or 0) + float(
+                    pnl_amount or 0
+                )
+            except Exception:
+                pass
 
-        if pnl_amount > 0:
-            # Calculate profit as percentage of investment
-            if investment_amount > 0:
-                profit_pct = pnl_amount / investment_amount
-                self.limits["profit_today"] += profit_pct
-            else:
-                # If no investment amount, add absolute profit
-                self.limits["profit_today"] += pnl_amount
-            if investment_amount > 0:
-                log_info(f"Profit recorded: {pnl_amount:.2f} ({profit_pct*100:.2f}%)")
-            else:
-                log_info(f"Profit recorded: {pnl_amount:.2f}")
-        elif pnl_amount < 0:
-            # Calculate loss as percentage of investment
-            if investment_amount > 0:
-                loss_pct = abs(pnl_amount) / investment_amount
-                self.limits["loss_today"] += loss_pct
-                log_info(f"Loss recorded: {abs(pnl_amount):.2f} ({loss_pct*100:.2f}%)")
-            else:
-                # If no investment amount, add absolute loss
-                self.limits["loss_today"] += abs(pnl_amount)
-                log_info(f"Loss recorded: {abs(pnl_amount):.2f}")
-        
-        self._save_limits(self.limits)
+            if pnl_amount > 0:
+                if investment_amount > 0:
+                    profit_pct = pnl_amount / investment_amount
+                    self.limits["profit_today"] += profit_pct
+                    log_info(f"Profit recorded: {pnl_amount:.2f} ({profit_pct*100:.2f}%)")
+                else:
+                    self.limits["profit_today"] += pnl_amount
+                    log_info(f"Profit recorded: {pnl_amount:.2f}")
+            elif pnl_amount < 0:
+                if investment_amount > 0:
+                    loss_pct = abs(pnl_amount) / investment_amount
+                    self.limits["loss_today"] += loss_pct
+                    log_info(f"Loss recorded: {abs(pnl_amount):.2f} ({loss_pct*100:.2f}%)")
+                else:
+                    self.limits["loss_today"] += abs(pnl_amount)
+                    log_info(f"Loss recorded: {abs(pnl_amount):.2f}")
+
+            self._save_limits(self.limits)
     
     def get_limits_status(self) -> Dict:
         """Get current limits status"""
