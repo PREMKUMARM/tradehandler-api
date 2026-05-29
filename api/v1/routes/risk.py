@@ -6,6 +6,11 @@ from pydantic import BaseModel
 
 from core.exceptions import ValidationError
 from schemas.support_ops import KillSwitchUpdate
+from services.live_sizing_funds import (
+    get_all_live_sizing_snapshots,
+    get_live_sizing_snapshot,
+    set_live_sizing_allocated,
+)
 from services.paper_funds import (
     get_all_fund_snapshots,
     get_fund_snapshot,
@@ -54,6 +59,11 @@ class SegmentPaperFundsUpdate(BaseModel):
     allocated: float
 
 
+class SegmentLiveSizingFundsUpdate(BaseModel):
+    segment: str
+    allocated: float
+
+
 class SegmentPaperSegmentBody(BaseModel):
     segment: str
 
@@ -66,8 +76,27 @@ def get_paper_trading_segments():
             "segments": get_segment_paper_modes(),
             "paper_trading_env_locks_ui": paper_trading_env_locks_ui(),
             "funds": get_all_fund_snapshots(),
+            "live_sizing_funds": get_all_live_sizing_snapshots(),
         }
     }
+
+
+@router.get("/live-sizing/funds")
+def get_live_sizing_funds(segment: Optional[str] = None):
+    """Virtual fund used for qty sizing when segment is in live (not paper) mode."""
+    if segment:
+        return {"data": get_live_sizing_snapshot(segment)}
+    return {"data": get_all_live_sizing_snapshots()}
+
+
+@router.post("/live-sizing/funds")
+def post_live_sizing_funds(body: SegmentLiveSizingFundsUpdate):
+    """Set virtual sizing capital for live commodity/nifty/crypto orders."""
+    try:
+        snap = set_live_sizing_allocated(body.segment, body.allocated)
+    except ValueError as e:
+        raise ValidationError(message=str(e), field="allocated") from e
+    return {"data": snap}
 
 
 @router.get("/paper-trading/funds")

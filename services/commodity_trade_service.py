@@ -371,6 +371,38 @@ def _commodity_risk_capital(margin: float, cfg_capital: float) -> float:
     )
 
 
+def _enrich_preview_execution_fields(
+    payload: Dict[str, Any],
+    *,
+    trade_plan: Optional[Dict[str, Any]],
+    margin: float,
+    cfg_capital: float,
+) -> None:
+    """Attach sizing capital source and Kite order preview for UI."""
+    if not trade_plan:
+        return
+    from services.paper_funds import describe_sizing_capital_source
+    from services.paper_trading import is_paper_mode_for_segment
+    from services.kite_order_preview import build_kite_order_preview
+
+    paper_mode = bool(payload.get("paper_trading_mode"))
+    cap, source = describe_sizing_capital_source(
+        "commodity",
+        margin_fallback=margin,
+        cfg_capital=float(cfg_capital or 100000),
+    )
+    payload["sizing_capital_inr"] = round(cap, 2)
+    payload["sizing_capital_source"] = source
+    kite_margin = None if paper_mode else (margin if margin > 0 else None)
+    payload["kite_order_preview"] = build_kite_order_preview(
+        trade_plan,
+        paper_mode=paper_mode,
+        sizing_capital_inr=cap,
+        sizing_capital_source=source,
+        kite_margin_inr=kite_margin,
+    )
+
+
 def _validate_trade_plan(
     plan: Dict[str, Any],
     capital: float,
@@ -563,7 +595,7 @@ def _preview_trade_impl(
     )
 
     prod = get_active_product()
-    return {
+    out = {
         "can_place": can_place and not paper_mode,
         "can_execute": can_execute,
         "checklist_ready": checklist_ready,
@@ -579,6 +611,10 @@ def _preview_trade_impl(
         "future_symbol": prod.future_symbol,
         "product_label": prod.label,
     }
+    _enrich_preview_execution_fields(
+        out, trade_plan=trade_plan, margin=margin, cfg_capital=float(cfg.trading_capital or 100000)
+    )
+    return out
 
 
 def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
@@ -676,7 +712,13 @@ def get_checklist_live(
         }
     validation = live.get("validation")
     trade_plan = live.get("trade_plan")
-    return {
+    try:
+        from services.paper_trading import is_paper_mode_for_segment
+
+        paper_mode = is_paper_mode_for_segment("commodity")
+    except Exception:
+        paper_mode = False
+    out = {
         "connected": True,
         "message": kite_msg,
         "step_statuses": live["step_statuses"],
@@ -688,9 +730,14 @@ def get_checklist_live(
         "can_place": _resolve_can_place(trade_plan, validation, market_open),
         "market_open": market_open,
         "allow_test_place": allow_offhours_commodity_place(),
+        "paper_trading_mode": paper_mode,
         "nifty_spot": live.get("nifty_spot"),
         "data_source": live.get("data_source"),
     }
+    _enrich_preview_execution_fields(
+        out, trade_plan=trade_plan, margin=margin, cfg_capital=float(cfg.trading_capital or 100000)
+    )
+    return out
 
 
 def place_gtt_for_plan(

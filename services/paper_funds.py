@@ -358,7 +358,7 @@ def resolve_capital_for_segment(
     margin_fallback: float = 0.0,
     cfg_capital: float = 100_000.0,
 ) -> float:
-    """Trading capital for sizing: paper available balance, else live margin."""
+    """Trading capital for sizing: paper available balance, else live virtual fund or margin."""
     from services.paper_trading import is_paper_mode_for_segment
 
     if is_paper_mode_for_segment(segment):
@@ -366,9 +366,45 @@ def resolve_capital_for_segment(
         if avail > 0:
             return avail
         return get_allocated_amount(segment)
+    try:
+        from services.live_sizing_funds import get_live_sizing_amount
+
+        virtual = get_live_sizing_amount(segment)
+        if virtual > 0:
+            return virtual
+    except Exception:
+        pass
     if margin_fallback > 0:
         return margin_fallback
     return cfg_capital
+
+
+def describe_sizing_capital_source(
+    segment: str,
+    *,
+    margin_fallback: float = 0.0,
+    cfg_capital: float = 100_000.0,
+) -> tuple[float, str]:
+    """Return (capital_inr, source_label) used for qty sizing."""
+    from services.paper_trading import is_paper_mode_for_segment
+
+    seg = normalize_segment(segment)
+    if is_paper_mode_for_segment(seg):
+        avail = get_available_balance(seg)
+        if avail > 0:
+            return avail, "paper available balance"
+        return get_allocated_amount(seg), "paper allocated fund"
+    try:
+        from services.live_sizing_funds import get_live_sizing_amount
+
+        virtual = get_live_sizing_amount(seg)
+        if virtual > 0:
+            return virtual, "live virtual sizing fund"
+    except Exception:
+        pass
+    if margin_fallback > 0:
+        return margin_fallback, "Kite available margin"
+    return cfg_capital, "agent trading_capital default"
 
 
 def entry_cost_from_payload(payload: Dict[str, Any], fill_price: Optional[float] = None) -> float:
