@@ -49,13 +49,14 @@ def register_exit_trail(
         INSERT INTO exit_trails (
             created_at, updated_at, segment, entry_order_id, gtt_trigger_id,
             tradingsymbol, exchange, product, quantity, entry_price,
-            stop_loss, target, peak_ltp, trail_active, paper, paper_order_id, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'open')
+            stop_loss, target, initial_target, peak_ltp, trail_active, paper, paper_order_id, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'open')
         ON CONFLICT(entry_order_id) DO UPDATE SET
             updated_at = excluded.updated_at,
             gtt_trigger_id = COALESCE(excluded.gtt_trigger_id, exit_trails.gtt_trigger_id),
             stop_loss = excluded.stop_loss,
             target = excluded.target,
+            initial_target = COALESCE(excluded.initial_target, exit_trails.initial_target),
             status = 'open'
         """,
         (
@@ -70,6 +71,7 @@ def register_exit_trail(
             int(quantity),
             float(entry_price),
             float(stop_loss),
+            float(target),
             float(target),
             float(entry_price),
             1 if paper else 0,
@@ -87,7 +89,7 @@ def list_open_exit_trails() -> List[Dict[str, Any]]:
     cur = conn.execute(
         """
         SELECT id, created_at, segment, entry_order_id, gtt_trigger_id, tradingsymbol, exchange,
-               product, quantity, entry_price, stop_loss, target, peak_ltp,
+               product, quantity, entry_price, stop_loss, target, initial_target, peak_ltp,
                trail_active, paper, paper_order_id, status, updated_at
         FROM exit_trails
         WHERE status = 'open'
@@ -116,6 +118,18 @@ def update_exit_trail_levels(
         WHERE id = ?
         """,
         (_now(), float(stop_loss), float(target), float(peak_ltp), 1 if trail_active else 0, trail_id),
+    )
+    conn.commit()
+
+
+def update_exit_trail_gtt(trail_id: int, gtt_trigger_id: str) -> None:
+    from database.connection import get_database
+
+    db = get_database()
+    conn = db.get_connection()
+    conn.execute(
+        "UPDATE exit_trails SET updated_at = ?, gtt_trigger_id = ? WHERE id = ?",
+        (_now(), str(gtt_trigger_id), trail_id),
     )
     conn.commit()
 

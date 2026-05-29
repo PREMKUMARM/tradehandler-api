@@ -543,6 +543,6 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
 
 def gtt_triggers_from_plan(plan: Dict[str, Any]) -> Tuple[float, float, float]:
     """OCO trigger prices and last_price for GTT placement."""
-    from services.commodity_indicator_plan import gtt_triggers_from_plan as _mcx_gtt
+    from services.trading_agents.gtt_agent import gtt_triggers_from_plan as _gtt
 
-    return _mcx_gtt(plan)
+    return _gtt(plan)

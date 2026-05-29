@@ -476,6 +476,11 @@ class DatabaseConnection:
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        try:
+            cursor.execute("ALTER TABLE exit_trails ADD COLUMN initial_target REAL")
+        except sqlite3.OperationalError:
+            pass
+
         for _col, _typ in (
             ("stoploss", "REAL"),
             ("target", "REAL"),

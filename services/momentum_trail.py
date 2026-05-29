@@ -61,6 +61,21 @@ def should_activate_trail(
     return ltp >= target and ltp > entry
 
 
+def gtt_tp_cap_for_trail(entry: float, target: float) -> float:
+    """
+    Wide broker TP so the OCO does not exit at the first target.
+    Momentum trail monitor exits / extends via SL ratchet instead.
+    """
+    entry = float(entry or 0)
+    target = float(target or 0)
+    if entry <= 0 or target <= 0:
+        return target
+    gain = max(0.0, target - entry)
+    mult = _env_float("MOMENTUM_TRAIL_GTT_TP_MULT", 1.35)
+    cap = max(target * mult, target + gain * 1.5, entry + gain * 3.0)
+    return round_to_tick(cap)
+
+
 def compute_trailed_levels(
     *,
     entry: float,
@@ -95,7 +110,9 @@ def compute_trailed_levels(
         new_tp = round_to_tick(max(current_tp, peak + extension))
         note = f"Trail peak ₹{peak:.2f} — SL ₹{new_sl:.2f} TP ₹{new_tp:.2f}"
 
-    new_sl = min(new_sl, ltp - 0.05) if ltp > new_sl + 0.05 else new_sl
+    new_sl = min(new_sl, ltp - 0.05) if ltp > 0.05 else new_sl
+    if ltp > 0 and new_sl >= ltp:
+        new_sl = round_to_tick(max(entry, ltp - max(0.10, ltp * 0.002)))
     new_tp = max(new_tp, ltp + 0.05)
     return new_sl, new_tp, peak, True, note
 

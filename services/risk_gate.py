@@ -132,20 +132,29 @@ def _within_session_for_exchange(exchange: str) -> Tuple[bool, str]:
     ex = (exchange or "").upper()
     if ex == "MCX":
         try:
-            from services.commodity_config import MCX_OPEN_MINUTES, MCX_CLOSE_MINUTES
+            from services.commodity_config import (
+                MCX_OPEN_MINUTES,
+                commodity_trading_cutoff_label,
+                commodity_trading_cutoff_minutes,
+            )
 
             now = datetime.now(ZoneInfo("Asia/Kolkata"))
             if now.weekday() > 4:
-                return False, "Outside trading session (IST 09:00-23:30)"
+                return False, "Outside trading session (IST 09:00-cutoff)"
             minutes = now.hour * 60 + now.minute
-            if MCX_OPEN_MINUTES <= minutes <= MCX_CLOSE_MINUTES:
+            cutoff = commodity_trading_cutoff_minutes()
+            if MCX_OPEN_MINUTES <= minutes < cutoff:
                 return True, "ok"
-            return False, "Outside trading session (IST 09:00-23:30)"
+            if minutes >= cutoff:
+                return False, (
+                    f"Commodity trading closed for the day (cutoff {commodity_trading_cutoff_label()} IST)"
+                )
+            return False, "Outside trading session (IST 09:00-cutoff)"
         except Exception:
             now_t = datetime.now(ZoneInfo("Asia/Kolkata")).time()
-            if dt_time(9, 0) <= now_t <= dt_time(23, 30):
+            if dt_time(9, 0) <= now_t <= dt_time(23, 15):
                 return True, "ok"
-            return False, "Outside trading session (IST 09:00-23:30)"
+            return False, "Outside trading session (IST 09:00-23:15)"
     return _within_session_ist()
 
 

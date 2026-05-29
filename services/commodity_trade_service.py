@@ -818,7 +818,16 @@ def place_gtt_for_plan(
     result["trade_plan"] = plan
 
     product = resolve_commodity_product(plan)
-    sl_trigger, tp_trigger, last_price = gtt_triggers_from_plan(plan)
+    gtt_plan = dict(plan)
+    try:
+        from services.momentum_trail import get_momentum_trail_config, gtt_tp_cap_for_trail
+
+        if get_momentum_trail_config().enabled and entry_limit > 0:
+            gtt_plan["target_premium"] = gtt_tp_cap_for_trail(entry_limit, tgt_prem)
+    except Exception:
+        pass
+    sl_trigger, tp_trigger, last_price = gtt_triggers_from_plan(gtt_plan)
+    gtt_tp = float(gtt_plan.get("target_premium") or tgt_prem)
     if fill_price is not None and fill_price > 0:
         last_price = fill_price
 
@@ -830,7 +839,7 @@ def place_gtt_for_plan(
             "trigger_prices": [sl_trigger, tp_trigger],
             "last_price": last_price,
             "stop_loss_price": sl_prem,
-            "target_price": tgt_prem,
+            "target_price": gtt_tp,
             "quantity": qty,
             "transaction_type": "SELL",
             "product": product,
@@ -878,7 +887,7 @@ def place_gtt_for_plan(
                 "trigger_prices": [sl_trigger_retry, tp_trigger_retry],
                 "last_price": last_price,
                 "stop_loss_price": sl_prem,
-                "target_price": tgt_prem,
+                "target_price": gtt_tp,
                 "quantity": qty,
                 "transaction_type": "SELL",
                 "product": product,
@@ -957,6 +966,13 @@ def place_trade(
         return result
 
     market_open = is_mcx_session_open()
+    from services.commodity_config import is_commodity_new_trading_allowed, commodity_trading_cutoff_label
+
+    if not is_commodity_new_trading_allowed() and not allow_offhours_commodity_place():
+        result["errors"].append(
+            f"Commodity trading closed for the day (cutoff {commodity_trading_cutoff_label()} IST)"
+        )
+        return result
     offhours_test = allow_offhours_commodity_place()
     from services.watch_execute import resolve_can_execute
 

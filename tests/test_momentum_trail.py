@@ -2,6 +2,7 @@
 from services.momentum_trail import (
     compute_trailed_levels,
     get_momentum_trail_config,
+    gtt_tp_cap_for_trail,
     should_activate_trail,
 )
 
@@ -52,3 +53,23 @@ def test_trail_ratchet_on_new_high():
     assert peak2 == 435.0
     assert sl2 >= sl1
     assert tp2 >= tp1
+
+
+def test_gtt_tp_cap_above_strategy_target():
+    cap = gtt_tp_cap_for_trail(408.55, 420.85)
+    assert cap > 420.85
+
+
+def test_trailed_sl_stays_below_ltp_on_pullback():
+    cfg = get_momentum_trail_config()
+    sl, _, _, active, _ = compute_trailed_levels(
+        entry=408.55,
+        peak=428.4,
+        ltp=416.0,
+        current_sl=404.95,
+        current_tp=420.85,
+        trail_active=True,
+        cfg=cfg,
+    )
+    assert active is True
+    assert sl < 416.0

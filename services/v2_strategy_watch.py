@@ -25,6 +25,11 @@ from zoneinfo import ZoneInfo
 from agent.ws_manager import broadcast_agent_update
 from services import v2_trade_service
 from services.push.push_service import push_service
+from services.watch_pending_invalidation import (
+    is_filled_order_status,
+    is_open_order_status,
+    pending_entry_invalidated,
+)
 from utils.logger import log_error, log_info, log_warning
 from agent.config import get_agent_config
 
@@ -333,26 +338,24 @@ class V2StrategyWatch:
             return 10
 
     def _setup_invalidated(self, plan: Dict[str, Any]) -> tuple[bool, str]:
-        """B-mode: cancel only when setup invalidates (not time-based)."""
-        if self._last_paper_mode:
-            return False, ""
-        if not plan:
-            return True, "No plan (setup invalidated)"
-        if plan.get("entry_ready") is not True:
-            return True, str(plan.get("entry_block_reason") or "Entry no longer confirmed")
+        """Cancel pending LIMIT when live setup no longer matches the placed entry."""
         try:
             from services.v2_order_guard import min_entry_confirmation_score
 
             min_score = int(min_entry_confirmation_score() or 65)
         except Exception:
             min_score = 65
-        score = int(plan.get("entry_confirmation_score") or 0)
-        if score < min_score:
-            return True, f"Score dropped to {score} (<{min_score})"
-        block = plan.get("entry_block_reason")
-        if block:
-            return True, str(block)
-        return False, ""
+        with _lock:
+            pending_plan = self._pending_trade_plan
+            pending_sym = self._pending_symbol
+            paper = self._last_paper_mode
+        return pending_entry_invalidated(
+            pending_plan=pending_plan,
+            pending_symbol=pending_sym,
+            current_plan=plan,
+            min_score=min_score,
+            paper_mode=paper,
+        )
 
     def _order_status(self, order_id: str) -> Optional[str]:
         oid = (order_id or "").strip()
@@ -399,10 +402,34 @@ class V2StrategyWatch:
             self._gtt_attach_in_progress = True
             plan = copy.deepcopy(self._pending_trade_plan) if self._pending_trade_plan else None
             sym = self._pending_symbol
+            live_plan = copy.deepcopy(self._last_trade_plan) if self._last_trade_plan else None
             disarm = self._cfg.disarm_after_place
             self._pending_entry_order_id = None
             self._pending_entry_placed_at = None
             self._pending_trade_plan = None
+
+        try:
+            from services.v2_order_guard import min_entry_confirmation_score
+
+            min_score = int(min_entry_confirmation_score() or 65)
+        except Exception:
+            min_score = 65
+        invalid, why = pending_entry_invalidated(
+            pending_plan=plan,
+            pending_symbol=sym,
+            current_plan=live_plan,
+            min_score=min_score,
+            paper_mode=False,
+        )
+        if invalid:
+            await self._abort_stale_fill(
+                entry_id=entry_id,
+                plan=plan,
+                sym=sym,
+                reason=why,
+                disarm=disarm,
+            )
+            return
 
         gtt_id: Optional[str] = None
         gtt_detail = ""
@@ -463,6 +490,86 @@ class V2StrategyWatch:
             with _lock:
                 self._gtt_attach_in_progress = False
 
+    async def _abort_stale_fill(
+        self,
+        *,
+        entry_id: Optional[str],
+        plan: Optional[Dict[str, Any]],
+        sym: Optional[str],
+        reason: str,
+        disarm: bool = False,
+    ) -> None:
+        with _lock:
+            if self._gtt_attach_in_progress:
+                return
+            self._gtt_attach_in_progress = True
+            self._pending_entry_order_id = None
+            self._pending_entry_placed_at = None
+            self._pending_trade_plan = None
+        try:
+            fill_px = self._order_fill_price(entry_id or "") if entry_id else None
+            exit_id = None
+            exit_err = None
+            if plan and sym and not str(entry_id or "").upper().startswith("PAPER-"):
+                qty = int(plan.get("quantity") or 1)
+                try:
+                    from agent.tools.kite_tools import place_order_tool
+
+                    result = await asyncio.to_thread(
+                        place_order_tool.invoke,
+                        {
+                            "tradingsymbol": sym,
+                            "exchange": plan.get("exchange") or "NFO",
+                            "transaction_type": "SELL",
+                            "quantity": qty,
+                            "order_type": "MARKET",
+                            "product": plan.get("product") or "MIS",
+                            "segment": "nifty",
+                        },
+                    )
+                    if isinstance(result, dict) and result.get("status") == "success":
+                        exit_id = result.get("order_id")
+                    else:
+                        exit_err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+                except Exception as exc:
+                    exit_err = str(exc)
+
+            fill_bit = f" @ ₹{fill_px:.2f}" if fill_px else ""
+            if exit_id:
+                detail = f"market exit {exit_id}"
+                kind = "auto_stale_abort"
+            elif exit_err:
+                detail = f"exit failed — {exit_err[:120]}"
+                kind = "auto_stale_abort_failed"
+            else:
+                detail = "no exit placed"
+                kind = "auto_stale_abort_failed"
+
+            with _lock:
+                self._pending_gtt_trigger_id = None
+                self._pending_symbol = None
+                if disarm:
+                    self._armed = False
+
+            self._push_event(
+                WatchEvent(
+                    at=datetime.now(IST).isoformat(),
+                    kind=kind,
+                    message=(
+                        f"Stale fill aborted — {reason[:120]}"
+                        f" · entry {entry_id}{fill_bit} · {detail}"
+                        + (" (watch disarmed)" if disarm else "")
+                    )[:240],
+                    tradingsymbol=sym,
+                )
+            )
+            log_warning(
+                f"[V2Watch] stale fill abort entry={entry_id} sym={sym} reason={reason} exit={exit_id}"
+            )
+        finally:
+            with _lock:
+                self._gtt_attach_in_progress = False
+
     def _cancel_pending(self, *, reason: str, rollback_slot: bool = True) -> None:
         with _lock:
             entry_id = self._pending_entry_order_id
@@ -497,7 +604,13 @@ class V2StrategyWatch:
             from agent.tools.kite_tools import cancel_order_tool, delete_gtt_tool
 
             if entry_id:
-                cancel_order_tool.invoke({"order_id": entry_id, "variety": "regular"})
+                st = (self._order_status(entry_id) or "").upper()
+                if is_filled_order_status(st):
+                    log_warning(
+                        f"[V2Watch] skip cancel — entry {entry_id} already {st}; use stale abort"
+                    )
+                elif st not in ("CANCELLED", "REJECTED"):
+                    cancel_order_tool.invoke({"order_id": entry_id, "variety": "regular"})
             if gtt_id:
                 try:
                     delete_gtt_tool.invoke({"trigger_id": int(str(gtt_id))})
@@ -796,12 +909,27 @@ class V2StrategyWatch:
             with _lock:
                 if not self._armed:
                     break
+            fire_signal = False
+            try_autonomous = False
+            preview = None
+            plan: Dict[str, Any] = {}
+            can_place = False
             try:
                 from services.pnl_sync import maybe_sync_pnl_for_watch
 
                 maybe_sync_pnl_for_watch("v2")
 
                 session_open = v2_trade_service.is_market_session_open()
+
+                if session_open or self._last_paper_mode:
+                    (
+                        fire_signal,
+                        try_autonomous,
+                        preview,
+                        plan,
+                        can_place,
+                    ) = await asyncio.to_thread(self._evaluate_sync)
+
                 if self._pending_entry_order_id:
                     if str(self._pending_entry_order_id).upper().startswith("PAPER-"):
                         from services.paper_order_guard import is_paper_position_open
@@ -816,55 +944,61 @@ class V2StrategyWatch:
                     elif not session_open:
                         self._cancel_pending(reason="Market session closed")
                     else:
-                        # Cancel stale LIMIT entry if it sits too long unfilled.
-                        try:
-                            timeout_sec = float(os.getenv("V2_WATCH_ENTRY_TIMEOUT_SEC", "600") or 600)
-                            if self._pending_entry_placed_at and timeout_sec > 0:
-                                placed_at = datetime.fromisoformat(str(self._pending_entry_placed_at))
-                                age = (datetime.now(IST) - placed_at).total_seconds()
-                                if age > timeout_sec:
-                                    st = self._order_status(self._pending_entry_order_id)
-                                    if st in (None, "OPEN", "TRIGGER PENDING", "PENDING"):
-                                        self._cancel_pending(reason=f"Entry timeout ({int(age)}s)")
-                        except Exception as exc:
-                            log_warning(f"[V2Watch] entry timeout parse failed: {exc}")
-                        from services.watch_reconcile import reconcile_pending_watch
-
-                        with _lock:
-                            rec = reconcile_pending_watch(
-                                entry_order_id=self._pending_entry_order_id,
-                                gtt_trigger_id=self._pending_gtt_trigger_id,
-                                pending_trade_plan=self._pending_trade_plan,
-                                order_status=self._order_status,
-                            )
-                        if rec.get("clear_gtt"):
-                            with _lock:
-                                self._pending_gtt_trigger_id = None
+                        invalid, why = self._setup_invalidated(plan)
                         status = self._order_status(self._pending_entry_order_id)
-                        if status in ("COMPLETE", "EXECUTED") or rec.get("attach_gtt"):
-                            await self._on_entry_filled()
-                        elif status in ("CANCELLED", "REJECTED") or rec.get("clear_entry"):
-                            self._cancel_pending(reason=f"Order {status.lower() if status else 'reconciled'}")
+                        if invalid:
+                            if is_open_order_status(status):
+                                self._cancel_pending(reason=why)
+                            elif is_filled_order_status(status):
+                                with _lock:
+                                    entry_id = self._pending_entry_order_id
+                                    stale_plan = (
+                                        copy.deepcopy(self._pending_trade_plan)
+                                        if self._pending_trade_plan
+                                        else None
+                                    )
+                                    stale_sym = self._pending_symbol
+                                    disarm = self._cfg.disarm_after_place
+                                await self._abort_stale_fill(
+                                    entry_id=entry_id,
+                                    plan=stale_plan,
+                                    sym=stale_sym,
+                                    reason=why,
+                                    disarm=disarm,
+                                )
+                        if self._pending_entry_order_id:
+                            try:
+                                timeout_sec = float(os.getenv("V2_WATCH_ENTRY_TIMEOUT_SEC", "600") or 600)
+                                if self._pending_entry_placed_at and timeout_sec > 0:
+                                    placed_at = datetime.fromisoformat(str(self._pending_entry_placed_at))
+                                    age = (datetime.now(IST) - placed_at).total_seconds()
+                                    if age > timeout_sec:
+                                        st = self._order_status(self._pending_entry_order_id)
+                                        if is_open_order_status(st):
+                                            self._cancel_pending(reason=f"Entry timeout ({int(age)}s)")
+                            except Exception as exc:
+                                log_warning(f"[V2Watch] entry timeout parse failed: {exc}")
+                            from services.watch_reconcile import reconcile_pending_watch
+
+                            with _lock:
+                                rec = reconcile_pending_watch(
+                                    entry_order_id=self._pending_entry_order_id,
+                                    gtt_trigger_id=self._pending_gtt_trigger_id,
+                                    pending_trade_plan=self._pending_trade_plan,
+                                    order_status=self._order_status,
+                                )
+                            if rec.get("clear_gtt"):
+                                with _lock:
+                                    self._pending_gtt_trigger_id = None
+                            status = self._order_status(self._pending_entry_order_id)
+                            if status in ("COMPLETE", "EXECUTED") or rec.get("attach_gtt"):
+                                await self._on_entry_filled()
+                            elif status in ("CANCELLED", "REJECTED") or rec.get("clear_entry"):
+                                self._cancel_pending(
+                                    reason=f"Order {status.lower() if status else 'reconciled'}"
+                                )
 
                 if session_open or self._last_paper_mode:
-                    (
-                        fire_signal,
-                        try_autonomous,
-                        preview,
-                        plan,
-                        can_place,
-                    ) = await asyncio.to_thread(self._evaluate_sync)
-                    if self._pending_entry_order_id and plan:
-                        pend = str(self._pending_entry_order_id or "")
-                        skip_inv = pend.upper().startswith("PAPER-")
-                        if skip_inv:
-                            from services.paper_order_guard import is_paper_position_open
-
-                            skip_inv = is_paper_position_open(pend)
-                        if not skip_inv:
-                            invalid, why = self._setup_invalidated(plan)
-                            if invalid:
-                                self._cancel_pending(reason=why)
                     if fire_signal and preview is not None:
                         await self._on_signal_ready(preview, plan, can_place, try_autonomous)
                     elif try_autonomous and preview is not None:

@@ -235,6 +235,13 @@ async def startup_event():
     except Exception as e:
         log_error(f"[Startup] Exit trail monitor failed (API still starting): {e}")
 
+    try:
+        from services.commodity_eod_flatten import run_commodity_eod_loop
+
+        asyncio.create_task(run_commodity_eod_loop())
+    except Exception as e:
+        log_error(f"[Startup] Commodity EOD flatten loop failed (API still starting): {e}")
+
     # Error handlers + metrics
     try:
         from utils.performance_monitor import start_metrics_cleanup

@@ -14,13 +14,56 @@ EXCHANGE = "MCX"
 COMMODITY_PRODUCT = "NRML"
 DEFAULT_NUM_LOTS = 1
 
-# MCX session (IST)
+# MCX exchange hours (IST) — quotes / exchange technically open until 23:30
 MCX_OPEN_MINUTES = 9 * 60
 MCX_CLOSE_MINUTES = 23 * 60 + 30
 OR_START_HOUR = 9
 OR_START_MINUTE = 15
 OR_END_HOUR = 9
 OR_END_MINUTE = 30
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def commodity_trading_cutoff_minutes() -> int:
+    """Last minute we allow new commodity entries (default 23:15 IST)."""
+    hour = _env_int("COMMODITY_TRADING_CUTOFF_HOUR", 23)
+    minute = _env_int("COMMODITY_TRADING_CUTOFF_MINUTE", 15)
+    hour = max(0, min(23, hour))
+    minute = max(0, min(59, minute))
+    return hour * 60 + minute
+
+
+def commodity_trading_cutoff_label() -> str:
+    mins = commodity_trading_cutoff_minutes()
+    return f"{mins // 60:02d}:{mins % 60:02d}"
+
+
+def _ist_minutes_now() -> tuple[int, bool]:
+    now = datetime.now(IST)
+    return now.hour * 60 + now.minute, now.weekday() <= 4
+
+
+def is_past_commodity_trading_cutoff() -> bool:
+    minutes, is_weekday = _ist_minutes_now()
+    if not is_weekday:
+        return True
+    return minutes >= commodity_trading_cutoff_minutes()
+
+
+def is_commodity_new_trading_allowed() -> bool:
+    """New commodity entries / autonomous watch placement."""
+    minutes, is_weekday = _ist_minutes_now()
+    if not is_weekday:
+        return False
+    if minutes < MCX_OPEN_MINUTES:
+        return False
+    return minutes < commodity_trading_cutoff_minutes()
 
 
 def future_symbol() -> str:
@@ -51,10 +94,10 @@ DEFAULT_LOT_SIZE = int(os.getenv("COMMODITY_UNITS_PER_LOT", "10") or 10)
 
 
 def is_mcx_session_open() -> bool:
-    now = datetime.now(IST)
-    if now.weekday() > 4:
+    """Exchange session for quotes (09:00–23:30 IST Mon–Fri)."""
+    minutes, is_weekday = _ist_minutes_now()
+    if not is_weekday:
         return False
-    minutes = now.hour * 60 + now.minute
     return MCX_OPEN_MINUTES <= minutes < MCX_CLOSE_MINUTES
 
 

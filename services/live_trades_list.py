@@ -465,20 +465,16 @@ def list_live_trades(
         need_quotes = [
             (t["symbol"], t["exchange"])
             for t in trades
-            if t.get("status") in ("open", "pending") and t.get("ltp") is None
+            if t.get("status") in ("open", "pending")
         ]
         quotes = _fetch_quotes(need_quotes)
         for t in trades:
             if t.get("status") not in ("open", "pending"):
                 continue
             sym = t.get("symbol") or ""
-            if t.get("ltp") is None and sym in quotes:
+            if sym in quotes:
                 t["ltp"] = quotes[sym]
-            if (
-                t.get("pnl") is None
-                and t.get("entry_price") is not None
-                and t.get("ltp") is not None
-            ):
+            if t.get("entry_price") is not None and t.get("ltp") is not None:
                 pnl = _premium_pnl(
                     float(t["entry_price"]),
                     float(t["ltp"]),

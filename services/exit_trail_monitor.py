@@ -13,6 +13,7 @@ from services.exit_trail_store import (
     close_exit_trail,
     list_open_exit_trails,
     sync_paper_order_levels,
+    update_exit_trail_gtt,
     update_exit_trail_levels,
 )
 from services.momentum_trail import (
@@ -95,6 +96,7 @@ class ExitTrailMonitor:
             entry = float(t.get("entry_price") or 0)
             sl = float(t.get("stop_loss") or 0)
             tp = float(t.get("target") or 0)
+            activation_target = float(t.get("initial_target") or tp or 0)
             peak = float(t.get("peak_ltp") or entry)
             trail_active = bool(t.get("trail_active"))
 
@@ -120,13 +122,25 @@ class ExitTrailMonitor:
                 self._close_trail(t, ltp, "SL")
                 continue
 
+            if not trail_active:
+                from services.momentum_trail import should_activate_trail
+
+                if not should_activate_trail(
+                    ltp, entry, activation_target, trail_active=False
+                ):
+                    if ltp > peak:
+                        update_exit_trail_levels(
+                            tid, stop_loss=sl, target=tp, peak_ltp=ltp, trail_active=False
+                        )
+                    continue
+
             new_sl, new_tp, new_peak, activated, note = compute_trailed_levels(
                 entry=entry,
                 peak=peak,
                 ltp=ltp,
                 current_sl=sl,
                 current_tp=tp,
-                trail_active=trail_active,
+                trail_active=trail_active or ltp >= activation_target,
                 cfg=cfg,
             )
 
@@ -154,9 +168,11 @@ class ExitTrailMonitor:
                 if paper_oid:
                     sync_paper_order_levels(paper_oid, new_sl, new_tp)
             elif gtt_id:
-                ok = self._modify_live_gtt(t, gtt_id, new_sl, new_tp, ltp)
+                ok = self._sync_live_gtt(t, gtt_id, new_sl, new_tp, ltp)
                 if not ok:
-                    log_warning(f"[ExitTrailMonitor] GTT modify failed for {gtt_id}")
+                    log_warning(
+                        f"[ExitTrailMonitor] could not sync GTT {gtt_id} for {t.get('tradingsymbol')}"
+                    )
 
             if note:
                 log_info(f"[ExitTrailMonitor] {t.get('tradingsymbol')} {note}")
@@ -180,6 +196,30 @@ class ExitTrailMonitor:
         except Exception as e:
             log_warning(f"[ExitTrailMonitor] quotes failed: {e}")
         return out
+
+    def _sync_live_gtt(
+        self,
+        trail: Dict[str, Any],
+        gtt_id: str,
+        sl_prem: float,
+        tp_prem: float,
+        ltp: float,
+    ) -> bool:
+        if self._modify_live_gtt(trail, gtt_id, sl_prem, tp_prem, ltp):
+            return True
+        try:
+            from utils.kite_utils import get_kite_instance
+
+            kite = get_kite_instance(skip_validation=True)
+            for g in kite.get_gtts() or []:
+                if str(g.get("id") or "") != str(gtt_id):
+                    continue
+                st = str(g.get("status") or "").lower()
+                if st in ("triggered", "disabled", "cancelled", "expired"):
+                    return False
+        except Exception:
+            pass
+        return self._replace_live_gtt(trail, gtt_id, sl_prem, tp_prem, ltp)
 
     def _modify_live_gtt(
         self,
@@ -216,13 +256,111 @@ class ExitTrailMonitor:
                 "product": product,
             }
         )
-        return res.get("status") == "success"
+        if res.get("status") == "success":
+            return True
+        log_warning(
+            f"[ExitTrailMonitor] GTT modify {gtt_id} rejected: {res.get('error') or res}"
+        )
+        return False
+
+    def _replace_live_gtt(
+        self,
+        trail: Dict[str, Any],
+        old_gtt_id: str,
+        sl_prem: float,
+        tp_prem: float,
+        ltp: float,
+    ) -> bool:
+        from agent.tools.kite_tools import delete_gtt_tool, place_gtt_tool
+        from services.momentum_trail import gtt_triggers_for_levels
+
+        sym = str(trail.get("tradingsymbol") or "")
+        ex = str(trail.get("exchange") or "NFO")
+        product = str(trail.get("product") or "NRML")
+        qty = int(trail.get("quantity") or 1)
+        entry = float(trail.get("entry_price") or ltp)
+        sl_trigger, tp_trigger, last_price = gtt_triggers_for_levels(entry, sl_prem, tp_prem, ltp)
+
+        try:
+            delete_gtt_tool.invoke({"trigger_id": int(str(old_gtt_id))})
+        except Exception as exc:
+            log_warning(f"[ExitTrailMonitor] GTT delete {old_gtt_id} failed: {exc}")
+
+        res = place_gtt_tool.invoke(
+            {
+                "tradingsymbol": sym,
+                "exchange": ex,
+                "trigger_type": "two-leg",
+                "trigger_prices": [sl_trigger, tp_trigger],
+                "last_price": last_price,
+                "stop_loss_price": sl_prem,
+                "target_price": tp_prem,
+                "quantity": qty,
+                "transaction_type": "SELL",
+                "product": product,
+            }
+        )
+        if res.get("status") != "success":
+            log_warning(
+                f"[ExitTrailMonitor] GTT replace failed for {sym}: {res.get('error') or res}"
+            )
+            return False
+        new_id = str(res.get("trigger_id") or "")
+        if new_id:
+            update_exit_trail_gtt(int(trail["id"]), new_id)
+            log_info(f"[ExitTrailMonitor] replaced GTT {old_gtt_id} → {new_id} for {sym}")
+        return True
 
     def _close_trail(self, trail: Dict[str, Any], ltp: float, reason: str) -> None:
         tid = int(trail["id"])
         if bool(trail.get("paper")):
             self._close_paper_trail(trail, ltp, reason)
+        else:
+            self._close_live_trail_if_open(trail, ltp, reason)
         close_exit_trail(tid, reason=reason.lower())
+
+    def _close_live_trail_if_open(
+        self, trail: Dict[str, Any], ltp: float, reason: str
+    ) -> None:
+        sym = str(trail.get("tradingsymbol") or "")
+        if not sym:
+            return
+        try:
+            from utils.kite_utils import get_kite_instance
+
+            kite = get_kite_instance(skip_validation=True)
+            qty = 0
+            for p in kite.positions().get("net", []) or []:
+                if str(p.get("tradingsymbol") or "") == sym:
+                    qty = int(p.get("quantity") or 0)
+                    break
+            if qty <= 0:
+                return
+
+            from agent.tools.kite_tools import place_order_tool
+
+            seg = str(trail.get("segment") or "commodity")
+            res = place_order_tool.invoke(
+                {
+                    "tradingsymbol": sym,
+                    "exchange": trail.get("exchange") or "MCX",
+                    "transaction_type": "SELL",
+                    "quantity": abs(qty),
+                    "order_type": "MARKET",
+                    "product": trail.get("product") or "NRML",
+                    "segment": seg,
+                }
+            )
+            if res.get("status") == "success":
+                log_info(
+                    f"[ExitTrailMonitor] live exit {sym} reason={reason} order={res.get('order_id')}"
+                )
+            else:
+                log_warning(
+                    f"[ExitTrailMonitor] live exit failed {sym}: {res.get('error') or res}"
+                )
+        except Exception as exc:
+            log_warning(f"[ExitTrailMonitor] live exit check failed {sym}: {exc}")
 
     def _close_paper_trail(self, trail: Dict[str, Any], ltp: float, reason: str) -> None:
         from database.connection import get_database

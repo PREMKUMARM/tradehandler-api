@@ -1,4 +1,2 @@
-"""Backward-compatible re-export."""
-from services.watch_setup_status import describe_autonomous_setup
-
-__all__ = ["describe_autonomous_setup"]
+"""Backward-compatible shim — canonical: services.trading_agents.readiness_agent."""
+from services.trading_agents.readiness_agent import *  # noqa: F403

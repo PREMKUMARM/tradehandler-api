@@ -751,7 +751,16 @@ def place_gtt_for_plan(
     result["trade_plan"] = plan
 
     product = resolve_v2_nfo_product(plan)
-    sl_trigger, tp_trigger, last_price = gtt_triggers_from_plan(plan)
+    gtt_plan = dict(plan)
+    try:
+        from services.momentum_trail import get_momentum_trail_config, gtt_tp_cap_for_trail
+
+        if get_momentum_trail_config().enabled and entry_limit > 0:
+            gtt_plan["target_premium"] = gtt_tp_cap_for_trail(entry_limit, tgt_prem)
+    except Exception:
+        pass
+    sl_trigger, tp_trigger, last_price = gtt_triggers_from_plan(gtt_plan)
+    gtt_tp = float(gtt_plan.get("target_premium") or tgt_prem)
     if fill_price is not None and fill_price > 0:
         last_price = fill_price
 
@@ -763,7 +772,7 @@ def place_gtt_for_plan(
             "trigger_prices": [sl_trigger, tp_trigger],
             "last_price": last_price,
             "stop_loss_price": sl_prem,
-            "target_price": tgt_prem,
+            "target_price": gtt_tp,
             "quantity": qty,
             "transaction_type": "SELL",
             "product": product,

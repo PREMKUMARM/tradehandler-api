@@ -32,10 +32,15 @@ from services.commodity_order_guard import (
     autonomous_place_allowed,
     min_entry_confirmation_score,
 )
+from services.watch_pending_invalidation import (
+    is_filled_order_status,
+    is_open_order_status,
+    pending_entry_invalidated,
+)
 from services.push.push_service import push_service
 from utils.logger import log_error, log_info, log_warning
 
-IST = ZoneInfo("Asia/Kolkata")
+from services.commodity_config import IST, commodity_trading_cutoff_label, is_commodity_new_trading_allowed
 
 _MAX_EVENTS = 40
 _DEFAULT_POLL_SEC = 5
@@ -398,20 +403,18 @@ class CommodityStrategyWatch:
         return False
 
     def _setup_invalidated(self, plan: Dict[str, Any]) -> tuple[bool, str]:
-        """B-mode: cancel only when setup invalidates (not time-based)."""
-        if self._last_paper_mode:
-            return False, ""
-        if not plan:
-            return True, "No plan (setup invalidated)"
-        if plan.get("entry_ready") is not True:
-            return True, str(plan.get("entry_block_reason") or "Entry no longer confirmed")
-        score = int(plan.get("entry_confirmation_score") or 0)
-        if score < min_entry_confirmation_score():
-            return True, f"Score dropped to {score} (<{min_entry_confirmation_score()})"
-        block = plan.get("entry_block_reason")
-        if block:
-            return True, str(block)
-        return False, ""
+        """Cancel pending LIMIT when live setup no longer matches the placed entry."""
+        with _lock:
+            pending_plan = self._pending_trade_plan
+            pending_sym = self._pending_symbol
+            paper = self._last_paper_mode
+        return pending_entry_invalidated(
+            pending_plan=pending_plan,
+            pending_symbol=pending_sym,
+            current_plan=plan,
+            min_score=min_entry_confirmation_score(),
+            paper_mode=paper,
+        )
 
     def _order_status(self, order_id: str) -> Optional[str]:
         oid = (order_id or "").strip()
@@ -458,10 +461,28 @@ class CommodityStrategyWatch:
             self._gtt_attach_in_progress = True
             plan = copy.deepcopy(self._pending_trade_plan) if self._pending_trade_plan else None
             sym = self._pending_symbol
+            live_plan = copy.deepcopy(self._last_trade_plan) if self._last_trade_plan else None
             disarm = self._should_disarm_watch()
             self._pending_entry_order_id = None
             self._pending_entry_placed_at = None
             self._pending_trade_plan = None
+
+        invalid, why = pending_entry_invalidated(
+            pending_plan=plan,
+            pending_symbol=sym,
+            current_plan=live_plan,
+            min_score=min_entry_confirmation_score(),
+            paper_mode=False,
+        )
+        if invalid:
+            await self._abort_stale_fill(
+                entry_id=entry_id,
+                plan=plan,
+                sym=sym,
+                reason=why,
+                disarm=disarm,
+            )
+            return
 
         gtt_id: Optional[str] = None
         gtt_detail = ""
@@ -523,6 +544,88 @@ class CommodityStrategyWatch:
             with _lock:
                 self._gtt_attach_in_progress = False
 
+    async def _abort_stale_fill(
+        self,
+        *,
+        entry_id: Optional[str],
+        plan: Optional[Dict[str, Any]],
+        sym: Optional[str],
+        reason: str,
+        disarm: bool = False,
+    ) -> None:
+        """Exit immediately when a LIMIT fills after the setup is no longer valid."""
+        with _lock:
+            if self._gtt_attach_in_progress:
+                return
+            self._gtt_attach_in_progress = True
+            self._pending_entry_order_id = None
+            self._pending_entry_placed_at = None
+            self._pending_trade_plan = None
+        try:
+            fill_px = self._order_fill_price(entry_id or "") if entry_id else None
+            exit_id = None
+            exit_err = None
+            if plan and sym and not str(entry_id or "").upper().startswith("PAPER-"):
+                qty = int(plan.get("quantity") or plan.get("kite_qty") or 1)
+                try:
+                    from agent.tools.kite_tools import place_order_tool
+
+                    result = await asyncio.to_thread(
+                        place_order_tool.invoke,
+                        {
+                            "tradingsymbol": sym,
+                            "exchange": plan.get("exchange") or "MCX",
+                            "transaction_type": "SELL",
+                            "quantity": qty,
+                            "order_type": "MARKET",
+                            "product": plan.get("product") or "NRML",
+                            "segment": "commodity",
+                        },
+                    )
+                    if isinstance(result, dict) and result.get("status") == "success":
+                        exit_id = result.get("order_id")
+                    else:
+                        exit_err = (result or {}).get("error") if isinstance(result, dict) else str(result)
+                except Exception as exc:
+                    exit_err = str(exc)
+
+            fill_bit = f" @ ₹{fill_px:.2f}" if fill_px else ""
+            if exit_id:
+                detail = f"market exit {exit_id}"
+                kind = "auto_stale_abort"
+            elif exit_err:
+                detail = f"exit failed — {exit_err[:120]}"
+                kind = "auto_stale_abort_failed"
+            else:
+                detail = "no exit placed"
+                kind = "auto_stale_abort_failed"
+
+            with _lock:
+                self._pending_gtt_trigger_id = None
+                self._pending_symbol = None
+                self._reentry_armed = True
+                if disarm:
+                    self._armed = False
+
+            self._push_event(
+                WatchEvent(
+                    at=datetime.now(IST).isoformat(),
+                    kind=kind,
+                    message=(
+                        f"Stale fill aborted — {reason[:120]}"
+                        f" · entry {entry_id}{fill_bit} · {detail}"
+                        + (" (watch disarmed)" if disarm else "")
+                    )[:240],
+                    tradingsymbol=sym,
+                )
+            )
+            log_warning(
+                f"[CommodityWatch] stale fill abort entry={entry_id} sym={sym} reason={reason} exit={exit_id}"
+            )
+        finally:
+            with _lock:
+                self._gtt_attach_in_progress = False
+
     def _cancel_pending(self, *, reason: str, rollback_slot: bool = True) -> None:
         with _lock:
             entry_id = self._pending_entry_order_id
@@ -557,7 +660,13 @@ class CommodityStrategyWatch:
             from agent.tools.kite_tools import cancel_order_tool, delete_gtt_tool
 
             if entry_id:
-                cancel_order_tool.invoke({"order_id": entry_id, "variety": "regular"})
+                st = (self._order_status(entry_id) or "").upper()
+                if is_filled_order_status(st):
+                    log_warning(
+                        f"[CommodityWatch] skip cancel — entry {entry_id} already {st}; use stale abort"
+                    )
+                elif st not in ("CANCELLED", "REJECTED"):
+                    cancel_order_tool.invoke({"order_id": entry_id, "variety": "regular"})
             if gtt_id:
                 try:
                     delete_gtt_tool.invoke({"trigger_id": int(str(gtt_id))})
@@ -706,6 +815,27 @@ class CommodityStrategyWatch:
             )
         )
         log_info(f"[CommodityWatch] Trading mode → {'paper' if paper_mode else 'live'} (counters reset)")
+
+    def eod_shutdown(self, *, reason: str) -> Dict[str, Any]:
+        """Cancel pending entry, disarm watch — called at daily cutoff."""
+        with _lock:
+            had_pending = bool(self._pending_entry_order_id)
+        if had_pending:
+            self._cancel_pending(reason=reason, rollback_slot=True)
+        with _lock:
+            was_armed = self._armed
+            self._armed = False
+            self._reentry_armed = False
+        self._push_event(
+            WatchEvent(
+                at=datetime.now(IST).isoformat(),
+                kind="eod_flatten",
+                message=reason[:240],
+            )
+        )
+        self._persist()
+        log_info(f"[CommodityWatch] EOD shutdown — {reason}")
+        return {"disarmed": was_armed or had_pending, "reason": reason}
 
     def disarm(self) -> Dict[str, Any]:
         with _lock:
@@ -876,12 +1006,43 @@ class CommodityStrategyWatch:
             with _lock:
                 if not self._armed:
                     break
+            fire_signal = False
+            try_autonomous = False
+            preview = None
+            plan: Dict[str, Any] = {}
+            can_place = False
             try:
                 from services.pnl_sync import maybe_sync_pnl_for_watch
 
                 maybe_sync_pnl_for_watch("commodity")
 
+                from services.commodity_eod_flatten import maybe_run_commodity_eod_flatten
+
+                eod = maybe_run_commodity_eod_flatten()
+                if eod.get("date") and not eod.get("skipped"):
+                    break
+
+                from services.commodity_config import is_commodity_new_trading_allowed
+
+                if not is_commodity_new_trading_allowed():
+                    with _lock:
+                        if self._armed and self._pending_entry_order_id:
+                            self._cancel_pending(
+                                reason=f"Commodity cutoff {commodity_trading_cutoff_label()} IST — no further trades today"
+                            )
+                        elif self._armed:
+                            self._armed = False
+                            self._persist()
+                    await asyncio.sleep(_poll_interval())
+                    continue
+
                 session_open = commodity_trade_service.is_mcx_session_open()
+
+                if session_open or self._last_paper_mode:
+                    fire_signal, try_autonomous, preview, plan, can_place = await asyncio.to_thread(
+                        self._evaluate_sync
+                    )
+
                 if self._pending_entry_order_id:
                     if str(self._pending_entry_order_id).upper().startswith("PAPER-"):
                         from services.paper_order_guard import is_paper_position_open
@@ -897,51 +1058,84 @@ class CommodityStrategyWatch:
                     elif not session_open:
                         self._cancel_pending(reason="MCX session closed")
                     else:
-                        # Cancel stale LIMIT entry if it sits too long unfilled.
-                        try:
-                            timeout_sec = float(os.getenv("COMMODITY_WATCH_ENTRY_TIMEOUT_SEC", "900") or 900)
-                            if self._pending_entry_placed_at and timeout_sec > 0:
-                                placed_at = datetime.fromisoformat(str(self._pending_entry_placed_at))
-                                age = (datetime.now(IST) - placed_at).total_seconds()
-                                if age > timeout_sec:
-                                    st = self._order_status(self._pending_entry_order_id)
-                                    if st in (None, "OPEN", "TRIGGER PENDING", "PENDING"):
-                                        self._cancel_pending(reason=f"Entry timeout ({int(age)}s)")
-                        except Exception as exc:
-                            log_warning(f"[CommodityWatch] entry timeout parse failed: {exc}")
-                        from services.watch_reconcile import reconcile_pending_watch
-
-                        with _lock:
-                            rec = reconcile_pending_watch(
-                                entry_order_id=self._pending_entry_order_id,
-                                gtt_trigger_id=self._pending_gtt_trigger_id,
-                                pending_trade_plan=self._pending_trade_plan,
-                                order_status=self._order_status,
-                            )
-                        if rec.get("clear_gtt"):
-                            with _lock:
-                                self._pending_gtt_trigger_id = None
+                        pend = str(self._pending_entry_order_id or "")
+                        invalid, why = self._setup_invalidated(plan)
+                        if invalid and self._pending_entry_placed_at:
+                            try:
+                                min_age = float(
+                                    os.getenv("COMMODITY_WATCH_PENDING_MIN_AGE_SEC", "45") or 45
+                                )
+                                if min_age > 0:
+                                    placed_at = datetime.fromisoformat(
+                                        str(self._pending_entry_placed_at)
+                                    )
+                                    age = (datetime.now(IST) - placed_at).total_seconds()
+                                    if age < min_age and "session" not in why.lower():
+                                        invalid = False
+                            except Exception:
+                                pass
                         status = self._order_status(self._pending_entry_order_id)
-                        if status in ("COMPLETE", "EXECUTED") or rec.get("attach_gtt"):
-                            await self._on_entry_filled()
-                        elif status in ("CANCELLED", "REJECTED") or rec.get("clear_entry"):
-                            self._cancel_pending(reason=f"Order {status.lower() if status else 'reconciled'}")
+                        if invalid:
+                            if is_open_order_status(status):
+                                self._cancel_pending(reason=why)
+                            elif is_filled_order_status(status):
+                                with _lock:
+                                    entry_id = self._pending_entry_order_id
+                                    stale_plan = (
+                                        copy.deepcopy(self._pending_trade_plan)
+                                        if self._pending_trade_plan
+                                        else None
+                                    )
+                                    stale_sym = self._pending_symbol
+                                    disarm = self._should_disarm_watch()
+                                await self._abort_stale_fill(
+                                    entry_id=entry_id,
+                                    plan=stale_plan,
+                                    sym=stale_sym,
+                                    reason=why,
+                                    disarm=disarm,
+                                )
+                        if self._pending_entry_order_id:
+                            try:
+                                timeout_sec = float(
+                                    os.getenv("COMMODITY_WATCH_ENTRY_TIMEOUT_SEC", "900") or 900
+                                )
+                                if self._pending_entry_placed_at and timeout_sec > 0:
+                                    placed_at = datetime.fromisoformat(
+                                        str(self._pending_entry_placed_at)
+                                    )
+                                    age = (datetime.now(IST) - placed_at).total_seconds()
+                                    if age > timeout_sec:
+                                        st = self._order_status(self._pending_entry_order_id)
+                                        if is_open_order_status(st):
+                                            self._cancel_pending(
+                                                reason=f"Entry timeout ({int(age)}s)"
+                                            )
+                            except Exception as exc:
+                                log_warning(
+                                    f"[CommodityWatch] entry timeout parse failed: {exc}"
+                                )
+                            from services.watch_reconcile import reconcile_pending_watch
+
+                            with _lock:
+                                rec = reconcile_pending_watch(
+                                    entry_order_id=self._pending_entry_order_id,
+                                    gtt_trigger_id=self._pending_gtt_trigger_id,
+                                    pending_trade_plan=self._pending_trade_plan,
+                                    order_status=self._order_status,
+                                )
+                            if rec.get("clear_gtt"):
+                                with _lock:
+                                    self._pending_gtt_trigger_id = None
+                            status = self._order_status(self._pending_entry_order_id)
+                            if status in ("COMPLETE", "EXECUTED") or rec.get("attach_gtt"):
+                                await self._on_entry_filled()
+                            elif status in ("CANCELLED", "REJECTED") or rec.get("clear_entry"):
+                                self._cancel_pending(
+                                    reason=f"Order {status.lower() if status else 'reconciled'}"
+                                )
 
                 if session_open or self._last_paper_mode:
-                    fire_signal, try_autonomous, preview, plan, can_place = await asyncio.to_thread(
-                        self._evaluate_sync
-                    )
-                    if self._pending_entry_order_id and plan:
-                        pend = str(self._pending_entry_order_id or "")
-                        skip_inv = pend.upper().startswith("PAPER-")
-                        if skip_inv:
-                            from services.paper_order_guard import is_paper_position_open
-
-                            skip_inv = is_paper_position_open(pend)
-                        if not skip_inv:
-                            invalid, why = self._setup_invalidated(plan)
-                            if invalid:
-                                self._cancel_pending(reason=why)
                     if fire_signal and preview is not None:
                         await self._on_signal_ready(preview, plan, can_place, try_autonomous)
                     elif try_autonomous and preview is not None:
@@ -964,6 +1158,8 @@ class CommodityStrategyWatch:
 
     def _should_autonomous_place(self, cfg: WatchConfig) -> bool:
         if watch_autonomous_globally_disabled():
+            return False
+        if not is_commodity_new_trading_allowed():
             return False
         return (
             cfg.mode == "autonomous"
@@ -1374,6 +1570,10 @@ _watch = CommodityStrategyWatch()
 
 def arm_watch(**kwargs: Any) -> Dict[str, Any]:
     return _watch.arm(**kwargs)
+
+
+def commodity_eod_shutdown(*, reason: str) -> Dict[str, Any]:
+    return _watch.eod_shutdown(reason=reason)
 
 
 def disarm_watch() -> Dict[str, Any]:
