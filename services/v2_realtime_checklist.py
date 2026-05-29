@@ -129,14 +129,25 @@ def _vix_live(kite) -> Dict[str, Any]:
 
 
 def _intraday_context(kite, token: int) -> Dict[str, Any]:
+    """Intraday levels — BB/EMA from Kite historical (Zerodha-aligned), same as checklist."""
+    from services.kite_live_indicators import get_live_indicator_snapshot
+
+    snap = get_live_indicator_snapshot(token, fill_historical=True)
     ctx: Dict[str, Any] = {
-        "pdh": None,
-        "pdl": None,
-        "or_high": None,
-        "or_low": None,
-        "ema9": None,
-        "last_5m_close": None,
+        "pdh": snap.get("pdh"),
+        "pdl": snap.get("pdl"),
+        "or_high": snap.get("or_high"),
+        "or_low": snap.get("or_low"),
+        "ema9": snap.get("ema9"),
+        "last_5m_close": snap.get("last_5m_close"),
+        "bb_middle": snap.get("bb_middle"),
+        "bb_upper": snap.get("bb_upper"),
+        "bb_lower": snap.get("bb_lower"),
+        "indicator_sources": snap.get("sources") or {},
     }
+    if ctx["pdh"] is not None and ctx["pdl"] is not None:
+        return ctx
+
     now = _now_ist()
     try:
         daily = kite.historical_data(
@@ -149,52 +160,12 @@ def _intraday_context(kite, token: int) -> Dict[str, Any]:
         )
         if daily and len(daily) >= 2:
             prev = daily[-2]
-            ctx["pdh"] = float(prev.get("high") or 0)
-            ctx["pdl"] = float(prev.get("low") or 0)
+            if ctx["pdh"] is None:
+                ctx["pdh"] = float(prev.get("high") or 0)
+            if ctx["pdl"] is None:
+                ctx["pdl"] = float(prev.get("low") or 0)
     except Exception as exc:
         log_warning(f"[V2 realtime] daily: {exc}")
-
-    try:
-        from_dt = datetime.combine(now.date(), datetime.min.time()).replace(tzinfo=IST)
-        c15 = kite.historical_data(
-            token,
-            from_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            now.strftime("%Y-%m-%d %H:%M:%S"),
-            "15minute",
-            continuous=False,
-            oi=False,
-        )
-        or_bars = [
-            c
-            for c in (c15 or [])
-            if c.get("date")
-            and 9 * 60 + 15
-            <= c["date"].astimezone(IST).hour * 60 + c["date"].astimezone(IST).minute
-            < 9 * 60 + 30
-        ]
-        if or_bars:
-            ctx["or_high"] = max(float(c["high"]) for c in or_bars)
-            ctx["or_low"] = min(float(c["low"]) for c in or_bars)
-
-        c5 = kite.historical_data(
-            token,
-            from_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            now.strftime("%Y-%m-%d %H:%M:%S"),
-            "5minute",
-            continuous=False,
-            oi=False,
-        )
-        if c5:
-            closes = [float(c["close"]) for c in c5[-12:]]
-            ctx["last_5m_close"] = closes[-1] if closes else None
-            if len(closes) >= 9:
-                k = 2 / (9 + 1)
-                ema = closes[0]
-                for px in closes[1:]:
-                    ema = px * k + ema * (1 - k)
-                ctx["ema9"] = ema
-    except Exception as exc:
-        log_warning(f"[V2 realtime] intraday: {exc}")
     return ctx
 
 

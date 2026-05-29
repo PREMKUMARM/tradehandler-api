@@ -1,7 +1,8 @@
 """
-Live Nifty/VIX indicators from Kite WebSocket ticks (MODE_FULL day OHLC + bar build).
+Live Nifty/VIX/MCX indicators: Kite ticker for spot/OR/day OHLC + Kite historical 5m for BB/EMA.
 
-Falls back to Kite Connect historical/quote only for fields not yet available from ticks.
+BB(20,2) and EMA(9) use the same rolling 5m candles as Zerodha charts (historical API),
+with ticker patching the forming candle and backfilling gaps when the stream starts late.
 """
 from __future__ import annotations
 
@@ -23,6 +24,10 @@ BB_PERIOD = 20
 BB_STD_MULT = 2.0
 # Max calendar days to search for prior 5m bars when today's session is still thin
 PRIOR_5M_LOOKBACK_DAYS = 5
+# EMA seed length — enough bars so EMA(9) matches Zerodha 5m chart
+EMA_SEED_BARS = max(EMA_PERIOD * 4, 36)
+# Refresh Kite historical 5m for BB/EMA (aligns with Kite/Zerodha charts)
+KITE_5M_INDICATOR_REFRESH_SEC = 20
 
 
 def _floor_5m(dt: datetime) -> datetime:
@@ -227,17 +232,18 @@ def _live_session_5m_bars(
     return out
 
 
-def _fetch_today_5m_rows(kite, token: int, as_of: Optional[datetime] = None) -> List[Dict[str, Any]]:
-    """Today's 5m candles from session open through `as_of` (Kite historical)."""
-    now = (as_of or datetime.now(IST)).astimezone(IST)
-    today = now.date()
+def _fetch_5m_rows_range(
+    kite,
+    token: int,
+    from_dt: datetime,
+    to_dt: datetime,
+) -> List[Dict[str, Any]]:
     try:
-        from_dt = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
         return list(
             kite.historical_data(
                 token,
-                from_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                now.strftime("%Y-%m-%d %H:%M:%S"),
+                from_dt.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                to_dt.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S"),
                 "5minute",
                 continuous=False,
                 oi=False,
@@ -245,8 +251,109 @@ def _fetch_today_5m_rows(kite, token: int, as_of: Optional[datetime] = None) -> 
             or []
         )
     except Exception as exc:
-        log_warning(f"[KiteLiveIndicators] 5m today fetch: {exc}")
+        log_warning(f"[KiteLiveIndicators] 5m fetch: {exc}")
         return []
+
+
+def _fetch_recent_5m_rows(
+    kite,
+    token: int,
+    bar_count: int,
+    as_of: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Rolling 5m window from Kite historical API — same source as Zerodha charts.
+    Includes the current (forming) candle as the last row when market is open.
+    """
+    now = (as_of or datetime.now(IST)).astimezone(IST)
+    need = max(bar_count + 2, BB_PERIOD + 2, EMA_SEED_BARS + 2)
+    from_dt = now - timedelta(days=PRIOR_5M_LOOKBACK_DAYS)
+    rows = _fetch_5m_rows_range(kite, token, from_dt, now)
+    if len(rows) > need:
+        return rows[-need:]
+    return rows
+
+
+def _fetch_today_5m_rows(kite, token: int, as_of: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Today's 5m candles from session open through `as_of` (Kite historical)."""
+    now = (as_of or datetime.now(IST)).astimezone(IST)
+    today = now.date()
+    from_dt = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
+    return _fetch_5m_rows_range(kite, token, from_dt, now)
+
+
+def _row_to_candle(row: Dict[str, Any]) -> Optional[CandleBar]:
+    d = row.get("date")
+    if not d:
+        return None
+    try:
+        ts = d.astimezone(IST)
+    except Exception:
+        return None
+    return CandleBar(
+        start=ts,
+        open=float(row.get("open") or 0),
+        high=float(row.get("high") or 0),
+        low=float(row.get("low") or 0),
+        close=float(row.get("close") or 0),
+    )
+
+
+def _forming_close_from_ticker(st: InstrumentLiveState) -> Optional[float]:
+    if st.cur_5m is not None and st.cur_5m.close > 0:
+        return float(st.cur_5m.close)
+    if st.last_price is not None and st.last_price > 0:
+        return float(st.last_price)
+    return None
+
+
+def _patch_forming_close(st: InstrumentLiveState, closes: List[float]) -> List[float]:
+    """Live chart uses current LTP as the forming 5m candle close."""
+    if not closes:
+        return closes
+    live = _forming_close_from_ticker(st)
+    if live is None:
+        return closes
+    out = list(closes)
+    out[-1] = live
+    return out
+
+
+def _merge_historical_5m_into_state(st: InstrumentLiveState, rows: List[Dict[str, Any]]) -> None:
+    """Backfill today's session 5m bars from Kite when ticker stream is partial."""
+    if not rows:
+        return
+    now = datetime.now(IST)
+    session_start = session_start_for(now)
+    trade_date = now.date()
+    by_start: Dict[datetime, CandleBar] = {
+        c.start: c
+        for c in st.closed_5m
+        if c.start.astimezone(IST).date() == trade_date and c.start.astimezone(IST) >= session_start
+    }
+    for row in rows[:-1]:
+        bar = _row_to_candle(row)
+        if bar is None:
+            continue
+        ts = bar.start.astimezone(IST)
+        if ts.date() != trade_date or ts < session_start:
+            continue
+        by_start[ts] = bar
+    st.closed_5m = sorted(by_start.values(), key=lambda c: c.start)
+    last = _row_to_candle(rows[-1])
+    if last is not None:
+        ts = last.start.astimezone(IST)
+        if ts.date() == trade_date and ts >= session_start:
+            live = _forming_close_from_ticker(st)
+            if live is not None:
+                last.close = live
+                if live > last.high:
+                    last.high = live
+                if live < last.low:
+                    last.low = live
+            st.cur_5m = last
+    if st.closed_5m:
+        st.sources["session_5m_merged"] = "kite_historical_5m"
 
 
 def _fetch_last_completed_5m_close(kite, token: int) -> Optional[float]:
@@ -426,61 +533,96 @@ def _apply_bollinger_from_closes(
     return True
 
 
-def _sync_bollinger(st: InstrumentLiveState) -> bool:
-    """BB from live session only when the session already has enough 5m bars."""
-    if len(_live_session_5m_bars(st)) < BB_PERIOD:
-        return False
-    live = [c for _, c in _live_session_5m_bars(st)]
-    return _apply_bollinger_from_closes(st, live[-BB_PERIOD:], "kite_ticker_5m")
-
-
 def _store_indicator_window_meta(st: InstrumentLiveState, meta: Dict[str, int], source: str) -> None:
     st.sources["indicator_window"] = source
     st.sources["hist_pad_bars"] = str(meta.get("hist_pad_bars", 0))
     st.sources["live_session_bars"] = str(meta.get("live_session_bars", 0))
 
 
-def _ensure_bollinger(st: InstrumentLiveState, kite) -> None:
-    """BB: pad only (period − live_session_bars) historical closes before session open."""
-    if st.token != NIFTY_TOKEN_DEFAULT:
-        return
-    if _sync_bollinger(st):
-        return
-    combined, source, meta = _combined_5m_closes(st, kite, BB_PERIOD)
-    if len(combined) >= BB_PERIOD:
-        _apply_bollinger_from_closes(st, combined, source)
+def _sync_5m_indicators_kite_aligned(
+    st: InstrumentLiveState,
+    kite,
+    *,
+    force: bool = False,
+) -> None:
+    """
+    BB(20,2) and EMA(9) from Kite historical 5m — matches Zerodha chart math.
+    Ticker fills gaps in today's bars and patches the forming candle close.
+    """
+    now = datetime.now(IST)
+    if not force:
+        prev = st.sources.get("kite_5m_indicator_refresh")
+        if prev:
+            try:
+                age = (now - datetime.fromisoformat(prev).astimezone(IST)).total_seconds()
+                if age < KITE_5M_INDICATOR_REFRESH_SEC:
+                    return
+            except ValueError:
+                pass
+
+    need = max(BB_PERIOD, EMA_SEED_BARS)
+    rows = _fetch_recent_5m_rows(kite, st.token, need, now)
+    if len(rows) >= BB_PERIOD:
+        _merge_historical_5m_into_state(st, rows)
+        closes = [float(r["close"]) for r in rows]
+        closes = _patch_forming_close(st, closes)
+        source = "kite_historical_5m"
+
+        if len(closes) >= BB_PERIOD:
+            _apply_bollinger_from_closes(st, closes[-BB_PERIOD:], source)
+
+        ema_seed = closes[-EMA_SEED_BARS:] if len(closes) >= EMA_SEED_BARS else closes
+        ema: Optional[float] = None
+        for c in ema_seed:
+            ema = _ema_update(ema, c)
+        if ema is not None:
+            st.ema9 = ema
+            st.sources["ema9"] = source
+
+        if len(closes) >= 2:
+            st.last_5m_close = closes[-2]
+        elif closes:
+            st.last_5m_close = closes[-1]
+        st.sources["last_5m_close"] = source
+
+        live_n = len(_live_session_5m_bars(st, now))
+        meta = {
+            "period": BB_PERIOD,
+            "live_session_bars": live_n,
+            "hist_pad_bars": max(0, BB_PERIOD - live_n),
+            "session_open": session_start_for(now).strftime("%H:%M"),
+        }
         _store_indicator_window_meta(st, meta, source)
+        st.sources["kite_5m_indicator_refresh"] = now.isoformat()
+        st.historical_seeded = True
+        return
+
+    combined, source, meta = _combined_5m_closes(st, kite, BB_PERIOD, now)
+    if len(combined) >= BB_PERIOD:
+        combined = _patch_forming_close(st, combined)
+        _apply_bollinger_from_closes(st, combined[-BB_PERIOD:], source)
+        _store_indicator_window_meta(st, meta, source)
+
+    ema_combined, ema_source, ema_meta = _combined_5m_closes(st, kite, EMA_SEED_BARS, now)
+    if ema_combined:
+        ema_combined = _patch_forming_close(st, ema_combined)
+        ema_val: Optional[float] = None
+        for c in ema_combined:
+            ema_val = _ema_update(ema_val, c)
+        if ema_val is not None:
+            st.ema9 = ema_val
+            st.sources["ema9"] = ema_source
+            _store_indicator_window_meta(st, ema_meta, ema_source)
+    st.sources["kite_5m_indicator_refresh"] = now.isoformat()
+    st.historical_seeded = True
+
+
+def _ensure_bollinger(st: InstrumentLiveState, kite) -> None:
+    _sync_5m_indicators_kite_aligned(st, kite)
 
 
 def _ensure_ema_from_combined(st: InstrumentLiveState, kite) -> None:
-    """EMA9: same sliding window as BB (prior pad + live session)."""
-    live_n = len(_live_session_5m_bars(st))
-    if st.sources.get("ema9") == "kite_ticker" and live_n >= EMA_PERIOD:
-        return
-    combined, source, meta = _combined_5m_closes(st, kite, EMA_PERIOD)
-    if not combined:
-        return
-    ema: Optional[float] = None
-    for c in combined:
-        ema = _ema_update(ema, c)
-    if ema is not None:
-        st.ema9 = ema
-        st.sources["ema9"] = source
-        _store_indicator_window_meta(st, meta, source)
-        if st.closed_5m:
-            st.last_5m_close = st.closed_5m[-1].close
-            st.sources["last_5m_close"] = "kite_ticker"
-        else:
-            try:
-                hist_close = _fetch_last_completed_5m_close(kite, st.token)
-            except Exception:
-                hist_close = None
-            if hist_close is not None:
-                st.last_5m_close = hist_close
-                st.sources["last_5m_close"] = "kite_historical_5m"
-            elif combined:
-                st.last_5m_close = combined[-1]
-                st.sources["last_5m_close"] = source
+    _sync_5m_indicators_kite_aligned(st, kite)
 
 
 def _sync_or_levels(st: InstrumentLiveState) -> None:
@@ -548,10 +690,7 @@ def _update_5m_and_ema(st: InstrumentLiveState, ts: datetime, price: float) -> N
     if closed is not None:
         st.last_5m_close = closed.close
         st.sources["last_5m_close"] = "kite_ticker"
-        st.ema9 = _ema_update(st.ema9, closed.close)
-        st.sources["ema9"] = "kite_ticker"
-        if st.token == NIFTY_TOKEN_DEFAULT:
-            _sync_bollinger(st)
+        st.sources.pop("kite_5m_indicator_refresh", None)
 
 
 def _on_ticks_batch(ticks: List[Dict[str, Any]]) -> None:
@@ -599,17 +738,8 @@ def ensure_kite_live_indicators_registered() -> None:
 
 
 def _historical_seed_5m_ema(st: InstrumentLiveState, kite) -> None:
-    """Pad indicators from pre-session history only; do not flood closed_5m with old bars."""
-    if (
-        st.historical_seeded
-        and st.ema9 is not None
-        and st.bb_middle is not None
-    ):
-        return
-
-    _ensure_ema_from_combined(st, kite)
-    _ensure_bollinger(st, kite)
-    st.historical_seeded = True
+    """Zerodha-aligned BB/EMA from Kite historical + ticker gap-fill."""
+    _sync_5m_indicators_kite_aligned(st, kite, force=not st.historical_seeded)
 
 
 def _historical_fill_missing(st: InstrumentLiveState, kite) -> None:
@@ -666,19 +796,16 @@ def _historical_fill_missing(st: InstrumentLiveState, kite) -> None:
     _seed_today_5m_from_historical(st, kite)
     _refresh_last_completed_5m_if_needed(st, kite)
 
-    live_session_n = len(_live_session_5m_bars(st))
     need_pad = (
         st.ema9 is None
         or st.bb_middle is None
-        or live_session_n < BB_PERIOD
+        or len(_live_session_5m_bars(st)) < BB_PERIOD
+        or st.sources.get("session_5m_merged") != "kite_historical_5m"
     )
-    if need_pad:
+    if need_pad or not st.historical_seeded:
         _historical_seed_5m_ema(st, kite)
-    elif st.token == NIFTY_TOKEN_DEFAULT:
-        if st.bb_middle is None:
-            _ensure_bollinger(st, kite)
-        if st.ema9 is None:
-            _ensure_ema_from_combined(st, kite)
+    else:
+        _sync_5m_indicators_kite_aligned(st, kite)
 
     if st.prev_close is None:
         try:
@@ -718,8 +845,6 @@ def _historical_fill_missing(st: InstrumentLiveState, kite) -> None:
 
 def _state_to_snapshot(st: InstrumentLiveState) -> Dict[str, Any]:
     _sync_or_levels(st)
-    if st.token == NIFTY_TOKEN_DEFAULT and len(_live_session_5m_bars(st)) >= BB_PERIOD:
-        _sync_bollinger(st)
     return {
         "instrument_token": st.token,
         "nifty_spot": st.last_price,
