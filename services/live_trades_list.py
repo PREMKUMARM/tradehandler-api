@@ -169,6 +169,29 @@ def _fetch_quotes(symbols: List[str]) -> Dict[str, float]:
         return {}
 
 
+_OPEN_ENTRY_STATUSES = frozenset(
+    {
+        "OPEN",
+        "TRIGGER PENDING",
+        "AMO REQ RECEIVED",
+        "PUT ORDER REQ RECEIVED",
+        "OPEN PENDING",
+        "OPEN QUEUED",
+        "VALIDATION PENDING",
+    }
+)
+
+
+def _entry_price_from_order(o: Dict[str, Any], *, filled: int, avg_f: Optional[float]) -> Optional[float]:
+    if filled > 0 and avg_f is not None:
+        return avg_f
+    try:
+        px = float(o.get("price") or 0)
+    except (TypeError, ValueError):
+        return None
+    return px if px > 0 else None
+
+
 def _exit_reason(entry_px: float, exit_px: float, sl: Optional[float], tp: Optional[float]) -> str:
     if sl is not None and exit_px <= sl + 0.01:
         return "Stop loss hit"
@@ -225,11 +248,20 @@ def _group_live_trades(
         except (TypeError, ValueError):
             avg_f = None
 
-        if side == "BUY" and status in ("COMPLETE", "OPEN", "TRIGGER PENDING") and filled > 0:
+        if side == "BUY" and (
+            (status == "COMPLETE" and filled > 0)
+            or (status in _OPEN_ENTRY_STATUSES and filled >= 0)
+        ):
+            entry_px = _entry_price_from_order(o, filled=filled, avg_f=avg_f)
+            if entry_px is None:
+                continue
+            remaining = filled if filled > 0 else qty
+            if remaining <= 0:
+                continue
             entry = {
                 "order": o,
-                "remaining": filled,
-                "entry_px": avg_f,
+                "remaining": remaining,
+                "entry_px": entry_px,
                 "entry_time": o.get("exchange_timestamp") or o.get("order_timestamp"),
                 "entry_id": str(o.get("order_id") or ""),
             }
@@ -344,9 +376,15 @@ def _group_live_trades(
                 est_p, est_l = split_profit_loss(pnl)
 
             st = str(o.get("status") or "").upper()
-            row_status = "open" if st == "COMPLETE" and pos_qty != 0 else "pending"
+            order_filled = int(o.get("filled_quantity") or 0)
             if st == "COMPLETE" and pos_qty == 0 and entry["remaining"] > 0:
                 continue
+            if order_filled == 0 and st in _OPEN_ENTRY_STATUSES:
+                row_status = "pending"
+            elif st == "COMPLETE" and pos_qty != 0:
+                row_status = "open"
+            else:
+                row_status = "pending"
 
             trades.append(
                 {
@@ -427,11 +465,11 @@ def list_live_trades(
         need_quotes = [
             (t["symbol"], t["exchange"])
             for t in trades
-            if t.get("status") == "open" and t.get("ltp") is None
+            if t.get("status") in ("open", "pending") and t.get("ltp") is None
         ]
         quotes = _fetch_quotes(need_quotes)
         for t in trades:
-            if t.get("status") != "open":
+            if t.get("status") not in ("open", "pending"):
                 continue
             sym = t.get("symbol") or ""
             if t.get("ltp") is None and sym in quotes:
