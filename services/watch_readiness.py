@@ -108,6 +108,7 @@ def build_readiness_payload(
     entry_confirmation_score: Optional[int],
     pending_entry_order_id: Optional[str] = None,
     step_statuses: Optional[List[Any]] = None,
+    segment: Optional[str] = None,
 ) -> Dict[str, Any]:
     plan = plan or {}
     score = int(entry_confirmation_score or plan.get("entry_confirmation_score") or 0)

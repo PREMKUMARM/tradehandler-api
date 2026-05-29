@@ -741,6 +741,7 @@ class CommodityStrategyWatch:
                 entry_confirmation_score=setup.get("entry_confirmation_score"),
                 pending_entry_order_id=self._pending_entry_order_id,
                 step_statuses=self._last_step_statuses,
+                segment="commodity",
             )
             return {**base, **extras}
 
