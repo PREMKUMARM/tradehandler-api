@@ -248,20 +248,22 @@ def build_indicator_trade_plan(
         )
 
     rr_ratio = reward_pct / risk_pct if risk_pct > 0 else 1.5
-    sl_prem, tgt_prem, spot_sl, spot_tgt, bb_note = order_exit_levels_from_contract_bb(
-        float(entry_prem),
-        option_kind,
-        intra_bb,
+    from services.option_contract_indicators import resolve_long_buy_exit_levels
+
+    sl_prem, tgt_prem, spot_sl, spot_tgt, delta, exit_note = resolve_long_buy_exit_levels(
+        strategy_id=sid,
+        entry_premium=float(entry_prem),
+        option_kind=option_kind,
+        intra_bb=intra_bb,
+        underlying_spot=nifty_spot,
+        underlying_sl=spot_sl,
+        underlying_tgt=spot_tgt,
+        strike=contract.strike,
+        vix=ind.get("vix"),
         reward_ratio=rr_ratio,
     )
-    if bb_note:
-        level_note = (level_note + " · " + bb_note).strip(" ·")
-    delta = estimate_delta_from_spot(
-        nifty_spot,
-        contract.strike,
-        option_kind,
-        vix=ind.get("vix"),
-    )
+    if exit_note:
+        level_note = (level_note + " · " + exit_note).strip(" ·")
 
     entry_analysis = compute_strategy_entry(
         strategy_id=sid,
@@ -416,20 +418,29 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     intra_bb["contract_ltp"] = entry_prem
     intra_bb["option_ltp"] = quote.get("ltp") or opt_bb.get("option_ltp")
 
+    spot_sl = float(plan.get("spot_stop_loss", 0))
+    spot_tgt = float(plan.get("spot_target", 0))
+    spot_entry, spot_sl, spot_tgt, _ = refine_spot_levels_from_candles(
+        sid, nifty_spot, kind, spot_sl, spot_tgt, intra
+    )
     ind_meta = plan.get("indicators") or {}
     risk_pct = float(ind_meta.get("risk_pct") or 1.0)
-    rr_ratio = 1.5
-    sl_prem, tgt_prem, spot_sl, spot_tgt, _ = order_exit_levels_from_contract_bb(
-        entry_prem,
-        kind,
-        intra_bb,
-        reward_ratio=rr_ratio,
-    )
-    delta = estimate_delta_from_spot(
-        nifty_spot,
-        int(plan.get("strike", 0)),
-        kind,
+    rr_ratio = float(plan.get("reward_ratio") or 1.5)
+    if rr_ratio <= 0:
+        rr_ratio = 1.5
+    from services.option_contract_indicators import resolve_long_buy_exit_levels
+
+    sl_prem, tgt_prem, spot_sl, spot_tgt, delta, _ = resolve_long_buy_exit_levels(
+        strategy_id=sid,
+        entry_premium=entry_prem,
+        option_kind=kind,
+        intra_bb=intra_bb,
+        underlying_spot=nifty_spot,
+        underlying_sl=spot_sl,
+        underlying_tgt=spot_tgt,
+        strike=int(plan.get("strike", 0)),
         vix=live.get("vix"),
+        reward_ratio=rr_ratio,
     )
     entry_analysis = compute_strategy_entry(
         strategy_id=sid,
@@ -501,9 +512,14 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         }
     )
     ind = dict(plan.get("indicators") or {})
-    ind.update(live)
     ind.update(
         {
+            "pdh": live.get("pdh"),
+            "pdl": live.get("pdl"),
+            "or_high": live.get("or_high"),
+            "or_low": live.get("or_low"),
+            "ema9": live.get("ema9"),
+            "nifty_spot": round(nifty_spot, 2),
             "bb_lower": intra_bb.get("bb_lower"),
             "bb_middle": intra_bb.get("bb_middle"),
             "bb_upper": intra_bb.get("bb_upper"),
@@ -512,6 +528,7 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
             "option_bid": quote.get("bid"),
             "option_ask": quote.get("ask"),
             "option_ltp": quote.get("ltp"),
+            "indicator_sources": intra_bb.get("indicator_sources") or {},
             "refreshed_at_execution": True,
         }
     )

@@ -307,7 +307,7 @@ def build_indicator_trade_plan(
     from services.kite_live_indicators import get_option_bollinger_snapshot
     from services.option_contract_indicators import (
         merge_option_bb_into_intra,
-        order_exit_levels_from_contract_bb,
+        resolve_long_buy_exit_levels,
     )
 
     opt_bb = get_option_bollinger_snapshot(contract.tradingsymbol, "MCX")
@@ -315,20 +315,21 @@ def build_indicator_trade_plan(
     intra_bb["contract_ltp"] = float(entry_prem)
     intra_bb["underlying_spot"] = spot_entry
     rr_ratio = reward_pct / risk_pct if risk_pct > 0 else 1.5
-    sl_prem, tgt_prem, spot_sl, spot_tgt, bb_note = order_exit_levels_from_contract_bb(
-        float(entry_prem),
-        option_kind,
-        intra_bb,
-        reward_ratio=rr_ratio,
-    )
-    if bb_note:
-        level_note = (level_note + " · " + bb_note).strip(" ·")
-    delta = estimate_delta_from_spot(
-        spot_entry,
-        contract.strike,
-        option_kind,
+    sl_prem, tgt_prem, spot_sl, spot_tgt, delta, exit_note = resolve_long_buy_exit_levels(
+        strategy_id=sid,
+        entry_premium=float(entry_prem),
+        option_kind=option_kind,
+        intra_bb=intra_bb,
+        underlying_spot=spot_entry,
+        underlying_sl=spot_sl,
+        underlying_tgt=spot_tgt,
+        strike=contract.strike,
         vix=ind.get("vix"),
+        reward_ratio=rr_ratio,
+        normalize_exits=_normalize_long_option_exits,
     )
+    if exit_note:
+        level_note = (level_note + " · " + exit_note).strip(" ·")
 
     entry_analysis = compute_strategy_entry(
         strategy_id=sid,
@@ -356,32 +357,41 @@ def build_indicator_trade_plan(
     rr = (reward_inr / risk_inr) if risk_inr > 0 else 0.0
 
     bb_zone = None
-    if ind.get("bb_middle") and ind.get("bb_upper") and ind.get("bb_lower"):
+    bb_mid = intra_bb.get("bb_middle")
+    bb_up = intra_bb.get("bb_upper")
+    bb_lo = intra_bb.get("bb_lower")
+    if bb_mid is not None and bb_up is not None and bb_lo is not None:
         from services.kite_live_indicators import bollinger_zone
 
         bb_zone = bollinger_zone(
-            spot_entry,
-            float(ind["bb_middle"]),
-            float(ind["bb_upper"]),
-            float(ind["bb_lower"]),
+            float(entry_prem),
+            float(bb_mid),
+            float(bb_up),
+            float(bb_lo),
             option_kind,
         ).get("zone")
 
     indicator_snapshot = {
         **ind,
+        "bb_lower": bb_lo,
+        "bb_middle": bb_mid,
+        "bb_upper": bb_up,
         "bb_zone": bb_zone,
         "margin": capital,
         "risk_pct": risk_pct,
-        "indicator_sources": ind.get("indicator_sources", {}),
+        "indicator_sources": intra_bb.get("indicator_sources") or {},
         "strategy_id": sid,
         "pattern_tag": pattern_tag,
-        "spot_entry": round(spot_entry, 2),
+        "underlying_spot": round(spot_entry, 2),
+        "spot_entry": round(float(entry_prem), 2),
         "spot_stop_loss": round(spot_sl, 2),
         "spot_target": round(spot_tgt, 2),
         "level_note": level_note,
         "option_bid": quote.get("bid"),
         "option_ask": quote.get("ask"),
-        "option_ltp": quote.get("ltp"),
+        "option_ltp": quote.get("ltp") or opt_bb.get("option_ltp"),
+        "bb_on_contract": contract.tradingsymbol,
+        "contract_ltp": round(float(entry_prem), 2),
     }
 
     plan = {
@@ -499,16 +509,29 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         )
     elif limit_msg:
         entry_analysis.notes.append(limit_msg)
-    # Exits must anchor to the LIMIT we actually place, not the higher live LTP.
+    from services.kite_live_indicators import get_option_bollinger_snapshot
+    from services.option_contract_indicators import (
+        merge_option_bb_into_intra,
+        resolve_long_buy_exit_levels,
+    )
+
+    opt_bb = get_option_bollinger_snapshot(sym, "MCX")
+    intra_bb = merge_option_bb_into_intra(intra, opt_bb, sym)
     exit_anchor = float(entry_limit or entry_prem or 0)
-    sl_prem, tgt_prem, delta = premium_levels_from_indicators(
+    intra_bb["contract_ltp"] = exit_anchor
+    intra_bb["underlying_spot"] = spot_entry
+    sl_prem, tgt_prem, spot_sl, spot_tgt, delta, _ = resolve_long_buy_exit_levels(
+        strategy_id=sid,
         entry_premium=exit_anchor,
-        spot_entry=spot_entry,
-        spot_sl=spot_sl,
-        spot_tgt=spot_tgt,
+        option_kind=kind,
+        intra_bb=intra_bb,
+        underlying_spot=spot_entry,
+        underlying_sl=spot_sl,
+        underlying_tgt=spot_tgt,
         strike=int(plan.get("strike", 0)),
-        kind=kind,
         vix=live.get("vix"),
+        reward_ratio=rr_struct,
+        normalize_exits=_normalize_long_option_exits,
     )
     capital = float(ind_meta.get("margin") or 0)
     lot_size = int(plan.get("lot_size") or 75)
@@ -552,12 +575,23 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         }
     )
     ind = dict(plan.get("indicators") or {})
-    ind.update(live)
     ind.update(
         {
+            "pdh": live.get("pdh"),
+            "pdl": live.get("pdl"),
+            "or_high": live.get("or_high"),
+            "or_low": live.get("or_low"),
+            "ema9": live.get("ema9"),
+            "underlying_spot": round(spot_entry, 2),
+            "bb_lower": intra_bb.get("bb_lower"),
+            "bb_middle": intra_bb.get("bb_middle"),
+            "bb_upper": intra_bb.get("bb_upper"),
+            "bb_on_contract": sym,
+            "contract_ltp": round(exit_anchor, 2),
             "option_bid": quote.get("bid"),
             "option_ask": quote.get("ask"),
             "option_ltp": quote.get("ltp"),
+            "indicator_sources": intra_bb.get("indicator_sources") or {},
             "refreshed_at_execution": True,
         }
     )

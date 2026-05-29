@@ -4,7 +4,7 @@ Entry / SL / target premiums are derived from contract LTP vs contract bands, no
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from utils.kite_order_utils import round_to_tick
 
@@ -67,10 +67,7 @@ def order_exit_levels_from_contract_bb(
     if lower is None or mid is None or upper is None:
         risk = max(0.5, prem * 0.12)
         rr = reward_ratio
-        if kind == "CE":
-            sl, tgt = prem - risk, prem + risk * rr
-        else:
-            sl, tgt = prem + risk, prem - risk * rr
+        sl, tgt = prem - risk, prem + risk * rr
         return (
             round_to_tick(max(0.05, sl)),
             round_to_tick(max(0.05, tgt)),
@@ -82,16 +79,92 @@ def order_exit_levels_from_contract_bb(
     width = float(upper) - float(lower)
     buf = max(0.5, width * 0.04)
     rr = reward_ratio
-    if kind == "CE":
-        sl = float(lower) - buf
-        risk = max(0.05, prem - sl)
-        tgt = float(mid) + rr * risk * 0.85
-    else:
-        sl = float(upper) + buf
-        risk = max(0.05, sl - prem)
-        tgt = float(mid) - rr * risk * 0.85
+    # Long-only (buy CE / buy PE): loss when premium falls, profit when premium rises.
+    sl = float(lower) - buf
+    risk = max(0.05, prem - sl)
+    tgt = prem + rr * risk * 0.85
 
     sl_p = round_to_tick(max(0.05, sl))
     tgt_p = round_to_tick(max(0.05, tgt))
-    note = f"{sym}: 5m BB SL beyond band, target toward middle"
+    if tgt_p <= prem:
+        tgt_p = round_to_tick(prem + max(0.5, risk * 0.5))
+    note = f"{sym}: 5m contract BB — SL below lower band, TP above entry"
     return sl_p, tgt_p, sl, tgt, note
+
+
+# Underlying ORB/PDH/EMA signals; exits mapped to bought-option premiums.
+STRUCTURE_STRATEGIES = frozenset(
+    {
+        "orb_15m_breakout",
+        "pdh_pdl_breakout",
+        "ema_pullback_continuation",
+        "long_atm_directional",
+        "green_bar_sentinel_2nd_oi",
+    }
+)
+COMMODITY_STRUCTURE_STRATEGIES = STRUCTURE_STRATEGIES
+
+
+def resolve_long_buy_exit_levels(
+    *,
+    strategy_id: str,
+    entry_premium: float,
+    option_kind: str,
+    intra_bb: Dict[str, Any],
+    underlying_spot: float,
+    underlying_sl: float,
+    underlying_tgt: float,
+    strike: int,
+    vix: Optional[float] = None,
+    reward_ratio: float = 1.5,
+    normalize_exits: Optional[
+        Callable[[float, float, float], Tuple[float, float]]
+    ] = None,
+) -> Tuple[float, float, float, float, float, str]:
+    """
+    Long-only option exits: structure strategies use underlying levels → premium (delta);
+    BB / default strategies use contract 5m Bollinger on the option chart.
+    """
+    from services.push.option_contract_resolver import estimate_delta_from_spot
+
+    sid = strategy_id or "bb_5m_mean_reversion"
+    prem = float(entry_premium)
+
+    if sid in STRUCTURE_STRATEGIES:
+        from services.push.option_contract_resolver import estimate_delta_from_spot
+
+        delta = estimate_delta_from_spot(
+            float(underlying_spot),
+            int(strike),
+            option_kind,
+            vix=vix,
+        )
+        spot_risk = abs(float(underlying_spot) - float(underlying_sl))
+        spot_reward = abs(float(underlying_tgt) - float(underlying_spot))
+        sl_prem = max(0.05, prem - spot_risk * delta)
+        tgt_prem = prem + spot_reward * delta
+        if tgt_prem <= prem:
+            tgt_prem = prem + max(0.05, spot_reward * delta)
+        sl_prem = round_to_tick(sl_prem)
+        tgt_prem = round_to_tick(tgt_prem)
+        if normalize_exits:
+            sl_prem, tgt_prem = normalize_exits(prem, sl_prem, tgt_prem)
+        note = (
+            f"{sid}: underlying SL {underlying_sl:.0f} → TP {underlying_tgt:.0f} "
+            f"mapped to premium (δ)"
+        )
+        return sl_prem, tgt_prem, underlying_sl, underlying_tgt, delta, note
+
+    sl_prem, tgt_prem, raw_sl, raw_tgt, note = order_exit_levels_from_contract_bb(
+        prem,
+        option_kind,
+        intra_bb,
+        reward_ratio=reward_ratio,
+    )
+    delta = estimate_delta_from_spot(
+        float(underlying_spot),
+        int(strike),
+        option_kind,
+        vix=vix,
+    )
+    return sl_prem, tgt_prem, raw_sl, raw_tgt, delta, note
