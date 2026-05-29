@@ -781,11 +781,15 @@ class CommodityStrategyWatch:
                 session_open = commodity_trade_service.is_mcx_session_open()
                 if self._pending_entry_order_id:
                     if str(self._pending_entry_order_id).upper().startswith("PAPER-"):
-                        with _lock:
-                            self._pending_entry_order_id = None
-                            self._pending_entry_placed_at = None
-                            self._pending_trade_plan = None
-                            self._pending_gtt_trigger_id = None
+                        from services.paper_order_guard import is_paper_position_open
+
+                        if not is_paper_position_open(self._pending_entry_order_id):
+                            with _lock:
+                                self._pending_entry_order_id = None
+                                self._pending_entry_placed_at = None
+                                self._pending_trade_plan = None
+                                self._pending_gtt_trigger_id = None
+                                self._pending_symbol = None
                     elif not session_open:
                         self._cancel_pending(reason="MCX session closed")
                     else:
@@ -824,9 +828,16 @@ class CommodityStrategyWatch:
                         self._evaluate_sync
                     )
                     if self._pending_entry_order_id and plan:
-                        invalid, why = self._setup_invalidated(plan)
-                        if invalid:
-                            self._cancel_pending(reason=why)
+                        pend = str(self._pending_entry_order_id or "")
+                        skip_inv = pend.upper().startswith("PAPER-")
+                        if skip_inv:
+                            from services.paper_order_guard import is_paper_position_open
+
+                            skip_inv = is_paper_position_open(pend)
+                        if not skip_inv:
+                            invalid, why = self._setup_invalidated(plan)
+                            if invalid:
+                                self._cancel_pending(reason=why)
                     if fire_signal and preview is not None:
                         await self._on_signal_ready(preview, plan, can_place, try_autonomous)
                     elif try_autonomous and preview is not None:
@@ -1163,10 +1174,10 @@ class CommodityStrategyWatch:
                                 self._placed_symbols_today.append(up)
                         is_paper_oid = entry_id and str(entry_id).upper().startswith("PAPER-")
                         if is_paper_oid:
-                            self._pending_entry_order_id = None
-                            self._pending_entry_placed_at = None
+                            self._pending_entry_order_id = str(entry_id)
+                            self._pending_entry_placed_at = datetime.now(IST).isoformat()
                             self._pending_gtt_trigger_id = None
-                            self._pending_trade_plan = None
+                            self._pending_trade_plan = copy.deepcopy(trade_plan)
                         else:
                             self._pending_entry_order_id = str(entry_id) if entry_id else None
                             self._pending_entry_placed_at = (

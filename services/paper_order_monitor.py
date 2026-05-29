@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -86,9 +87,12 @@ class PaperOrderMonitor:
 
         db = get_database()
         conn = db.get_connection()
+        min_hold = max(0, int(os.getenv("PAPER_MIN_HOLD_SEC", "15") or 15))
+        now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+
         cur = conn.execute(
             """
-            SELECT id, order_id, payload, stoploss, target, trailing_stoploss
+            SELECT id, order_id, created_at, payload, stoploss, target, trailing_stoploss
             FROM paper_orders
             WHERE exit_reason IS NULL
               AND (
@@ -141,6 +145,7 @@ class PaperOrderMonitor:
                 seen_q.add(qk)
                 quote_keys.append(qk)
 
+            created_at = row.get("created_at")
             prepared.append(
                 {
                     "db_id": int(row["id"]),
@@ -153,6 +158,7 @@ class PaperOrderMonitor:
                     "stoploss": sl,
                     "target": tgt,
                     "trailing_stoploss": trail_amt,
+                    "created_at": created_at,
                 }
             )
 
@@ -185,6 +191,17 @@ class PaperOrderMonitor:
         now = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
 
         for item in prepared:
+            if min_hold > 0 and item.get("created_at"):
+                try:
+                    placed = datetime.fromisoformat(str(item["created_at"]))
+                    if placed.tzinfo is None:
+                        placed = placed.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+                    age = (now_ist - placed.astimezone(ZoneInfo("Asia/Kolkata"))).total_seconds()
+                    if age < min_hold:
+                        continue
+                except Exception:
+                    pass
+
             qk = item["quote_key"]
             if qk not in quotes:
                 continue

@@ -888,6 +888,15 @@ def place_trade(
         float(plan["stop_loss_premium"]),
         float(plan["target_premium"]),
     )
+    try:
+        from services.paper_trading import is_paper_mode_for_segment
+
+        if is_paper_mode_for_segment("commodity"):
+            from services.paper_order_guard import widen_paper_exits
+
+            sl_prem, tgt_prem = widen_paper_exits(entry_limit, sl_prem, tgt_prem)
+    except Exception:
+        pass
     plan["stop_loss_premium"] = sl_prem
     plan["target_premium"] = tgt_prem
 

@@ -127,9 +127,14 @@ def autonomous_place_allowed(
         from services.paper_trading import is_paper_mode_for_segment
 
         if is_paper_mode_for_segment(segment):
-            if not plan or not plan.get("tradingsymbol"):
-                return False, "No trade plan from checklist/strategy"
-            return True, "Paper autonomous (checklist + strategy)"
+            from services.paper_order_guard import paper_autonomous_place_allowed
+
+            return paper_autonomous_place_allowed(
+                plan,
+                placed_today=placed_today,
+                segment=segment,
+                entry_quality_check=entry_quality_for_autonomous,
+            )
     except Exception:
         pass
     sym = str(plan.get("tradingsymbol") or "")
