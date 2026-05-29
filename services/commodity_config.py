@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from services.commodity_product_context import get_active_product
@@ -64,6 +65,21 @@ def allow_offhours_commodity_place() -> bool:
         "yes",
         "on",
     )
+
+
+def live_fixed_order_qty() -> Optional[int]:
+    """
+    Fixed Kite qty for commodity live mode (paper mode ignores this).
+    Set COMMODITY_LIVE_FIXED_QTY=0 to restore auto sizing from risk % / sizing fund.
+    Default 1 for live testing.
+    """
+    raw = os.getenv("COMMODITY_LIVE_FIXED_QTY", "1").strip().lower()
+    if raw in ("0", "false", "no", "off", "none", ""):
+        return None
+    try:
+        return max(1, min(50, int(float(raw))))
+    except ValueError:
+        return 1
 
 
 def resolve_commodity_product(plan: dict | None = None) -> str:

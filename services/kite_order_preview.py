@@ -37,6 +37,15 @@ def build_kite_order_preview(
         lines.append(
             f"Qty sized from {sizing_capital_source}: ₹{sizing_capital_inr:,.0f}"
         )
+    try:
+        from services.commodity_config import live_fixed_order_qty
+        from services.paper_trading import is_paper_mode_for_segment
+
+        fixed = live_fixed_order_qty()
+        if fixed is not None and not paper_mode:
+            lines.append(f"Live fixed qty: {fixed} (COMMODITY_LIVE_FIXED_QTY)")
+    except Exception:
+        pass
     if kite_margin_inr is not None and not paper_mode:
         lines.append(f"Kite available margin (placement check): ₹{kite_margin_inr:,.0f}")
 

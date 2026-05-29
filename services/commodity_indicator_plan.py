@@ -192,6 +192,22 @@ def premium_levels_from_indicators(
 MCX_MAX_ORDER_QTY = 50
 
 
+def resolve_mcx_qty_cap(max_qty_cap: int) -> int:
+    """Ceiling for Kite qty: live fixed qty, explicit cap (>1), or auto (paper/live)."""
+    try:
+        from services.commodity_config import live_fixed_order_qty
+        from services.paper_trading import is_paper_mode_for_segment
+
+        fixed = live_fixed_order_qty()
+        if fixed is not None and not is_paper_mode_for_segment("commodity"):
+            return fixed
+    except Exception:
+        pass
+    if int(max_qty_cap or 0) > 1:
+        return int(max_qty_cap)
+    return MCX_MAX_ORDER_QTY
+
+
 def size_from_risk(
     capital: float,
     risk_pct: float,
@@ -216,7 +232,7 @@ def size_from_risk(
     prem_risk = max(0.05, entry - sl)
     prem_reward = max(0.05, tgt - entry)
 
-    cap = int(max_qty_cap) if int(max_qty_cap or 0) > 1 else MCX_MAX_ORDER_QTY
+    cap = resolve_mcx_qty_cap(max_qty_cap)
 
     max_risk_amt = max(0.0, float(capital) * (float(risk_pct) / 100.0))
     risk_per_qty = prem_risk * ls
