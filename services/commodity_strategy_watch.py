@@ -204,8 +204,9 @@ class CommodityStrategyWatch:
         self._last_market_open = False
         self._last_paper_mode = False
         self._last_kite_connected = False
-        # After exit/place, require entry_ready to go false then true again before re-entry.
+        # After exit/place, require cooldown or entry_ready edge before next autonomous entry.
         self._reentry_armed = True
+        self._last_autonomous_placed_at: Optional[datetime] = None
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
@@ -256,6 +257,17 @@ class CommodityStrategyWatch:
             self._last_entry_ready = ler if ler is None else bool(ler)
             lcr = data.get("last_checklist_ready")
             self._last_checklist_ready = lcr if lcr is None else bool(lcr)
+            self._reentry_armed = bool(data.get("reentry_armed", True))
+            lap = data.get("last_autonomous_placed_at")
+            if lap:
+                try:
+                    self._last_autonomous_placed_at = datetime.fromisoformat(str(lap))
+                    if self._last_autonomous_placed_at.tzinfo is None:
+                        self._last_autonomous_placed_at = self._last_autonomous_placed_at.replace(
+                            tzinfo=IST
+                        )
+                except Exception:
+                    self._last_autonomous_placed_at = None
             self._session_date = _today()
             for ev in (data.get("events") or [])[:_MAX_EVENTS]:
                 if isinstance(ev, dict):
@@ -283,6 +295,12 @@ class CommodityStrategyWatch:
                 "eval_count": self._eval_count,
                 "last_entry_ready": self._last_entry_ready,
                 "last_checklist_ready": self._last_checklist_ready,
+                "reentry_armed": self._reentry_armed,
+                "last_autonomous_placed_at": (
+                    self._last_autonomous_placed_at.isoformat()
+                    if self._last_autonomous_placed_at
+                    else None
+                ),
             }
         _write_persisted(data)
 
@@ -317,6 +335,44 @@ class CommodityStrategyWatch:
             self._last_entry_ready = None
             self._last_checklist_ready = None
             self._eval_count = 0
+            self._reentry_armed = True
+            self._last_autonomous_placed_at = None
+
+    def _reentry_cooldown_sec(self) -> float:
+        try:
+            return max(
+                30.0,
+                min(900.0, float(os.getenv("COMMODITY_WATCH_REENTRY_COOLDOWN_SEC", "90") or 90)),
+            )
+        except Exception:
+            return 90.0
+
+    def _maybe_rearm_reentry(self, entry_ready: bool) -> None:
+        """Allow next trade after cooldown or entry_ready false→true (multi-trade days)."""
+        with _lock:
+            if self._reentry_armed:
+                return
+            if not entry_ready:
+                return
+            if self._pending_entry_order_id or self._gtt_attach_in_progress:
+                return
+            if self._placed_count_today >= self._max_trades_per_day():
+                return
+
+            if self._last_entry_ready is False and entry_ready:
+                self._reentry_armed = True
+                return
+
+            if self._last_autonomous_placed_at is None:
+                if self._placed_count_today == 0:
+                    self._reentry_armed = True
+                return
+
+            age = (
+                datetime.now(IST) - self._last_autonomous_placed_at.astimezone(IST)
+            ).total_seconds()
+            if age >= self._reentry_cooldown_sec():
+                self._reentry_armed = True
 
     def _max_trades_per_day(self) -> int:
         """Per-day autonomous cap — higher in paper mode."""
@@ -763,6 +819,8 @@ class CommodityStrategyWatch:
                 "placed_today": self._placed_today,
                 "placed_count_today": self._placed_count_today,
                 "max_trades_per_day": self._max_trades_per_day(),
+                "reentry_armed": self._reentry_armed,
+                "reentry_cooldown_sec": int(self._reentry_cooldown_sec()),
                 "placed_symbol_today": self._placed_symbol_today,
                 "strategy_name": plan.get("strategy_name"),
                 "tradingsymbol": plan.get("tradingsymbol"),
@@ -835,7 +893,7 @@ class CommodityStrategyWatch:
                                 self._pending_trade_plan = None
                                 self._pending_gtt_trigger_id = None
                                 self._pending_symbol = None
-                                self._reentry_armed = False
+                                self._reentry_armed = True
                     elif not session_open:
                         self._cancel_pending(reason="MCX session closed")
                     else:
@@ -915,16 +973,18 @@ class CommodityStrategyWatch:
         )
 
     def _autonomous_entry_allowed(self, entry_ready: bool) -> Tuple[bool, str]:
-        """Require a fresh entry signal after each place/exit (not perpetual checklist_ready)."""
+        """Cooldown or fresh entry edge before next autonomous place (up to daily cap)."""
+        self._maybe_rearm_reentry(entry_ready)
         if not entry_ready:
             with _lock:
                 self._reentry_armed = True
             return False, "Entry not confirmed (entry_ready=false)"
         with _lock:
             if not self._reentry_armed:
+                cd = int(self._reentry_cooldown_sec())
                 return (
                     False,
-                    "Setup must reset after last trade — wait until entry drops then confirms again",
+                    f"Re-entry cooldown — wait {cd}s after last trade or until entry resets",
                 )
         return True, ""
 
@@ -1270,6 +1330,7 @@ class CommodityStrategyWatch:
                             )
                         self._pending_symbol = sym
                         self._reentry_armed = False
+                        self._last_autonomous_placed_at = datetime.now(IST)
                     kind = "auto_placed"
                 else:
                     msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"

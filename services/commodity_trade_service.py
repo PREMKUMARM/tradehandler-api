@@ -779,7 +779,6 @@ def place_gtt_for_plan(
 ) -> Dict[str, Any]:
     """Place OCO GTT exit (SL + target) for a long MCX option."""
     from services.commodity_indicator_plan import (
-        _normalize_long_option_exits,
         gtt_triggers_from_plan,
         refresh_plan_at_execution,
     )
@@ -792,10 +791,21 @@ def place_gtt_for_plan(
         "ok": False,
         "trade_plan": None,
     }
-    plan = refresh_plan_at_execution(dict(plan))
+    working = dict(plan)
     if fill_price is not None and fill_price > 0:
-        plan["entry_limit_price"] = fill_price
-        plan["entry_premium"] = fill_price
+        working["entry_limit_price"] = float(fill_price)
+        working["entry_premium"] = float(fill_price)
+
+    plan = refresh_plan_at_execution(working)
+    if fill_price is not None and fill_price > 0:
+        plan["entry_limit_price"] = float(fill_price)
+        plan["entry_premium"] = float(fill_price)
+
+    from services.premium_exit_policy import enforce_plan_exits
+
+    entry_limit = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
+    plan = enforce_plan_exits(plan, entry=entry_limit)
+    entry_limit = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
 
     symbol = plan.get("tradingsymbol")
     if not symbol:
@@ -803,14 +813,8 @@ def place_gtt_for_plan(
         return result
 
     qty = int(plan.get("num_lots") or plan.get("quantity") or 1)
-    entry_limit = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
-    sl_prem, tgt_prem = _normalize_long_option_exits(
-        entry_limit,
-        float(plan["stop_loss_premium"]),
-        float(plan["target_premium"]),
-    )
-    plan["stop_loss_premium"] = sl_prem
-    plan["target_premium"] = tgt_prem
+    sl_prem = float(plan["stop_loss_premium"])
+    tgt_prem = float(plan["target_premium"])
     result["trade_plan"] = plan
 
     product = resolve_commodity_product(plan)

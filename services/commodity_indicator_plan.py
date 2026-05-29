@@ -153,8 +153,13 @@ def _normalize_long_option_exits(
     tgt_prem: float,
     *,
     min_gap: float = 0.05,
+    risk_pct: float = 1.0,
+    reward_pct: float = 2.0,
+    min_rr: Optional[float] = None,
 ) -> Tuple[float, float]:
     """Long CE/PE: SL below entry, target above entry (exit SELL limits)."""
+    from services.premium_exit_policy import enforce_min_premium_exits
+
     entry = float(entry_premium)
     sl = float(sl_prem)
     tp = float(tgt_prem)
@@ -166,6 +171,14 @@ def _normalize_long_option_exits(
     if sl >= tp:
         sl = max(0.05, entry - gap)
         tp = entry + gap
+    sl, tp = enforce_min_premium_exits(
+        entry,
+        sl,
+        tp,
+        risk_pct=risk_pct,
+        reward_pct=reward_pct,
+        min_rr=min_rr,
+    )
     return round_to_tick(sl), round_to_tick(tp)
 
 
@@ -674,7 +687,9 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         }
     )
     updated["indicators"] = ind
-    return updated
+    from services.premium_exit_policy import enforce_plan_exits
+
+    return enforce_plan_exits(updated, entry=exit_anchor)
 
 
 def gtt_triggers_from_plan(plan: Dict[str, Any]) -> Tuple[float, float, float]:

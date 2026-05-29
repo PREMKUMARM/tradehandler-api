@@ -143,12 +143,16 @@ def resolve_long_buy_exit_levels(
         spot_reward = abs(float(underlying_tgt) - float(underlying_spot))
         sl_prem = max(0.05, prem - spot_risk * delta)
         tgt_prem = prem + spot_reward * delta
-        if tgt_prem <= prem:
-            tgt_prem = prem + max(0.05, spot_reward * delta)
+        prem_risk = max(0.05, prem - sl_prem)
+        min_reward = prem_risk * max(1.5, float(reward_ratio or 2.0))
+        if tgt_prem - prem < min_reward:
+            tgt_prem = prem + min_reward
         sl_prem = round_to_tick(sl_prem)
         tgt_prem = round_to_tick(tgt_prem)
         if normalize_exits:
-            sl_prem, tgt_prem = normalize_exits(prem, sl_prem, tgt_prem)
+            sl_prem, tgt_prem = normalize_exits(
+                prem, sl_prem, tgt_prem, min_rr=reward_ratio
+            )
         note = (
             f"{sid}: underlying SL {underlying_sl:.0f} → TP {underlying_tgt:.0f} "
             f"mapped to premium (δ)"
@@ -161,6 +165,10 @@ def resolve_long_buy_exit_levels(
         intra_bb,
         reward_ratio=reward_ratio,
     )
+    if normalize_exits:
+        sl_prem, tgt_prem = normalize_exits(
+            prem, sl_prem, tgt_prem, min_rr=reward_ratio
+        )
     delta = estimate_delta_from_spot(
         float(underlying_spot),
         int(strike),

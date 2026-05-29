@@ -533,14 +533,16 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         }
     )
     updated["indicators"] = ind
-    return updated
+    from services.premium_exit_policy import enforce_plan_exits
+
+    exit_anchor = float(
+        updated.get("entry_limit_price") or updated.get("entry_premium") or 0
+    )
+    return enforce_plan_exits(updated, entry=exit_anchor)
 
 
 def gtt_triggers_from_plan(plan: Dict[str, Any]) -> Tuple[float, float, float]:
     """OCO trigger prices and last_price for GTT placement."""
-    sl_prem = float(plan["stop_loss_premium"])
-    tgt_prem = float(plan["target_premium"])
-    last_price = float(plan.get("entry_premium") or plan.get("entry_limit_price") or 0)
-    sl_trigger = round_to_tick(sl_prem * 1.002)
-    tp_trigger = round_to_tick(tgt_prem * 0.998)
-    return sl_trigger, tp_trigger, last_price
+    from services.commodity_indicator_plan import gtt_triggers_from_plan as _mcx_gtt
+
+    return _mcx_gtt(plan)
