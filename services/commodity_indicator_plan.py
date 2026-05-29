@@ -201,7 +201,7 @@ def size_from_risk(
     target_premium: float,
     lot_size: int,
     max_qty_cap: int = 1,
-) -> Tuple[int, int, float]:
+) -> Tuple[int, int, float, Dict[str, Any]]:
     """
     Return (kite_qty, kite_qty, risk_inr) for MCX options.
 
@@ -238,7 +238,18 @@ def size_from_risk(
 
     qty = max(1, min(qty, cap))
     risk_inr = risk_per_qty * qty
-    return qty, qty, risk_inr
+    sizing = {
+        "capital_inr": round(float(capital), 2),
+        "risk_pct": float(risk_pct),
+        "max_risk_inr": round(max_risk_amt, 2),
+        "premium_risk_per_barrel": round(prem_risk, 2),
+        "risk_inr_per_kite_qty": round(risk_per_qty, 2),
+        "max_qty_from_risk": max_from_risk,
+        "max_qty_from_capital": max_from_capital,
+        "contract_units_per_qty": ls,
+        "kite_qty": qty,
+    }
+    return qty, qty, risk_inr, sizing
 
 
 def build_indicator_trade_plan(
@@ -382,7 +393,7 @@ def build_indicator_trade_plan(
 
     ls = int(contract.lot_size or lot_size())
 
-    qty_lots, quantity, risk_inr = size_from_risk(
+    qty_lots, quantity, risk_inr, qty_sizing = size_from_risk(
         capital,
         risk_pct,
         reward_pct,
@@ -444,6 +455,7 @@ def build_indicator_trade_plan(
         "lot_size": ls,
         "num_lots": qty_lots,
         "max_qty_cap": num_lots,
+        "qty_sizing": qty_sizing,
         "product": COMMODITY_PRODUCT,
         "entry_order_type": "LIMIT",
         "entry_limit_price": entry_limit,
@@ -581,7 +593,7 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     max_qty_cap = int(plan.get("max_qty_cap") or 1)
     reward_pct = float(ind_meta.get("reward_pct") or plan.get("reward_pct") or 2.0)
     if capital > 0:
-        qty_lots, quantity, risk_inr = size_from_risk(
+        qty_lots, quantity, risk_inr, qty_sizing = size_from_risk(
             capital,
             risk_pct,
             reward_pct,
@@ -612,6 +624,7 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
             "reward_inr": round(
                 max(0.0, (tgt_prem - float(entry_prem)) * lot_size * qty_lots), 2
             ),
+            "qty_sizing": qty_sizing,
             "nifty_spot": round(spot_entry, 2),
             "spot_stop_loss": round(spot_sl, 2),
             "spot_target": round(spot_tgt, 2),

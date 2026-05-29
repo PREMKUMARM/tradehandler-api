@@ -196,18 +196,20 @@ def enrich_paper_orders_with_quotes(
             "BUY",
             "SELL",
         ):
+            from services.paper_funds import _premium_pnl
+
             ep = float(row["exit_price"])
-            if tt == "BUY":
-                row["realized_pnl"] = round((ep - entry) * qty_i, 2)
-            else:
-                row["realized_pnl"] = round((entry - ep) * qty_i, 2)
+            row["realized_pnl"] = _premium_pnl(
+                float(entry), ep, qty_i, p, buy=(tt == "BUY")
+            )
             row["unrealized_pnl"] = None
         elif ltp is not None and entry is not None and qty_i and tt in ("BUY", "SELL"):
+            from services.paper_funds import _premium_pnl
+
             row["realized_pnl"] = None
-            if tt == "BUY":
-                row["unrealized_pnl"] = round((ltp - entry) * qty_i, 2)
-            else:
-                row["unrealized_pnl"] = round((entry - ltp) * qty_i, 2)
+            row["unrealized_pnl"] = _premium_pnl(
+                float(entry), float(ltp), qty_i, p, buy=(tt == "BUY")
+            )
         else:
             row["unrealized_pnl"] = None
             row["realized_pnl"] = None

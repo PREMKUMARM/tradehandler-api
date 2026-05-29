@@ -104,7 +104,7 @@ def _entry_price_from_row(row: Dict[str, Any], payload: Dict[str, Any]) -> Optio
     return None
 
 
-def _mcx_notional_multiplier(payload: Dict[str, Any]) -> int:
+def mcx_notional_multiplier(payload: Dict[str, Any]) -> int:
     """MCX mini: Kite qty × units per lot (barrels); Nifty/crypto use 1."""
     ex = str(payload.get("exchange") or "").upper()
     sym = str(payload.get("tradingsymbol") or "").upper()
@@ -115,6 +115,24 @@ def _mcx_notional_multiplier(payload: Dict[str, Any]) -> int:
     except (TypeError, ValueError):
         ls = 0
     return ls if ls > 0 else 10
+
+
+def _mcx_notional_multiplier(payload: Dict[str, Any]) -> int:
+    return mcx_notional_multiplier(payload)
+
+
+def _premium_pnl(
+    entry: float,
+    mark: float,
+    qty: int,
+    payload: Dict[str, Any],
+    *,
+    buy: bool = True,
+) -> float:
+    """Signed P&L in INR for one option leg (includes MCX lot multiplier)."""
+    mult = mcx_notional_multiplier(payload)
+    delta = (mark - entry) if buy else (entry - mark)
+    return round(delta * qty * mult, 2)
 
 
 def _open_position_cost(row: Dict[str, Any], payload: Dict[str, Any]) -> float:
@@ -208,9 +226,7 @@ def _unrealized_from_row(row: Dict[str, Any], payload: Dict[str, Any]) -> Option
     if qty <= 0:
         return None
     tt = str(payload.get("transaction_type") or "BUY").upper()
-    if tt == "BUY":
-        return round((ltp_f - entry) * qty, 2)
-    return round((entry - ltp_f) * qty, 2)
+    return _premium_pnl(entry, ltp_f, qty, payload, buy=(tt == "BUY"))
 
 
 def _realized_from_row(row: Dict[str, Any], payload: Dict[str, Any]) -> Optional[float]:
@@ -255,10 +271,7 @@ def _sum_open_and_realized(segment: str) -> Tuple[float, int, float, int]:
             if entry is None:
                 continue
             exit_px = float(row.get("exit_price") or entry)
-            if tt == "BUY":
-                realized += (exit_px - entry) * qty
-            else:
-                realized += (entry - exit_px) * qty
+            realized += _premium_pnl(entry, exit_px, qty, payload, buy=(tt == "BUY"))
         else:
             cost = _open_position_cost(row, payload)
             if cost <= 0:
