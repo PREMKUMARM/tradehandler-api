@@ -169,7 +169,8 @@ def refine_spot_levels_from_candles(
         upper = intra.get("bb_upper")
         mid = intra.get("bb_middle")
         if lower and upper and mid:
-            buf = max(6.0, (float(upper) - float(lower)) * 0.04)
+            width = float(upper) - float(lower)
+            buf = max(0.5, width * 0.04) if entry < 5000 else max(6.0, width * 0.04)
             if kind == "CE":
                 sl = float(lower) - buf
                 risk = max(1.0, entry - sl)
@@ -178,7 +179,7 @@ def refine_spot_levels_from_candles(
                 sl = float(upper) + buf
                 risk = max(1.0, sl - entry)
                 tgt = float(mid) - rr * risk * 0.85
-            notes.append("BB SL beyond band, target toward middle")
+            notes.append("Option 5m BB: SL beyond band, target toward middle")
 
     elif strategy_id == "long_atm_directional":
         risk_pts = max(15.0, entry * 0.0035)

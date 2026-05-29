@@ -946,3 +946,108 @@ def get_nifty_bundle_for_v2() -> Dict[str, Any]:
 def recalculate_from_ticker() -> Dict[str, Any]:
     """Explicit refresh after tick updates — used by checklist / place."""
     return get_nifty_bundle_for_v2()
+
+
+def _resolve_instrument_token(
+    kite: Any,
+    exchange: str,
+    tradingsymbol: str,
+) -> Optional[int]:
+    ex = (exchange or "NFO").upper()
+    sym = (tradingsymbol or "").strip()
+    if not sym:
+        return None
+    try:
+        for row in kite.instruments(ex) or []:
+            if str(row.get("tradingsymbol") or "") == sym:
+                tok = row.get("instrument_token")
+                return int(tok) if tok is not None else None
+    except Exception as exc:
+        log_warning(f"[KiteLiveIndicators] instrument lookup {ex}:{sym}: {exc}")
+    return None
+
+
+def get_option_bollinger_snapshot(
+    tradingsymbol: str,
+    exchange: str = "NFO",
+    *,
+    patch_ltp: bool = True,
+) -> Dict[str, Any]:
+    """
+    5m Bollinger (20, 2σ) on the selected option/future contract — matches Zerodha chart on that symbol.
+  """
+    from utils.kite_utils import get_kite_instance
+
+    ex = (exchange or "NFO").upper()
+    sym = (tradingsymbol or "").strip()
+    out: Dict[str, Any] = {
+        "tradingsymbol": sym,
+        "exchange": ex,
+        "bb_lower": None,
+        "bb_middle": None,
+        "bb_upper": None,
+        "last_5m_close": None,
+        "option_ltp": None,
+        "indicator_window": {
+            "period": BB_PERIOD,
+            "timeframe": "5m",
+            "std_dev": BB_STD_MULT,
+        },
+        "indicator_sources": {},
+        "bar_count": 0,
+        "updated_at": datetime.now(IST).isoformat(),
+    }
+    if not sym:
+        out["error"] = "missing_symbol"
+        return out
+
+    try:
+        kite = get_kite_instance()
+    except Exception as exc:
+        out["error"] = str(exc)
+        return out
+
+    token = _resolve_instrument_token(kite, ex, sym)
+    if not token:
+        out["error"] = "token_not_found"
+        return out
+
+    now = datetime.now(IST)
+    rows = _fetch_recent_5m_rows(kite, token, BB_PERIOD + 4, now)
+    closes = [float(r["close"]) for r in rows if r.get("close")]
+    out["bar_count"] = len(closes)
+
+    ltp: Optional[float] = None
+    if patch_ltp:
+        try:
+            key = f"{ex}:{sym}"
+            row = (kite.quote([key]) or {}).get(key, {}) or {}
+            ltp = float(row.get("last_price") or 0)
+            if ltp <= 0:
+                o = row.get("ohlc") or {}
+                ltp = float(o.get("close") or o.get("open") or 0)
+        except Exception as exc:
+            log_warning(f"[KiteLiveIndicators] option quote {sym}: {exc}")
+
+    if ltp and ltp > 0:
+        out["option_ltp"] = round(ltp, 2)
+        if closes:
+            closes[-1] = ltp
+        elif closes is not None:
+            closes.append(ltp)
+
+    mid, upper, lower = compute_bollinger_bands(closes)
+    out["bb_middle"] = round(mid, 2) if mid is not None else None
+    out["bb_upper"] = round(upper, 2) if upper is not None else None
+    out["bb_lower"] = round(lower, 2) if lower is not None else None
+    out["last_5m_close"] = round(closes[-1], 2) if closes else None
+    src = "kite_historical_5m_option"
+    out["indicator_sources"] = {
+        "bb_middle": src,
+        "bb_upper": src,
+        "bb_lower": src,
+        "contract": sym,
+    }
+    if len(closes) < BB_PERIOD:
+        out["error"] = f"need_{BB_PERIOD}_bars"
+    return out

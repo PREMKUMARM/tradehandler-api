@@ -432,7 +432,7 @@ def _analyze_bb_5m(
             None,
             0,
             notes,
-            "5m Bollinger Bands not ready — need 20 Nifty 5m bars",
+            "5m Bollinger Bands not ready — need 20×5m bars on the option contract",
             "",
         )
 
@@ -445,7 +445,7 @@ def _analyze_bb_5m(
         notes.append(f"BB source: {bb_src}")
 
     notes.append(
-        f"5m BB L {lower:.0f} M {mid:.0f} U {upper:.0f} · spot {spot:.0f} · {zone}"
+        f"5m BB (contract) L {lower:.2f} M {mid:.2f} U {upper:.2f} · LTP {spot:.2f} · {zone}"
     )
 
     if bb["extended"]:

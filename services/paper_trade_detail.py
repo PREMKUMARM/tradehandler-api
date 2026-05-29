@@ -43,6 +43,7 @@ def slim_trade_plan_for_paper(plan: Dict[str, Any]) -> Dict[str, Any]:
         "bb_middle",
         "bb_upper",
         "bb_zone",
+        "bb_on_contract",
         "spot_entry",
         "spot_stop_loss",
         "spot_target",
@@ -80,6 +81,7 @@ def slim_trade_plan_for_paper(plan: Dict[str, Any]) -> Dict[str, Any]:
         "strike_moneyness": plan.get("strike_moneyness"),
         "note": plan.get("note"),
         "level_note": ind.get("level_note") or plan.get("level_note"),
+        "bb_on_contract": plan.get("bb_on_contract") or ind.get("bb_on_contract"),
         "indicators": slim_ind,
         "captured_at": datetime.now(IST).isoformat(),
     }
@@ -97,15 +99,41 @@ def _fmt_num(v: Any, digits: int = 2) -> str:
         return str(v)
 
 
-def _live_indicators_for_segment(segment: str) -> Dict[str, Any]:
+def _merge_option_bb(live: Dict[str, Any], opt_bb: Dict[str, Any]) -> None:
+    """Overlay contract BB + LTP onto live indicator bundle."""
+    if opt_bb.get("bb_middle") is None:
+        return
+    live["bb_lower"] = opt_bb.get("bb_lower")
+    live["bb_middle"] = opt_bb.get("bb_middle")
+    live["bb_upper"] = opt_bb.get("bb_upper")
+    live["last_5m_close"] = opt_bb.get("last_5m_close")
+    live["option_ltp"] = opt_bb.get("option_ltp") or live.get("option_ltp")
+    live["indicator_window"] = opt_bb.get("indicator_window") or live.get("indicator_window")
+    live["indicator_sources"] = {
+        **(live.get("indicator_sources") or {}),
+        **(opt_bb.get("indicator_sources") or {}),
+    }
+    live["bb_bar_count"] = opt_bb.get("bar_count")
+
+
+def _live_indicators_for_segment(
+    segment: str,
+    *,
+    tradingsymbol: Optional[str] = None,
+    exchange: Optional[str] = None,
+) -> Dict[str, Any]:
     seg = normalize_segment(segment)
+    sym = (tradingsymbol or "").strip()
+    ex = (exchange or ("MCX" if seg == "commodity" else "NFO")).upper()
+
     if seg == "nifty50":
-        from services.kite_live_indicators import get_nifty_bundle_for_v2
+        from services.kite_live_indicators import get_nifty_bundle_for_v2, get_option_bollinger_snapshot
 
         bundle = get_nifty_bundle_for_v2()
-        return {
+        live: Dict[str, Any] = {
             "segment": seg,
-            "underlying_label": "Nifty 50",
+            "underlying_label": "Nifty 50 (index)",
+            "contract_label": sym or "—",
             "spot": bundle.get("nifty_spot"),
             "spot_source": bundle.get("spot_source"),
             "prev_close": bundle.get("prev_close"),
@@ -115,26 +143,37 @@ def _live_indicators_for_segment(segment: str) -> Dict[str, Any]:
             "or_high": bundle.get("or_high"),
             "or_low": bundle.get("or_low"),
             "ema9": bundle.get("ema9"),
-            "bb_lower": bundle.get("bb_lower"),
-            "bb_middle": bundle.get("bb_middle"),
-            "bb_upper": bundle.get("bb_upper"),
-            "last_5m_close": bundle.get("last_5m_close"),
-            "indicator_window": bundle.get("indicator_window"),
+            "bb_lower": None,
+            "bb_middle": None,
+            "bb_upper": None,
+            "last_5m_close": None,
+            "option_ltp": None,
+            "indicator_window": None,
             "indicator_sources": bundle.get("indicator_sources") or {},
             "last_tick_at": bundle.get("last_tick_at"),
             "updated_at": datetime.now(IST).isoformat(),
             "compare_hint": (
-                "Compare 5m BB (20, 2σ) on Nifty 50 spot in Zerodha Charts — "
-                "not on the option symbol."
+                "Bollinger (5m, 20, 2σ) is on the **option contract** chart in Zerodha — "
+                "open the same symbol as this trade. Nifty index levels below are context only."
             ),
         }
+        if sym:
+            opt_bb = get_option_bollinger_snapshot(sym, ex)
+            _merge_option_bb(live, opt_bb)
+            live["contract_label"] = sym
+            if opt_bb.get("error"):
+                live["bb_error"] = opt_bb.get("error")
+        return live
+
     if seg == "commodity":
         from services.commodity_live_indicators import recalculate_from_ticker
+        from services.kite_live_indicators import get_option_bollinger_snapshot
 
         bundle = recalculate_from_ticker()
-        return {
+        live = {
             "segment": seg,
-            "underlying_label": "MCX Crude",
+            "underlying_label": "MCX Crude (future)",
+            "contract_label": sym or "—",
             "spot": bundle.get("underlying_spot") or bundle.get("nifty_spot"),
             "spot_source": bundle.get("spot_source"),
             "prev_close": bundle.get("prev_close"),
@@ -144,16 +183,24 @@ def _live_indicators_for_segment(segment: str) -> Dict[str, Any]:
             "or_high": bundle.get("or_high"),
             "or_low": bundle.get("or_low"),
             "ema9": bundle.get("ema9"),
-            "bb_lower": bundle.get("bb_lower"),
-            "bb_middle": bundle.get("bb_middle"),
-            "bb_upper": bundle.get("bb_upper"),
-            "last_5m_close": bundle.get("last_5m_close"),
-            "indicator_window": bundle.get("indicator_window"),
+            "bb_lower": None,
+            "bb_middle": None,
+            "bb_upper": None,
+            "last_5m_close": None,
+            "option_ltp": None,
+            "indicator_window": None,
             "indicator_sources": bundle.get("indicator_sources") or {},
             "last_tick_at": bundle.get("last_tick_at"),
             "updated_at": datetime.now(IST).isoformat(),
-            "compare_hint": "Compare 5m BB on the MCX crude future in Zerodha Charts.",
+            "compare_hint": (
+                "Compare 5m BB on the **same MCX contract** as this trade in Zerodha Charts."
+            ),
         }
+        if sym:
+            _merge_option_bb(live, get_option_bollinger_snapshot(sym, ex))
+            live["contract_label"] = sym
+        return live
+
     return {
         "segment": seg,
         "underlying_label": "Crypto",
@@ -165,7 +212,6 @@ def _live_indicators_for_segment(segment: str) -> Dict[str, Any]:
 
 def _indicator_table(live: Dict[str, Any]) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
-    spot_label = live.get("underlying_label") or "Spot"
 
     def add(name: str, key: str, *, suffix: str = "") -> None:
         val = live.get(key)
@@ -173,18 +219,23 @@ def _indicator_table(live: Dict[str, Any]) -> List[Dict[str, str]]:
             return
         rows.append({"name": name, "value": _fmt_num(val) + suffix})
 
-    add(spot_label, "spot")
-    add("Prev close", "prev_close")
+    contract = live.get("contract_label")
+    if contract and contract != "—":
+        rows.append({"name": "Contract", "value": str(contract)})
+
+    add("Contract LTP", "option_ltp")
+    add(live.get("underlying_label") or "Index spot", "spot")
+    add("Prev close (index)", "prev_close")
     add("VIX", "vix")
-    add("PDH", "pdh")
-    add("PDL", "pdl")
-    add("OR high", "or_high")
-    add("OR low", "or_low")
-    add("9 EMA (5m)", "ema9")
-    add("BB lower (5m)", "bb_lower")
-    add("BB middle (5m)", "bb_middle")
-    add("BB upper (5m)", "bb_upper")
-    add("Last 5m close", "last_5m_close")
+    add("PDH (index)", "pdh")
+    add("PDL (index)", "pdl")
+    add("OR high (index)", "or_high")
+    add("OR low (index)", "or_low")
+    add("9 EMA (index 5m)", "ema9")
+    add("BB lower (contract 5m)", "bb_lower")
+    add("BB middle (contract 5m)", "bb_middle")
+    add("BB upper (contract 5m)", "bb_upper")
+    add("Last 5m close (contract)", "last_5m_close")
     win = live.get("indicator_window")
     if win:
         if isinstance(win, dict):
@@ -195,9 +246,17 @@ def _indicator_table(live: Dict[str, Any]) -> List[Dict[str, str]]:
         else:
             wtxt = str(win)
         rows.append({"name": "BB window", "value": wtxt})
-    src = live.get("spot_source")
+    bc = live.get("bb_bar_count")
+    if bc:
+        rows.append({"name": "BB bars used", "value": str(bc)})
+    src = (live.get("indicator_sources") or {}).get("bb_middle")
     if src:
-        rows.append({"name": "Spot source", "value": str(src)})
+        rows.append({"name": "BB source", "value": str(src)})
+    if live.get("bb_error"):
+        rows.append({"name": "BB status", "value": str(live["bb_error"])})
+    idx_src = live.get("spot_source")
+    if idx_src:
+        rows.append({"name": "Index spot source", "value": str(idx_src)})
     return rows
 
 
@@ -240,7 +299,8 @@ def _build_pricing_reason(
     sid = str(plan.get("strategy_id") or "strategy")
     opt = (plan.get("option_type") or "").upper()
     ind = plan.get("indicators") or {}
-    spot = ind.get("spot_entry") or ind.get("nifty_spot") or ind.get("underlying_spot")
+    contract_sym = plan.get("bb_on_contract") or ind.get("bb_on_contract") or symbol
+    prem = ind.get("option_ltp") or plan.get("entry_premium") or entry_price
     spot_sl = plan.get("spot_stop_loss") or ind.get("spot_stop_loss")
     spot_tp = plan.get("spot_target") or ind.get("spot_target")
     delta = plan.get("delta_used")
@@ -271,14 +331,15 @@ def _build_pricing_reason(
         ("bb_upper", "upper"),
     ):
         if ind.get(k) is not None:
-            bb_parts.append(f"{label} {_fmt_num(ind[k])}")
+            bb_parts.append(f"{label} ₹{_fmt_num(ind[k])}")
     if bb_parts:
         zone = ind.get("bb_zone") or ""
         steps.append(
             {
-                "title": "Bollinger (5m underlying @ entry)",
+                "title": f"Bollinger (5m on {contract_sym})",
                 "detail": " · ".join(bb_parts)
                 + (f" · zone {zone}" if zone else "")
+                + (f" · LTP ₹{_fmt_num(prem)}" if prem else "")
                 + (f" · {plan.get('level_note')}" if plan.get("level_note") else ""),
             }
         )
@@ -286,11 +347,15 @@ def _build_pricing_reason(
     entry_detail = (
         f"LIMIT ₹{_fmt_num(limit)} ({style or 'patient limit'})"
         + (f" · fair ₹{_fmt_num(fair)}" if fair else "")
-        + (f" · LTP ₹{_fmt_num(ind.get('option_ltp') or plan.get('entry_premium'))}" if ind.get("option_ltp") or plan.get("entry_premium") else "")
-        + (f" · book bid/ask ₹{_fmt_num(ind.get('option_bid'))}/₹{_fmt_num(ind.get('option_ask'))}" if ind.get("option_bid") else "")
+        + (f" · LTP ₹{_fmt_num(prem)}" if prem else "")
+        + (
+            f" · book bid/ask ₹{_fmt_num(ind.get('option_bid'))}/₹{_fmt_num(ind.get('option_ask'))}"
+            if ind.get("option_bid")
+            else ""
+        )
     )
     if trig is not None:
-        entry_detail += f" · spot trigger {_fmt_num(trig, 0)}"
+        entry_detail += f" · band trigger ₹{_fmt_num(trig)}"
     if score is not None:
         entry_detail += f" · score {score}"
     steps.append({"title": "Entry price", "detail": entry_detail})
@@ -298,18 +363,17 @@ def _build_pricing_reason(
     if sid == "bb_5m_mean_reversion" and spot_sl is not None and spot_tp is not None:
         steps.append(
             {
-                "title": "Spot SL / target (before option mapping)",
+                "title": "SL / target (option premium from contract BB)",
                 "detail": (
-                    f"PE: SL above upper band + buffer → {_fmt_num(spot_sl, 0)} · "
-                    f"target toward middle → {_fmt_num(spot_tp, 0)}. "
-                    f"Entry spot {_fmt_num(spot, 0)}."
+                    f"PE: SL above upper band + buffer → ₹{_fmt_num(spot_sl)} · "
+                    f"target toward middle → ₹{_fmt_num(spot_tp)}."
+                    if opt == "PE"
+                    else (
+                        f"CE: SL below lower band + buffer → ₹{_fmt_num(spot_sl)} · "
+                        f"target toward middle → ₹{_fmt_num(spot_tp)}."
+                    )
                 )
-                if opt == "PE"
-                else (
-                    f"CE: SL below lower band + buffer → {_fmt_num(spot_sl, 0)} · "
-                    f"target toward middle → {_fmt_num(spot_tp, 0)}. "
-                    f"Entry spot {_fmt_num(spot, 0)}."
-                ),
+                + (f" Entry LTP ₹{_fmt_num(prem)}." if prem else ""),
             }
         )
     elif spot_sl is not None and spot_tp is not None:
@@ -317,28 +381,33 @@ def _build_pricing_reason(
             {
                 "title": "Spot SL / target",
                 "detail": (
-                    f"Underlying SL {_fmt_num(spot_sl, 0)} → target {_fmt_num(spot_tp, 0)} "
-                    f"(entry spot {_fmt_num(spot, 0)})."
+                    f"SL {_fmt_num(spot_sl, 0)} → target {_fmt_num(spot_tp, 0)}."
                     + (f" {plan.get('level_note')}" if plan.get("level_note") else "")
                 ),
             }
         )
 
-    if delta is not None and spot is not None and spot_sl is not None and spot_tp is not None:
+    if (
+        delta is not None
+        and sid != "bb_5m_mean_reversion"
+        and spot_sl is not None
+        and spot_tp is not None
+    ):
         try:
-            spot_risk = abs(float(spot) - float(spot_sl))
-            spot_reward = abs(float(spot_tp) - float(spot))
-            steps.append(
-                {
-                    "title": "Option SL / target (delta map)",
-                    "detail": (
-                        f"δ ≈ {_fmt_num(delta, 3)} · spot risk {spot_risk:.1f} pts → "
-                        f"premium SL ₹{_fmt_num(sl_p)} · spot reward {spot_reward:.1f} pts → "
-                        f"premium TP ₹{_fmt_num(tp_p)}. "
-                        "(sl_prem = entry − spot_risk×δ; tgt_prem = entry + spot_reward×δ)"
-                    ),
-                }
-            )
+            nifty = ind.get("nifty_spot")
+            if nifty:
+                spot_risk = abs(float(nifty) - float(spot_sl))
+                spot_reward = abs(float(spot_tp) - float(nifty))
+                steps.append(
+                    {
+                        "title": "Option SL / target (delta map)",
+                        "detail": (
+                            f"δ ≈ {_fmt_num(delta, 3)} · index risk {spot_risk:.1f} pts → "
+                            f"premium SL ₹{_fmt_num(sl_p)} · reward {spot_reward:.1f} pts → "
+                            f"premium TP ₹{_fmt_num(tp_p)}."
+                        ),
+                    }
+                )
         except (TypeError, ValueError):
             pass
     elif sl_p is not None and tp_p is not None:
@@ -393,6 +462,8 @@ def get_paper_trade_detail(order_id: str) -> Dict[str, Any]:
             str(payload.get("tradingsymbol") or ""),
         )
     segment = normalize_segment(str(segment))
+    symbol = str(payload.get("tradingsymbol") or "")
+    exchange = str(payload.get("exchange") or "")
 
     entry_px = payload.get("paper_fill_price") or payload.get("price")
     try:
@@ -401,7 +472,11 @@ def get_paper_trade_detail(order_id: str) -> Dict[str, Any]:
         entry_px = None
 
     at_entry = payload.get("paper_trade_plan")
-    live = _live_indicators_for_segment(segment)
+    live = _live_indicators_for_segment(
+        segment,
+        tradingsymbol=symbol,
+        exchange=exchange,
+    )
     at_entry_table: List[Dict[str, str]] = []
     if at_entry:
         ind = at_entry.get("indicators") or {}
@@ -409,15 +484,18 @@ def get_paper_trade_detail(order_id: str) -> Dict[str, Any]:
             {
                 **ind,
                 "underlying_label": live.get("underlying_label"),
+                "contract_label": symbol,
                 "spot": ind.get("nifty_spot") or ind.get("underlying_spot"),
-                "indicator_window": ind.get("indicator_window"),
+                "option_ltp": ind.get("option_ltp") or entry_px,
+                "indicator_window": ind.get("indicator_window")
+                or {"period": 20, "timeframe": "5m", "std_dev": 2},
             }
         )
 
     return {
         "order_id": order_id,
         "segment": segment,
-        "symbol": payload.get("tradingsymbol"),
+        "symbol": symbol,
         "entry_price": entry_px,
         "stoploss": d.get("stoploss"),
         "target": d.get("target"),
@@ -430,7 +508,7 @@ def get_paper_trade_detail(order_id: str) -> Dict[str, Any]:
             entry_price=entry_px,
             stoploss=d.get("stoploss"),
             target=d.get("target"),
-            symbol=str(payload.get("tradingsymbol") or ""),
+            symbol=symbol,
         ),
         "compare_hint": live.get("compare_hint"),
     }
