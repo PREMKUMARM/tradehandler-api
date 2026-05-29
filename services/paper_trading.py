@@ -287,10 +287,19 @@ def set_segment_paper_mode(segment: str, active: bool) -> None:
         )
     seg = normalize_segment(segment)
     modes = _read_segment_modes()
-    modes[seg] = bool(active)
+    was_paper = bool(modes.get(seg, True))
+    is_paper = bool(active)
+    modes[seg] = is_paper
     PAPER_SEGMENT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     PAPER_SEGMENT_STATE_PATH.write_text(json.dumps(modes, indent=2), encoding="utf-8")
-    log_info(f"[PaperTrading] segment {seg} paper={active}")
+    log_info(f"[PaperTrading] segment {seg} paper={is_paper}")
+    if was_paper != is_paper:
+        try:
+            from services.watch_placement_reset import on_segment_paper_mode_changed
+
+            on_segment_paper_mode_changed(seg, was_paper, is_paper)
+        except Exception as exc:
+            log_warning(f"[PaperTrading] watch reset on mode change failed: {exc}")
 
 
 def _env_forces_paper() -> bool:

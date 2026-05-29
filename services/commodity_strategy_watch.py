@@ -628,6 +628,24 @@ class CommodityStrategyWatch:
         self._persist()
         log_info("[CommodityWatch] Placement counters reset")
 
+    def on_trading_mode_changed(self, paper_mode: bool) -> None:
+        """Paper↔live toggle: clear paper fill state so live autonomous can place on Kite."""
+        with _lock:
+            self._last_paper_mode = bool(paper_mode)
+        self.reset_placement_counters()
+        venue = "paper ledger" if paper_mode else "Zerodha (live)"
+        self._push_event(
+            WatchEvent(
+                at=datetime.now(IST).isoformat(),
+                kind="mode_changed",
+                message=(
+                    f"Segment switched to {venue} — daily placement counters cleared; "
+                    "re-entry armed for next confirmed setup"
+                ),
+            )
+        )
+        log_info(f"[CommodityWatch] Trading mode → {'paper' if paper_mode else 'live'} (counters reset)")
+
     def disarm(self) -> Dict[str, Any]:
         with _lock:
             was = self._armed
@@ -874,7 +892,10 @@ class CommodityStrategyWatch:
                         message=str(exc)[:200],
                     )
                 )
-            await asyncio.sleep(_poll_interval())
+                rate_limited = "too many request" in str(exc).lower()
+            else:
+                rate_limited = False
+            await asyncio.sleep(_poll_interval() + (30.0 if rate_limited else 0.0))
 
     def _should_autonomous_place(self, cfg: WatchConfig) -> bool:
         if watch_autonomous_globally_disabled():
@@ -1288,6 +1309,10 @@ def disarm_watch() -> Dict[str, Any]:
 
 def reset_commodity_watch_placement_counters() -> None:
     _watch.reset_placement_counters()
+
+
+def on_commodity_trading_mode_changed(paper_mode: bool) -> None:
+    _watch.on_trading_mode_changed(paper_mode)
 
 
 def nuclear_reset_watch() -> Dict[str, Any]:
