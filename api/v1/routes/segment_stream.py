@@ -19,9 +19,12 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from services.segment_balance import get_segment_balance
 from utils.logger import log_error, log_info, log_warning
 
 router = APIRouter(prefix="/ws", tags=["WebSocket"])
+
+BALANCE_PUSH_SEC = 8.0
 
 
 def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
