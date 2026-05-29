@@ -162,6 +162,66 @@ def _load_segment_order_rows(segment: str) -> List[Dict[str, Any]]:
     return rows
 
 
+def split_profit_loss(amount: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+    """Return (profit, loss) from signed P&L; one side set when non-zero."""
+    if amount is None:
+        return None, None
+    try:
+        v = float(amount)
+    except (TypeError, ValueError):
+        return None, None
+    if v > 0.005:
+        return round(v, 2), None
+    if v < -0.005:
+        return None, round(abs(v), 2)
+    return None, None
+
+
+def _unrealized_from_row(row: Dict[str, Any], payload: Dict[str, Any]) -> Optional[float]:
+    if row.get("unrealized_pnl") is not None:
+        try:
+            return float(row["unrealized_pnl"])
+        except (TypeError, ValueError):
+            pass
+    entry = _entry_price_from_row(row, payload)
+    ltp = row.get("ltp")
+    if entry is None or ltp is None:
+        return None
+    try:
+        qty = int(payload.get("quantity") or 0)
+        ltp_f = float(ltp)
+    except (TypeError, ValueError):
+        return None
+    if qty <= 0:
+        return None
+    tt = str(payload.get("transaction_type") or "BUY").upper()
+    if tt == "BUY":
+        return round((ltp_f - entry) * qty, 2)
+    return round((entry - ltp_f) * qty, 2)
+
+
+def _realized_from_row(row: Dict[str, Any], payload: Dict[str, Any]) -> Optional[float]:
+    if row.get("realized_pnl") is not None:
+        try:
+            return float(row["realized_pnl"])
+        except (TypeError, ValueError):
+            pass
+    entry = _entry_price_from_row(row, payload)
+    if entry is None or not row.get("exit_reason"):
+        return None
+    try:
+        qty = int(payload.get("quantity") or 0)
+        exit_px = float(row.get("exit_price") or entry)
+    except (TypeError, ValueError):
+        return None
+    if qty <= 0:
+        return None
+    tt = str(payload.get("transaction_type") or "BUY").upper()
+    if tt == "BUY":
+        return round((exit_px - entry) * qty, 2)
+    return round((entry - exit_px) * qty, 2)
+
+
 def _sum_open_and_realized(segment: str) -> Tuple[float, int, float, int]:
     """Returns (open_locked, open_count, realized_pnl, closed_count)."""
     open_locked = 0.0
@@ -203,22 +263,66 @@ def get_available_balance(segment: str) -> float:
     return max(0.0, allocated + realized - open_locked)
 
 
-def get_fund_snapshot(segment: str) -> Dict[str, Any]:
+def _aggregate_segment_pnl(
+    segment: str,
+    *,
+    fetch_quotes: bool = True,
+) -> Dict[str, float]:
+    """Totals for open MTM (estimated) and closed exit (actual) P&L."""
+    rows = _load_segment_order_rows(segment)
+    if fetch_quotes and rows:
+        try:
+            from services.paper_trading import enrich_paper_orders_with_quotes
+
+            enrich_paper_orders_with_quotes(rows, fetch_quotes=True)
+        except Exception as exc:
+            log_warning(f"[PaperFunds] quote enrich for P&L totals: {exc}")
+
+    est_profit = est_loss = act_profit = act_loss = 0.0
+    for row in rows:
+        payload = row.get("payload") or {}
+        if row.get("exit_reason"):
+            realized = _realized_from_row(row, payload)
+            p, loss = split_profit_loss(realized)
+            if p:
+                act_profit += p
+            if loss:
+                act_loss += loss
+        else:
+            unreal = _unrealized_from_row(row, payload)
+            p, loss = split_profit_loss(unreal)
+            if p:
+                est_profit += p
+            if loss:
+                est_loss += loss
+
+    return {
+        "estimated_profit": round(est_profit, 2),
+        "estimated_loss": round(est_loss, 2),
+        "actual_profit": round(act_profit, 2),
+        "actual_loss": round(act_loss, 2),
+    }
+
+
+def get_fund_snapshot(segment: str, *, fetch_quotes: bool = True) -> Dict[str, Any]:
     seg = normalize_segment(segment)
     cfg = _read_funds_file().get(seg, DEFAULT_FUNDS["nifty50"])
     allocated = float(cfg["allocated"])
     currency = str(cfg.get("currency") or "INR")
     open_locked, open_count, realized, closed_count = _sum_open_and_realized(seg)
     available = max(0.0, allocated + realized - open_locked)
+    pnl_totals = _aggregate_segment_pnl(seg, fetch_quotes=fetch_quotes)
     return {
         "segment": seg,
         "allocated": round(allocated, 2),
         "currency": currency,
         "available": round(available, 2),
+        "available_for_new_trades": round(available, 2),
         "open_positions_cost": round(open_locked, 2),
         "open_positions": open_count,
         "realized_pnl": round(realized, 2),
         "closed_trades": closed_count,
+        **pnl_totals,
     }
 
 
@@ -268,9 +372,13 @@ def assert_can_allocate(segment: str, entry_cost: float) -> Tuple[bool, str]:
     if entry_cost > avail + 0.01:
         cur = get_segment_currency(segment)
         sym = "₹" if cur == "INR" else "$"
+        snap = get_fund_snapshot(segment, fetch_quotes=False)
+        locked = float(snap.get("open_positions_cost") or 0)
         return (
             False,
-            f"Insufficient paper funds: need {sym}{entry_cost:,.2f}, available {sym}{avail:,.2f}",
+            f"Insufficient paper funds: need {sym}{entry_cost:,.2f}, "
+            f"available {sym}{avail:,.2f} "
+            f"({snap.get('open_positions', 0)} open · {sym}{locked:,.0f} locked)",
         )
     return True, "ok"
 

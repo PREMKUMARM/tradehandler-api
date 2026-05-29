@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from services.paper_funds import get_fund_snapshot, split_profit_loss
 from services.paper_trading import (
     enrich_paper_orders_with_quotes,
     infer_segment_from_order,
@@ -114,6 +115,13 @@ def list_paper_trades(
 
         exit_reason = row.get("exit_reason")
         status = "closed" if exit_reason else "open"
+        est_p, est_l = (None, None)
+        act_p, act_l = (None, None)
+        if status == "open":
+            est_p, est_l = split_profit_loss(pnl if pnl_type == "unrealized" else None)
+        else:
+            act_p, act_l = split_profit_loss(pnl if pnl_type == "realized" else None)
+
         trades.append(
             {
                 "id": row.get("id"),
@@ -124,6 +132,7 @@ def list_paper_trades(
                 "side": (row.get("transaction_type") or payload.get("transaction_type") or "").upper(),
                 "quantity": qty,
                 "entry_price": entry_px,
+                "entry_cost": payload.get("paper_entry_cost"),
                 "entry_time": row.get("created_at"),
                 "stoploss": row.get("stoploss"),
                 "target": row.get("target"),
@@ -134,6 +143,10 @@ def list_paper_trades(
                 "ltp": row.get("ltp"),
                 "pnl": pnl,
                 "pnl_type": pnl_type,
+                "estimated_profit": est_p,
+                "estimated_loss": est_l,
+                "actual_profit": act_p,
+                "actual_loss": act_l,
                 "status": status,
                 "product": payload.get("product"),
             }
@@ -142,9 +155,7 @@ def list_paper_trades(
     funds = None
     if seg_filter:
         try:
-            from services.paper_funds import get_fund_snapshot
-
-            funds = get_fund_snapshot(seg_filter)
+            funds = get_fund_snapshot(seg_filter, fetch_quotes=enrich)
         except Exception:
             funds = None
 
