@@ -390,7 +390,7 @@ def _validate_trade_plan(plan: Dict[str, Any], capital: float, risk_pct: float, 
     max_risk = capital * risk_pct / 100.0
     ratio = reward_pct / risk_pct if risk_pct > 0 else 2.0
     min_reward = risk_amt * ratio
-    return {
+    validation = {
         "is_good_trade": risk_amt <= max_risk and reward_amt >= min_reward,
         "risk_amount": round(risk_amt, 2),
         "reward_amount": round(reward_amt, 2),
@@ -398,7 +398,52 @@ def _validate_trade_plan(plan: Dict[str, Any], capital: float, risk_pct: float, 
         "min_required_reward": round(min_reward, 2),
         "risk_within_limit": risk_amt <= max_risk,
         "reward_meets_requirement": reward_amt >= min_reward,
+        "risk_pct_used": round(risk_pct, 2),
+        "reward_pct_used": round(reward_pct, 2),
+        "capital_used": round(capital, 2),
+        "reward_risk_ratio_required": round(ratio, 2),
     }
+    validation["failure_reasons"] = _validation_failure_reasons(validation)
+    validation["summary"] = (
+        "Trade passes risk/reward rules"
+        if validation["is_good_trade"]
+        else " · ".join(validation["failure_reasons"])
+    )
+    return validation
+
+
+def _validation_failure_reasons(validation: Dict[str, Any]) -> List[str]:
+    """Human-readable reasons when is_good_trade is false."""
+    if validation.get("is_good_trade"):
+        return []
+    if validation.get("error"):
+        return [str(validation["error"])]
+
+    reasons: List[str] = []
+    risk_amt = float(validation.get("risk_amount") or 0)
+    max_risk = float(validation.get("max_risk_amount") or 0)
+    reward_amt = float(validation.get("reward_amount") or 0)
+    min_reward = float(validation.get("min_required_reward") or 0)
+    risk_pct = float(validation.get("risk_pct_used") or 0)
+    reward_pct = float(validation.get("reward_pct_used") or 0)
+    capital = float(validation.get("capital_used") or 0)
+    rr = float(validation.get("reward_risk_ratio_required") or 2.0)
+
+    if not validation.get("risk_within_limit"):
+        reasons.append(
+            f"Max loss ₹{risk_amt:,.0f} exceeds your {risk_pct:g}% risk cap "
+            f"(₹{max_risk:,.0f} on ₹{capital:,.0f} margin)"
+        )
+        reasons.append(
+            "Fix: reduce lots in Settings, pick a cheaper strike, or tighten SL premium"
+        )
+    if not validation.get("reward_meets_requirement"):
+        reasons.append(
+            f"Target profit ₹{reward_amt:,.0f} is below required ₹{min_reward:,.0f} "
+            f"({rr:g}× risk for {reward_pct:g}% reward / {risk_pct:g}% risk rule)"
+        )
+        reasons.append("Fix: widen target premium or improve entry (lower premium / better LIMIT)")
+    return reasons
 
 
 def preview_trade(
@@ -447,7 +492,11 @@ def preview_trade(
                 f"Live Nifty {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
             )
             if not validation or not validation.get("is_good_trade"):
-                messages.append("Risk/reward validation failed — adjust size or levels")
+                reasons = (validation or {}).get("failure_reasons") or []
+                if reasons:
+                    messages.extend(reasons)
+                else:
+                    messages.append("Risk/reward validation failed — adjust size or levels")
             elif not market_open and allow_offhours_v2_place():
                 messages.append(
                     "Test mode: off-hours place enabled (V2_ALLOW_OFFHOURS_PLACE)"
