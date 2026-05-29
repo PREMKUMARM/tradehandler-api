@@ -3,7 +3,7 @@ Commodity Strategy Watch — CRUDEOILM autonomous with strict entry + no duplica
 
 Modes:
   - alert: push/WS when checklist completes; user places manually.
-  - autonomous: one LIMIT+GTT (or paper) per day when checklist_ready + can_execute;
+  - autonomous: up to COMMODITY_WATCH_MAX_TRADES_PER_DAY (default 10 live) LIMIT+GTT per day;
     retries each poll until placed or disarmed.
 
 Safeguards:
@@ -32,7 +32,6 @@ from services.commodity_order_guard import (
     autonomous_place_allowed,
     min_entry_confirmation_score,
 )
-from agent.config import get_agent_config
 from services.push.push_service import push_service
 from utils.logger import log_error, log_info, log_warning
 
@@ -113,7 +112,7 @@ class WatchConfig:
     mode: str = "alert"
     auto_place_on_signal: bool = False
     auto_execute_checklist: bool = True
-    disarm_after_place: bool = True
+    disarm_after_place: bool = False
 
 
 def _default_persisted() -> Dict[str, Any]:
@@ -236,7 +235,7 @@ class CommodityStrategyWatch:
                 mode=str(cfg_raw.get("mode") or "alert"),
                 auto_place_on_signal=bool(cfg_raw.get("auto_place_on_signal")),
                 auto_execute_checklist=bool(cfg_raw.get("auto_execute_checklist", True)),
-                disarm_after_place=bool(cfg_raw.get("disarm_after_place", True)),
+                disarm_after_place=bool(cfg_raw.get("disarm_after_place", False)),
             )
             self._armed = bool(data.get("armed"))
             self._placed_count_today = int(data.get("placed_count_today") or 0)
@@ -328,15 +327,19 @@ class CommodityStrategyWatch:
             except Exception:
                 return 30
         try:
-            raw = os.getenv("COMMODITY_WATCH_MAX_TRADES_PER_DAY", "").strip()
-            if raw:
-                return max(1, min(50, int(raw)))
-        except Exception:
-            pass
-        try:
-            return max(1, min(50, int(get_agent_config().max_trades_per_day or 10)))
+            raw = os.getenv("COMMODITY_WATCH_MAX_TRADES_PER_DAY", "10").strip()
+            return max(1, min(50, int(raw or 10)))
         except Exception:
             return 10
+
+    def _should_disarm_watch(self) -> bool:
+        """Disarm when daily cap reached; legacy single-trade mode if max is 1."""
+        max_t = self._max_trades_per_day()
+        if self._placed_count_today >= max_t:
+            return True
+        if self._cfg.disarm_after_place and max_t <= 1:
+            return self._placed_count_today >= 1
+        return False
 
     def _setup_invalidated(self, plan: Dict[str, Any]) -> tuple[bool, str]:
         """B-mode: cancel only when setup invalidates (not time-based)."""
@@ -399,7 +402,7 @@ class CommodityStrategyWatch:
             self._gtt_attach_in_progress = True
             plan = copy.deepcopy(self._pending_trade_plan) if self._pending_trade_plan else None
             sym = self._pending_symbol
-            disarm = self._cfg.disarm_after_place
+            disarm = self._should_disarm_watch()
             self._pending_entry_order_id = None
             self._pending_entry_placed_at = None
             self._pending_trade_plan = None
@@ -455,7 +458,7 @@ class CommodityStrategyWatch:
                     kind="auto_gtt_placed" if gtt_id else "auto_gtt_failed",
                     message=(
                         f"Entry {entry_id} filled{fill_bit} — {gtt_detail or 'no exit plan'}"
-                        + (" (watch disarmed)" if disarm else "")
+                        + (" (watch disarmed — daily cap reached)" if disarm else "")
                     )[:240],
                     tradingsymbol=sym,
                 )
@@ -571,7 +574,7 @@ class CommodityStrategyWatch:
         mode: str = "alert",
         auto_place_on_signal: bool = False,
         auto_execute_checklist: bool = True,
-        disarm_after_place: bool = True,
+        disarm_after_place: bool = False,
     ) -> Dict[str, Any]:
         mode, auto_place = _normalize_mode(mode, auto_place_on_signal)
         if mode == "autonomous" and watch_autonomous_globally_disabled():
@@ -758,6 +761,8 @@ class CommodityStrategyWatch:
                 "entry_block_reason": self._last_block_reason,
                 "signal_fired_today": self._signal_fired_today,
                 "placed_today": self._placed_today,
+                "placed_count_today": self._placed_count_today,
+                "max_trades_per_day": self._max_trades_per_day(),
                 "placed_symbol_today": self._placed_symbol_today,
                 "strategy_name": plan.get("strategy_name"),
                 "tradingsymbol": plan.get("tradingsymbol"),

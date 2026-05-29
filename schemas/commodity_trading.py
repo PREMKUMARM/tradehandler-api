@@ -123,8 +123,9 @@ class CommodityWatchArmRequest(BaseModel):
         description="For autonomous mode: place without browser (ignored in alert mode)",
     )
     disarm_after_place: bool = Field(
-        default=True,
-        description="Stop watch after one successful autonomous order per day",
+        default=False,
+        description="When true with max 1 trade/day: disarm after that trade. "
+        "With max>1, watch stays armed until daily cap (COMMODITY_WATCH_MAX_TRADES_PER_DAY).",
     )
     auto_execute_checklist: bool = Field(
         default=True,
