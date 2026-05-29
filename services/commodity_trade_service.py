@@ -961,7 +961,7 @@ def place_trade(
         result["messages"] = list(result.get("messages", [])) + [
             (
                 f"Entry {entry_style} LIMIT ₹{entry_limit} (fair ₹{plan.get('entry_fair_premium', entry_limit)}) · "
-                f"{plan.get('num_lots')} lots × {plan.get('lot_size')} = {qty} qty · "
+                f"Kite qty {qty} (×{plan.get('lot_size')} bbl) · "
                 f"Crude SL {plan.get('spot_stop_loss')} TP {plan.get('spot_target')} · "
                 f"GTT SL ₹{sl_prem} TP ₹{tgt_prem}"
             ),

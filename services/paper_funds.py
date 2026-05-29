@@ -104,6 +104,19 @@ def _entry_price_from_row(row: Dict[str, Any], payload: Dict[str, Any]) -> Optio
     return None
 
 
+def _mcx_notional_multiplier(payload: Dict[str, Any]) -> int:
+    """MCX mini: Kite qty × units per lot (barrels); Nifty/crypto use 1."""
+    ex = str(payload.get("exchange") or "").upper()
+    sym = str(payload.get("tradingsymbol") or "").upper()
+    if ex != "MCX" and not sym.startswith("CRUDEOIL"):
+        return 1
+    try:
+        ls = int(payload.get("lot_size") or 0)
+    except (TypeError, ValueError):
+        ls = 0
+    return ls if ls > 0 else 10
+
+
 def _open_position_cost(row: Dict[str, Any], payload: Dict[str, Any]) -> float:
     """Capital locked by an open entry (prefer stored paper_entry_cost)."""
     v = payload.get("paper_entry_cost")
@@ -124,7 +137,7 @@ def _open_position_cost(row: Dict[str, Any], payload: Dict[str, Any]) -> float:
         qty = 0
     if qty <= 0:
         return 0.0
-    return max(0.0, entry * qty)
+    return max(0.0, entry * qty * _mcx_notional_multiplier(payload))
 
 
 def _row_segment(row: Dict[str, Any], payload: Dict[str, Any]) -> str:
@@ -362,7 +375,7 @@ def entry_cost_from_payload(payload: Dict[str, Any], fill_price: Optional[float]
         qty = int(payload.get("quantity") or 0)
     except (TypeError, ValueError):
         qty = 0
-    return max(0.0, px * qty)
+    return max(0.0, px * qty * _mcx_notional_multiplier(payload))
 
 
 def assert_can_allocate(segment: str, entry_cost: float) -> Tuple[bool, str]:

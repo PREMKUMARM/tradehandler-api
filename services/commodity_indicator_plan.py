@@ -189,24 +189,56 @@ def premium_levels_from_indicators(
     return round_to_tick(sl_prem), round_to_tick(tgt_prem), delta
 
 
+MCX_MAX_ORDER_QTY = 50
+
+
 def size_from_risk(
     capital: float,
     risk_pct: float,
+    reward_pct: float,
     entry_premium: float,
     sl_premium: float,
+    target_premium: float,
     lot_size: int,
-    num_lots: int,
+    max_qty_cap: int = 1,
 ) -> Tuple[int, int, float]:
-    """Return (num_lots, order_quantity, risk_inr). MCX Kite qty is in lots, not barrels."""
-    prem_risk = max(0.05, entry_premium - sl_premium)
-    max_risk_amt = capital * (risk_pct / 100.0)
-    risk_per_lot = prem_risk * lot_size
-    max_lots = int(max_risk_amt / risk_per_lot) if risk_per_lot > 0 else 0
-    qty_lots = min(num_lots, max_lots) if max_lots >= 1 else num_lots
-    qty_lots = max(1, qty_lots)
-    order_qty = qty_lots
-    risk_inr = risk_per_lot * qty_lots
-    return qty_lots, order_qty, risk_inr
+    """
+    Return (kite_qty, kite_qty, risk_inr) for MCX options.
+
+    Qty is derived from entry vs SL (risk per unit), available capital, and the
+    configured risk/reward policy. ``max_qty_cap`` from settings is a ceiling only
+    when > 1; the default of 1 means auto-size (up to MCX_MAX_ORDER_QTY).
+    """
+    ls = max(1, int(lot_size))
+    entry = max(0.05, float(entry_premium))
+    sl = float(sl_premium)
+    tgt = float(target_premium)
+    prem_risk = max(0.05, entry - sl)
+    prem_reward = max(0.05, tgt - entry)
+
+    cap = int(max_qty_cap) if int(max_qty_cap or 0) > 1 else MCX_MAX_ORDER_QTY
+
+    max_risk_amt = max(0.0, float(capital) * (float(risk_pct) / 100.0))
+    risk_per_qty = prem_risk * ls
+    max_from_risk = int(max_risk_amt / risk_per_qty) if risk_per_qty > 0 else 0
+
+    premium_per_qty = entry * ls
+    max_from_capital = (
+        int(float(capital) / premium_per_qty) if premium_per_qty > 0 else 0
+    )
+
+    limits = [x for x in (max_from_risk, max_from_capital) if x > 0]
+    qty = min(limits) if limits else 1
+
+    # Premium R:R vs policy (reward_pct : risk_pct); scale down if TP is too tight.
+    rr_policy = (float(reward_pct) / float(risk_pct)) if risk_pct > 0 else 2.0
+    prem_rr = prem_reward / prem_risk if prem_risk > 0 else rr_policy
+    if prem_rr > 0 and prem_rr < rr_policy * 0.85 and max_from_risk > 1:
+        qty = max(1, int(qty * (prem_rr / rr_policy)))
+
+    qty = max(1, min(qty, cap))
+    risk_inr = risk_per_qty * qty
+    return qty, qty, risk_inr
 
 
 def build_indicator_trade_plan(
@@ -351,7 +383,14 @@ def build_indicator_trade_plan(
     ls = int(contract.lot_size or lot_size())
 
     qty_lots, quantity, risk_inr = size_from_risk(
-        capital, risk_pct, float(entry_prem), sl_prem, ls, num_lots
+        capital,
+        risk_pct,
+        reward_pct,
+        float(entry_prem),
+        sl_prem,
+        tgt_prem,
+        ls,
+        num_lots,
     )
     reward_inr = max(0.0, (tgt_prem - float(entry_prem)) * ls * qty_lots)
     rr = (reward_inr / risk_inr) if risk_inr > 0 else 0.0
@@ -379,6 +418,7 @@ def build_indicator_trade_plan(
         "bb_zone": bb_zone,
         "margin": capital,
         "risk_pct": risk_pct,
+        "reward_pct": reward_pct,
         "indicator_sources": intra_bb.get("indicator_sources") or {},
         "strategy_id": sid,
         "pattern_tag": pattern_tag,
@@ -403,6 +443,7 @@ def build_indicator_trade_plan(
         "quantity": quantity,
         "lot_size": ls,
         "num_lots": qty_lots,
+        "max_qty_cap": num_lots,
         "product": COMMODITY_PRODUCT,
         "entry_order_type": "LIMIT",
         "entry_limit_price": entry_limit,
@@ -439,9 +480,11 @@ def build_indicator_trade_plan(
         f"Indicators: Crude {spot_entry:.0f} | OR {ind.get('or_low')}-{ind.get('or_high')} | "
         f"PDH {ind.get('pdh')} PDL {ind.get('pdl')} | EMA9 {ind.get('ema9')} | VIX {ind.get('vix')}"
     )
+    prem_risk = max(0.05, float(entry_prem) - sl_prem)
     messages.append(
-        f"Entry LIMIT ₹{entry_limit} (LTP ₹{entry_prem:.2f}) · {qty_lots} lot(s) × {ls} bbl (Kite qty {quantity}) · "
-        f"Risk ₹{risk_inr:.0f} · GTT exit SL ₹{sl_prem} TP ₹{tgt_prem}"
+        f"Entry LIMIT ₹{entry_limit} (LTP ₹{entry_prem:.2f}) · Kite qty {quantity} "
+        f"(₹{prem_risk:.2f} risk/bbl × {ls} bbl, {risk_pct:.1f}% cap) · "
+        f"Risk ₹{risk_inr:.0f} · R:R {reward_pct:.0f}:{risk_pct:.0f} · GTT SL ₹{sl_prem} TP ₹{tgt_prem}"
     )
     return plan, messages
 
@@ -535,19 +578,22 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     )
     capital = float(ind_meta.get("margin") or 0)
     lot_size = int(plan.get("lot_size") or 75)
-    num_lots = int(plan.get("num_lots") or 1)
+    max_qty_cap = int(plan.get("max_qty_cap") or 1)
+    reward_pct = float(ind_meta.get("reward_pct") or plan.get("reward_pct") or 2.0)
     if capital > 0:
         qty_lots, quantity, risk_inr = size_from_risk(
             capital,
             risk_pct,
+            reward_pct,
             float(entry_prem),
             sl_prem,
+            tgt_prem,
             lot_size,
-            num_lots,
+            max_qty_cap,
         )
     else:
-        qty_lots = num_lots
-        quantity = plan.get("quantity", num_lots)
+        qty_lots = int(plan.get("num_lots") or plan.get("quantity") or 1)
+        quantity = qty_lots
         risk_inr = plan.get("risk_inr", 0)
 
     updated = dict(plan)
@@ -563,6 +609,9 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
             "num_lots": qty_lots,
             "quantity": quantity,
             "risk_inr": round(risk_inr, 2) if risk_inr else plan.get("risk_inr"),
+            "reward_inr": round(
+                max(0.0, (tgt_prem - float(entry_prem)) * lot_size * qty_lots), 2
+            ),
             "nifty_spot": round(spot_entry, 2),
             "spot_stop_loss": round(spot_sl, 2),
             "spot_target": round(spot_tgt, 2),

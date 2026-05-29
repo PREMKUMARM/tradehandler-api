@@ -106,6 +106,8 @@ def place_order_tool(
             from services.paper_trade_detail import slim_trade_plan_for_paper
 
             order_payload["paper_trade_plan"] = slim_trade_plan_for_paper(paper_trade_plan)
+            if paper_trade_plan.get("lot_size") is not None:
+                order_payload["lot_size"] = paper_trade_plan.get("lot_size")
         if is_paper_mode_for_segment(seg):
             try:
                 oid = paper_place_order(order_payload)
