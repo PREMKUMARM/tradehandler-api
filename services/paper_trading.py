@@ -401,4 +401,28 @@ def paper_place_order(payload: Dict[str, Any]) -> str:
         ),
     )
     conn.commit()
+    log_info(f"[PaperTrading] paper order {oid} segment={seg}")
+    if not is_exit and sl and tgt and fp:
+        try:
+            from services.exit_trail_register import register_from_trade_plan
+
+            plan = dict(to_store.get("paper_trade_plan") or {})
+            register_from_trade_plan(
+                {
+                    "tradingsymbol": to_store.get("tradingsymbol"),
+                    "exchange": to_store.get("exchange"),
+                    "product": to_store.get("product") or plan.get("product"),
+                    "quantity": to_store.get("quantity") or plan.get("quantity"),
+                    "entry_limit_price": fp,
+                    "entry_premium": fp,
+                    "stop_loss_premium": sl,
+                    "target_premium": tgt,
+                },
+                entry_order_id=oid,
+                segment=seg,
+                fill_price=fp,
+                paper=True,
+            )
+        except Exception as e:
+            log_warning(f"[PaperTrading] exit trail register failed: {e}")
     return oid

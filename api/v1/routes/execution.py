@@ -13,6 +13,7 @@ from services.strategy_run_fills import record_strategy_fill_if_run
 from services.paper_trading import enrich_paper_orders_with_quotes, is_paper_mode, paper_place_order
 from services.paper_trades_list import list_paper_trades
 from services.paper_trade_detail import get_paper_trade_detail
+from services.live_trades_list import list_live_trades
 from services.risk_gate import check_order_allowed, record_order_placed
 from utils.kite_utils import get_kite_instance
 from utils.logger import log_error, log_info
@@ -50,6 +51,19 @@ def list_execution_audit_log(limit: int = Query(100, ge=1, le=500)):
                     pass
         rows.append(d)
     return {"data": rows}
+
+
+@router.get("/live-trades")
+def get_live_trades(
+    segment: str = Query(
+        None,
+        description="Filter: nifty50 or commodity. Omit for all Kite segments.",
+    ),
+    limit: int = Query(200, ge=1, le=1000),
+    enrich: bool = Query(True, description="Fetch live LTP and position P&L for open rows."),
+):
+    """Live Kite trades — today's executed orders grouped as entry + exit rows."""
+    return list_live_trades(segment=segment, limit=limit, enrich=enrich)
 
 
 @router.get("/paper-trades")

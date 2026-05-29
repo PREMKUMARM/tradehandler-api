@@ -775,6 +775,7 @@ def place_gtt_for_plan(
     plan: Dict[str, Any],
     *,
     fill_price: Optional[float] = None,
+    entry_order_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Place OCO GTT exit (SL + target) for a long MCX option."""
     from services.commodity_indicator_plan import (
@@ -839,6 +840,20 @@ def place_gtt_for_plan(
         result["gtt_trigger_id"] = str(tid)
         result["ok"] = True
         result["messages"].append(f"GTT OCO trigger {result['gtt_trigger_id']}")
+        if entry_order_id:
+            try:
+                from services.exit_trail_register import register_from_trade_plan
+
+                register_from_trade_plan(
+                    result.get("trade_plan") or plan,
+                    entry_order_id=str(entry_order_id),
+                    gtt_trigger_id=result["gtt_trigger_id"],
+                    segment="commodity",
+                    fill_price=fill_price,
+                    paper=False,
+                )
+            except Exception as exc:
+                log_warning(f"Exit trail register failed: {exc}")
         return result
 
     gtt_err = gtt.get("error") or "GTT placement failed"
@@ -874,6 +889,20 @@ def place_gtt_for_plan(
             result["messages"].append(
                 f"GTT OCO trigger {result['gtt_trigger_id']} (auto-adjusted triggers)"
             )
+            if entry_order_id:
+                try:
+                    from services.exit_trail_register import register_from_trade_plan
+
+                    register_from_trade_plan(
+                        result.get("trade_plan") or plan,
+                        entry_order_id=str(entry_order_id),
+                        gtt_trigger_id=result["gtt_trigger_id"],
+                        segment="commodity",
+                        fill_price=fill_price,
+                        paper=False,
+                    )
+                except Exception as exc:
+                    log_warning(f"Exit trail register failed: {exc}")
             return result
         gtt_err = gtt2.get("error") or gtt_err
 

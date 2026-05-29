@@ -436,6 +436,32 @@ class DatabaseConnection:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_strategy_runs_status ON strategy_runs(status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_strategy_fills_run ON strategy_fills(run_id)')
 
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exit_trails (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                segment TEXT NOT NULL,
+                entry_order_id TEXT NOT NULL UNIQUE,
+                gtt_trigger_id TEXT,
+                tradingsymbol TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                product TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                entry_price REAL NOT NULL,
+                stop_loss REAL NOT NULL,
+                target REAL NOT NULL,
+                peak_ltp REAL,
+                trail_active INTEGER NOT NULL DEFAULT 0,
+                paper INTEGER NOT NULL DEFAULT 0,
+                paper_order_id TEXT,
+                status TEXT NOT NULL DEFAULT 'open'
+            )
+        ''')
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_exit_trails_status ON exit_trails(status)'
+        )
+
         # Migration: Add order ID columns if they don't exist
         try:
             cursor.execute("ALTER TABLE agent_approvals ADD COLUMN entry_order_id TEXT")
