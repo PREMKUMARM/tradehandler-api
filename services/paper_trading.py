@@ -58,6 +58,15 @@ def _resolve_paper_fill_price(payload: Dict[str, Any]) -> Optional[float]:
     sym = payload.get("tradingsymbol")
     if not sym:
         return None
+    if ex in ("BINANCE", "BINANCE_FUTURES"):
+        try:
+            from utils.binance_order_utils import get_symbol_price
+
+            px = get_symbol_price(str(sym))
+            return float(px) if px > 0 else None
+        except Exception as e:
+            log_warning(f"[PaperTrading] Binance fill price {sym}: {e}")
+            return None
     key = f"{ex}:{sym}"
     try:
         from utils.kite_utils import get_kite_instance
@@ -111,18 +120,39 @@ def enrich_paper_orders_with_quotes(
 
     quotes: Dict[str, Any] = {}
     quote_error: Optional[str] = None
-    if fetch_quotes and quote_keys:
+    binance_syms: List[str] = []
+    kite_keys: List[str] = []
+    for qk in quote_keys:
+        if qk.startswith("BINANCE:"):
+            binance_syms.append(qk.split(":", 1)[1])
+        else:
+            kite_keys.append(qk)
+
+    if fetch_quotes and kite_keys:
         try:
             from utils.kite_utils import get_kite_instance
 
             kite = get_kite_instance(skip_validation=True)
             chunk = 400
-            for i in range(0, len(quote_keys), chunk):
-                part = quote_keys[i : i + chunk]
+            for i in range(0, len(kite_keys), chunk):
+                part = kite_keys[i : i + chunk]
                 quotes.update(kite.quote(part))
         except Exception as e:
             quote_error = str(e)
             log_warning(f"[PaperOrders] Batch quote failed: {e}")
+
+    if fetch_quotes and binance_syms:
+        try:
+            from utils.binance_order_utils import get_symbol_price
+
+            for sym in binance_syms:
+                px = get_symbol_price(sym)
+                if px > 0:
+                    quotes[f"BINANCE:{sym}"] = {"last_price": px}
+        except Exception as e:
+            if not quote_error:
+                quote_error = str(e)
+            log_warning(f"[PaperOrders] Binance quote failed: {e}")
 
     for row in rows:
         p = row.get("payload")
@@ -185,6 +215,80 @@ def enrich_paper_orders_with_quotes(
     return {"quotes_ok": quote_error is None, "quote_error": quote_error}
 
 PAPER_TRADING_STATE_PATH = Path(os.getenv("PAPER_TRADING_STATE_FILE", "data/paper_trading.json"))
+PAPER_SEGMENT_STATE_PATH = Path(
+    os.getenv("PAPER_TRADING_SEGMENTS_FILE", "data/paper_trading_segments.json")
+)
+VALID_SEGMENTS = ("nifty50", "commodity", "crypto")
+DEFAULT_SEGMENT_PAPER = {s: True for s in VALID_SEGMENTS}
+
+
+def normalize_segment(segment: Optional[str]) -> str:
+    s = (segment or "nifty50").strip().lower()
+    if s in ("nifty", "v2", "nifty50"):
+        return "nifty50"
+    if s in ("mcx", "crude", "commodity"):
+        return "commodity"
+    if s in ("binance", "btc", "crypto"):
+        return "crypto"
+    return "nifty50"
+
+
+def infer_segment_from_order(exchange: str, tradingsymbol: str) -> str:
+    ex = (exchange or "").upper()
+    sym = (tradingsymbol or "").upper()
+    if ex in ("BINANCE", "BINANCE_FUTURES") or sym.endswith("USDT"):
+        return "crypto"
+    if ex == "MCX" or sym.startswith("CRUDEOIL"):
+        return "commodity"
+    return "nifty50"
+
+
+def _read_segment_modes() -> Dict[str, bool]:
+    try:
+        if PAPER_SEGMENT_STATE_PATH.exists():
+            data = json.loads(PAPER_SEGMENT_STATE_PATH.read_text(encoding="utf-8"))
+            out = dict(DEFAULT_SEGMENT_PAPER)
+            for seg in VALID_SEGMENTS:
+                if seg in data:
+                    out[seg] = bool(data[seg])
+            return out
+    except Exception as e:
+        log_warning(f"[PaperTrading] Segment state read failed: {e}")
+    return dict(DEFAULT_SEGMENT_PAPER)
+
+
+def get_segment_paper_modes() -> Dict[str, bool]:
+    """Per-segment paper/live flags (UI segment toggles)."""
+    if _env_forces_paper():
+        return {s: True for s in VALID_SEGMENTS}
+    if _env_forces_live():
+        return {s: False for s in VALID_SEGMENTS}
+    return _read_segment_modes()
+
+
+def is_paper_mode_for_segment(segment: Optional[str]) -> bool:
+    """Whether orders for this segment route to the paper ledger."""
+    if _env_forces_paper():
+        return True
+    if _env_forces_live():
+        return False
+    seg = normalize_segment(segment)
+    modes = _read_segment_modes()
+    return bool(modes.get(seg, True))
+
+
+def set_segment_paper_mode(segment: str, active: bool) -> None:
+    if _env_forces_paper() or _env_forces_live():
+        raise ValueError(
+            "Paper mode is controlled by PAPER_TRADING_MODE in the environment. "
+            "Unset it in .env to use per-segment toggles."
+        )
+    seg = normalize_segment(segment)
+    modes = _read_segment_modes()
+    modes[seg] = bool(active)
+    PAPER_SEGMENT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PAPER_SEGMENT_STATE_PATH.write_text(json.dumps(modes, indent=2), encoding="utf-8")
+    log_info(f"[PaperTrading] segment {seg} paper={active}")
 
 
 def _env_forces_paper() -> bool:
@@ -236,6 +340,11 @@ def paper_place_order(payload: Dict[str, Any]) -> str:
     from database.connection import get_database
 
     to_store = dict(payload)
+    if not to_store.get("segment"):
+        to_store["segment"] = infer_segment_from_order(
+            str(to_store.get("exchange") or ""),
+            str(to_store.get("tradingsymbol") or ""),
+        )
     fp = _resolve_paper_fill_price(to_store)
     if fp is not None:
         to_store["paper_fill_price"] = fp

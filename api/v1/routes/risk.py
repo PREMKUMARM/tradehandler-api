@@ -7,9 +7,13 @@ from pydantic import BaseModel
 from core.exceptions import ValidationError
 from schemas.support_ops import KillSwitchUpdate
 from services.paper_trading import (
+    get_segment_paper_modes,
     is_paper_mode,
+    is_paper_mode_for_segment,
+    normalize_segment,
     paper_trading_env_locks_ui,
     set_paper_trading_active,
+    set_segment_paper_mode,
 )
 from services.risk_gate import get_kill_switch_status, is_kill_switch_active, set_kill_switch
 from services.strategy_auto_trader import get_config as get_auto_trade_config
@@ -22,11 +26,47 @@ router = APIRouter(prefix="/risk", tags=["Risk"])
 def get_execution_status():
     """Kill switch + paper mode + whether paper is locked by PAPER_TRADING_MODE in .env."""
     ks = get_kill_switch_status()
+    seg_modes = get_segment_paper_modes()
     return {
         "data": {
             "kill_switch_active": is_kill_switch_active(),
             "kill_switch": ks,
             "paper_trading_mode": is_paper_mode(),
+            "paper_trading_env_locks_ui": paper_trading_env_locks_ui(),
+            "segment_paper_modes": seg_modes,
+        }
+    }
+
+
+class SegmentPaperUpdate(BaseModel):
+    segment: str
+    active: bool
+
+
+@router.get("/paper-trading/segments")
+def get_paper_trading_segments():
+    """Per-segment paper/live flags (Nifty50, Commodity, Crypto). Default paper when unset."""
+    return {
+        "data": {
+            "segments": get_segment_paper_modes(),
+            "paper_trading_env_locks_ui": paper_trading_env_locks_ui(),
+        }
+    }
+
+
+@router.post("/paper-trading/segment")
+def post_segment_paper_trading(body: SegmentPaperUpdate):
+    """Set paper or live routing for one segment."""
+    try:
+        set_segment_paper_mode(body.segment, body.active)
+    except ValueError as e:
+        raise ValidationError(message=str(e), field="segment_paper") from e
+    seg = normalize_segment(body.segment)
+    return {
+        "data": {
+            "segment": seg,
+            "active": is_paper_mode_for_segment(seg),
+            "segments": get_segment_paper_modes(),
             "paper_trading_env_locks_ui": paper_trading_env_locks_ui(),
         }
     }

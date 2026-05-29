@@ -536,11 +536,11 @@ def preview_trade(
 
     paper_mode = False
     try:
-        from services.paper_trading import is_paper_mode
+        from services.paper_trading import is_paper_mode_for_segment
 
-        paper_mode = is_paper_mode()
+        paper_mode = is_paper_mode_for_segment("nifty50")
         if paper_mode:
-            messages.append("Paper trading mode ON — orders go to paper ledger when checklist is complete")
+            messages.append("Paper mode ON (Nifty50) — orders go to paper ledger when checklist is complete")
     except Exception:
         pass
 
@@ -853,11 +853,11 @@ def place_trade(
         ]
 
     try:
-        from services.paper_trading import is_paper_mode
+        from services.paper_trading import is_paper_mode_for_segment
 
-        if is_paper_mode():
+        if is_paper_mode_for_segment("nifty50"):
             result["messages"] = list(result.get("messages", [])) + [
-                "Paper trading mode is ON — orders go to paper ledger, not Zerodha"
+                "Paper mode ON (Nifty50) — orders go to paper ledger, not Zerodha"
             ]
 
         ind = plan.get("indicators") or {}
@@ -907,6 +907,9 @@ def place_trade(
                 "price": entry_limit,
                 "product": product,
                 "skip_session_check": skip_session,
+                "segment": "nifty50",
+                "stoploss": sl_prem,
+                "target": tgt_prem,
             }
         )
         if entry.get("status") != "success":

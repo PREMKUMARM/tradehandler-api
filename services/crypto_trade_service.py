@@ -95,6 +95,16 @@ def get_checklist_live(
     missing = [s["index"] for s in steps if not s["server_ok"]]
     ready = len(missing) == 0
 
+    paper_mode = False
+    try:
+        from services.paper_trading import is_paper_mode_for_segment
+
+        paper_mode = is_paper_mode_for_segment("crypto")
+        if paper_mode:
+            messages.append("Paper mode ON (Crypto) — simulated Binance fills in paper ledger")
+    except Exception:
+        pass
+
     return {
         "connected": connected,
         "message": msg,
@@ -102,10 +112,11 @@ def get_checklist_live(
         "missing_steps": missing,
         "step_statuses": steps,
         "trade_plan": plan or None,
-        "can_place": ready and connected and bool(plan),
+        "can_place": ready and connected and bool(plan) and not paper_mode,
+        "can_execute": ready and connected and bool(plan),
         "market_open": is_crypto_session_open(),
         "allow_test_place": allow_offhours_crypto_place(),
-        "paper_trading_mode": False,
+        "paper_trading_mode": paper_mode,
         "messages": messages,
         "binance_balance_usdt": balance,
         "leverage": DEFAULT_LEVERAGE,
@@ -185,11 +196,14 @@ def preview_trade(
         for idx in REQUIRED_MARKED_STEPS:
             if idx < len(completed_steps) and not completed_steps[idx]:
                 can_place = False
+    can_execute = bool(live_data.get("can_execute"))
+    if live_data.get("paper_trading_mode") and live_data.get("checklist_ready"):
+        can_execute = True
     return {
         **live_data,
-        "can_execute": can_place,
+        "can_execute": can_execute,
         "validation": {
-            "is_good_trade": can_place,
+            "is_good_trade": can_execute,
             "risk_amount": plan.get("risk_inr"),
             "reward_amount": plan.get("reward_inr"),
         },
@@ -250,6 +264,36 @@ def place_trade(
     tp_px = float(plan.get("target_premium") or 0)
 
     try:
+        from services.paper_trading import is_paper_mode_for_segment, paper_place_order
+
+        paper_mode = is_paper_mode_for_segment("crypto")
+        if paper_mode:
+            payload = {
+                "tradingsymbol": SYMBOL,
+                "exchange": "BINANCE",
+                "transaction_type": order_side,
+                "quantity": qty,
+                "order_type": "LIMIT",
+                "price": entry_limit,
+                "product": "ISOLATED",
+                "segment": "crypto",
+                "stoploss": sl_px,
+                "target": tp_px,
+                "paper_fill_price": entry_limit,
+            }
+            entry_id = paper_place_order(payload)
+            result["entry_order_id"] = entry_id
+            result["entry_paper"] = True
+            result["placed"] = True
+            result["messages"] = list(preview.get("messages", [])) + [
+                f"[PAPER] Entry {order_side} LIMIT {qty} BTC @ ${entry_limit:,.2f} ({DEFAULT_LEVERAGE}x)",
+                f"Paper SL ${sl_px:,.2f} · TP ${tp_px:,.2f} (monitor)",
+            ]
+            from services.risk_gate import record_order_placed
+
+            record_order_placed(qty * entry_limit)
+            return result
+
         set_margin_type(SYMBOL, "ISOLATED")
         entry = place_limit_order(
             symbol=SYMBOL,

@@ -30,6 +30,7 @@ def place_order_tool(
     target: Optional[float] = None,
     trailing_stoploss: Optional[float] = None,
     skip_session_check: bool = False,
+    segment: Optional[str] = None,
 ) -> dict:
     """
     Place a buy or sell order on Zerodha Kite.
@@ -50,7 +51,11 @@ def place_order_tool(
     """
     try:
         from services.risk_gate import check_order_allowed, record_order_placed
-        from services.paper_trading import is_paper_mode, paper_place_order
+        from services.paper_trading import (
+            infer_segment_from_order,
+            is_paper_mode_for_segment,
+            paper_place_order,
+        )
         from services.execution_audit import log_execution_audit
         from services.strategy_run_fills import record_strategy_fill_if_run
 
@@ -93,7 +98,9 @@ def place_order_tool(
             "trailing_stoploss": trailing_stoploss,
         }
 
-        if is_paper_mode():
+        seg = segment or infer_segment_from_order(exchange, tradingsymbol)
+        order_payload["segment"] = seg
+        if is_paper_mode_for_segment(seg):
             oid = paper_place_order(order_payload)
             record_order_placed(est_value)
             log_execution_audit(

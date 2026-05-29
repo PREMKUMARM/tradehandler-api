@@ -65,6 +65,7 @@ class CryptoStrategyWatch:
         self._last_plan: Optional[Dict[str, Any]] = None
         self._last_checklist_ready = False
         self._last_entry_ready = False
+        self._last_paper_mode = True
         self._load()
 
     def _load(self) -> None:
@@ -171,7 +172,7 @@ class CryptoStrategyWatch:
             autonomous_eligible=bool(plan.get("entry_ready")),
             kill_switch_active=self._kill_switch(),
             market_open=True,
-            paper_trading_mode=False,
+            paper_trading_mode=bool(self._last_paper_mode),
             kite_connected=bool(plan.get("indicators", {}).get("connected")),
             guard_message=None,
             min_entry_score=65,
@@ -289,6 +290,7 @@ class CryptoStrategyWatch:
                     self._last_plan = plan
                     self._last_checklist_ready = bool(preview.get("checklist_ready"))
                     self._last_entry_ready = bool(plan.get("entry_ready"))
+                    self._last_paper_mode = bool(preview.get("paper_trading_mode"))
                     self._last_eval_at = datetime.now(IST)
 
                 if (

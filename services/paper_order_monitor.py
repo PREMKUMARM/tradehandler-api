@@ -160,14 +160,24 @@ class PaperOrderMonitor:
             return
 
         quotes: Dict[str, Any] = {}
+        kite_keys = [k for k in quote_keys if not k.startswith("BINANCE:")]
+        binance_syms = [k.split(":", 1)[1] for k in quote_keys if k.startswith("BINANCE:")]
         try:
-            from utils.kite_utils import get_kite_instance
+            if kite_keys:
+                from utils.kite_utils import get_kite_instance
 
-            kite = get_kite_instance(skip_validation=True)
-            chunk = 400
-            for i in range(0, len(quote_keys), chunk):
-                part = quote_keys[i : i + chunk]
-                quotes.update(kite.quote(part))
+                kite = get_kite_instance(skip_validation=True)
+                chunk = 400
+                for i in range(0, len(kite_keys), chunk):
+                    part = kite_keys[i : i + chunk]
+                    quotes.update(kite.quote(part))
+            if binance_syms:
+                from utils.binance_order_utils import get_symbol_price
+
+                for sym in binance_syms:
+                    px = get_symbol_price(sym)
+                    if px > 0:
+                        quotes[f"BINANCE:{sym}"] = {"last_price": px}
         except Exception as e:
             log_warning(f"[PaperOrderMonitor] quotes failed: {e}")
             return
