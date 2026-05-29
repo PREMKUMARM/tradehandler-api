@@ -1,7 +1,7 @@
 """
 Kite Connect trading tools for the agent
 """
-from typing import Optional
+from typing import Any, Dict, Optional
 from langchain_core.tools import tool
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import KiteException
@@ -31,6 +31,7 @@ def place_order_tool(
     trailing_stoploss: Optional[float] = None,
     skip_session_check: bool = False,
     segment: Optional[str] = None,
+    paper_trade_plan: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """
     Place a buy or sell order on Zerodha Kite.
@@ -101,6 +102,10 @@ def place_order_tool(
         }
 
         order_payload["segment"] = seg
+        if paper_trade_plan and not order_payload.get("paper_exit_leg"):
+            from services.paper_trade_detail import slim_trade_plan_for_paper
+
+            order_payload["paper_trade_plan"] = slim_trade_plan_for_paper(paper_trade_plan)
         if is_paper_mode_for_segment(seg):
             try:
                 oid = paper_place_order(order_payload)

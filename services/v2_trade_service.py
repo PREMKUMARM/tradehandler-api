@@ -933,6 +933,7 @@ def place_trade(
                 "segment": "nifty50",
                 "stoploss": sl_prem,
                 "target": tgt_prem,
+                "paper_trade_plan": plan,
             }
         )
         if entry.get("status") != "success":

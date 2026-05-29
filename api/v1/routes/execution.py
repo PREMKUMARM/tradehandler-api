@@ -12,6 +12,7 @@ from services.execution_audit import log_execution_audit
 from services.strategy_run_fills import record_strategy_fill_if_run
 from services.paper_trading import enrich_paper_orders_with_quotes, is_paper_mode, paper_place_order
 from services.paper_trades_list import list_paper_trades
+from services.paper_trade_detail import get_paper_trade_detail
 from services.risk_gate import check_order_allowed, record_order_placed
 from utils.kite_utils import get_kite_instance
 from utils.logger import log_error, log_info
@@ -62,6 +63,21 @@ def get_paper_trades(
 ):
     """Paper trades journal — entry rows with exit reason and estimated P&L."""
     return list_paper_trades(segment=segment, limit=limit, enrich=enrich)
+
+
+@router.get("/paper-trades/{order_id:path}/detail")
+def get_paper_trade_row_detail(order_id: str):
+    """Live segment indicators + entry/SL/TP reasoning for one paper trade row."""
+    out = get_paper_trade_detail(order_id)
+    if out.get("error") == "not_found":
+        from core.exceptions import ValidationError
+
+        raise ValidationError(message=out.get("message", "Not found"), field="order_id")
+    if out.get("error") == "exit_leg":
+        from core.exceptions import ValidationError
+
+        raise ValidationError(message=out.get("message", "Invalid row"), field="order_id")
+    return {"data": out}
 
 
 @router.get("/paper-orders")

@@ -268,6 +268,8 @@ def place_trade(
 
         paper_mode = is_paper_mode_for_segment("crypto")
         if paper_mode:
+            from services.paper_trade_detail import slim_trade_plan_for_paper
+
             payload = {
                 "tradingsymbol": SYMBOL,
                 "exchange": "BINANCE",
@@ -280,6 +282,7 @@ def place_trade(
                 "stoploss": sl_px,
                 "target": tp_px,
                 "paper_fill_price": entry_limit,
+                "paper_trade_plan": slim_trade_plan_for_paper(plan),
             }
             entry_id = paper_place_order(payload)
             result["entry_order_id"] = entry_id
