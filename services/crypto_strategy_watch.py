@@ -177,7 +177,10 @@ class CryptoStrategyWatch:
             min_entry_score=65,
             entry_confirmation_score=plan.get("entry_confirmation_score"),
             pending_entry_order_id=self._pending_entry_order_id,
+            segment="crypto",
         )
+        ind = plan.get("indicators") or {}
+        btc_spot = float(ind.get("btc_spot") or plan.get("nifty_spot") or 0)
         return {
             "armed": self._armed,
             "mode": cfg.mode,
@@ -189,6 +192,8 @@ class CryptoStrategyWatch:
             "kill_switch_active": self._kill_switch(),
             "placed_today": self._placed_today,
             "tradingsymbol": SYMBOL,
+            "btc_spot": btc_spot or None,
+            "nifty_spot": btc_spot or None,
             "strategy_name": plan.get("strategy_name"),
             "last_eval_at": self._last_eval_at.isoformat() if self._last_eval_at else None,
             "events": [e.to_dict() for e in list(self._events)],

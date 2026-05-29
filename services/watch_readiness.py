@@ -43,7 +43,7 @@ def _trade_plan_preview(plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "spot_target": plan.get("spot_target"),
         "entry_ready": bool(plan.get("entry_ready")),
         "entry_block_reason": plan.get("entry_block_reason"),
-        "spot": ind.get("nifty_spot") or ind.get("crude_spot") or ind.get("spot"),
+        "spot": ind.get("btc_spot") or ind.get("nifty_spot") or ind.get("crude_spot") or ind.get("spot"),
         "or_low": ind.get("or_low"),
         "or_high": ind.get("or_high"),
         "pdh": ind.get("pdh"),
@@ -139,22 +139,32 @@ def build_readiness_payload(
         and not premium_cap_hit
     )
 
+    seg = (segment or "nifty").strip().lower()
+    is_crypto = seg in ("crypto", "binance", "btc")
+    broker_label = "Binance connected" if is_crypto else "Kite connected"
+    broker_detail_ok = "Live quotes and checklist from Binance" if is_crypto else "Live quotes and checklist"
+    broker_detail_fail = "Connect Binance API keys in .env" if is_crypto else "Connect Kite token"
+    broker_hint = "Settings → Binance API keys on server" if is_crypto else "Settings → connect Zerodha / refresh token"
+    armed_detail = (
+        "Autonomous loop polling live Binance data"
+        if armed and is_crypto
+        else ("Autonomous loop polling live Kite data" if armed else "Start autonomous to evaluate live market")
+    )
+
     gates: List[Dict[str, Any]] = [
         _gate(
             id="armed",
             label="Watch armed",
             ok=armed,
-            detail="Autonomous loop polling live Kite data"
-            if armed
-            else "Start autonomous to evaluate live market",
+            detail=armed_detail if armed else "Start autonomous to evaluate live market",
             action_hint="Press Start autonomous",
         ),
         _gate(
-            id="kite",
-            label="Kite connected",
+            id="kite" if not is_crypto else "binance",
+            label=broker_label,
             ok=kite_connected,
-            detail="Live quotes and checklist" if kite_connected else "Connect Kite token",
-            action_hint="Settings → connect Zerodha / refresh token",
+            detail=broker_detail_ok if kite_connected else broker_detail_fail,
+            action_hint=broker_hint,
         ),
         _gate(
             id="session",

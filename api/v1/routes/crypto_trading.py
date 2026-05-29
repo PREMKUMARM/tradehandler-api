@@ -16,6 +16,18 @@ from services.crypto_strategy_watch import (
 router = APIRouter(prefix="/crypto/trade", tags=["Crypto Trading"])
 
 
+@router.get("/balance")
+async def crypto_balance(request: Request):
+    """USDT balance + last BTC spot (REST fallback; prefer segment WebSocket stream)."""
+    from services.segment_balance import get_crypto_balance_payload
+
+    data = get_crypto_balance_payload()
+    return SuccessResponse(
+        data=data,
+        message="Binance balance" if data.get("connected") else "Binance not connected",
+    )
+
+
 @router.get("/config")
 async def crypto_config(request: Request):
     return SuccessResponse(

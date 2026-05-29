@@ -30,7 +30,30 @@ echo "📦 Building Angular app locally (production)..."
 cd "$LOCAL_PROJECT_ROOT"
 export NODE_OPTIONS="--max-old-space-size=4096"
 
-if npm run build; then
+NODE_BIN="${NODE_BIN:-}"
+if [ -z "$NODE_BIN" ] && command -v node >/dev/null 2>&1; then
+    NODE_BIN="$(command -v node)"
+fi
+if [ -z "$NODE_BIN" ] && [ -x "/Applications/Cursor.app/Contents/Resources/app/resources/helpers/node" ]; then
+    NODE_BIN="/Applications/Cursor.app/Contents/Resources/app/resources/helpers/node"
+fi
+
+NG_CLI="$LOCAL_PROJECT_ROOT/node_modules/@angular/cli/bin/ng.js"
+if [ ! -f "$NG_CLI" ]; then
+    echo "❌ Angular CLI not found at $NG_CLI — run npm install in tradehandler/"
+    exit 1
+fi
+
+if command -v npm >/dev/null 2>&1; then
+    BUILD_CMD=(npm run build)
+elif [ -n "$NODE_BIN" ]; then
+    BUILD_CMD=("$NODE_BIN" "$NG_CLI" build --configuration production)
+else
+    echo "❌ node/npm not found. Set NODE_BIN or install Node.js."
+    exit 1
+fi
+
+if "${BUILD_CMD[@]}"; then
     echo "✅ Local build successful."
 else
     echo "❌ Local build failed. Aborting."
@@ -43,7 +66,7 @@ tar -czf ../dist.tar.gz .
 cd "$LOCAL_PROJECT_ROOT"
 
 echo "☁️ Uploading build to EC2..."
-scp -i "$PEM_FILE" dist.tar.gz "$NGINX_CONF" "$EC2_USER@$EC2_IP:/tmp/"
+scp -i "$PEM_FILE" dist.tar.gz "$NGINX_CONF" "$SCRIPT_DIR/vibefno-ssl.conf" "$EC2_USER@$EC2_IP:/tmp/"
 
 echo "🔧 Deploying UI (static files; SSL config preserved when certs exist)..."
 ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
@@ -67,14 +90,15 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
         sudo sed -i '/http {/a \    server_names_hash_bucket_size 128;' /etc/nginx/nginx.conf
     fi
 
-    # Update Angular build only — do not overwrite certbot's vibefno.conf when SSL exists.
+    # Update Angular build only.
     sudo rm -rf "\$REMOTE_WEB_ROOT"/*
     sudo cp -r "$REMOTE_STAGING"/* "\$REMOTE_WEB_ROOT"/
 
     HAS_SSL=false
     if sudo test -d "/etc/letsencrypt/live/\$DOMAIN"; then
         HAS_SSL=true
-        echo "🔒 SSL certs found — leaving \$REMOTE_NGINX_CONF unchanged."
+        echo "🔒 SSL certs found — installing vibefno-ssl.conf (WebSocket + API proxy)."
+        sudo cp /tmp/vibefno-ssl.conf "\$REMOTE_NGINX_CONF"
     else
         echo "📄 No SSL yet — installing HTTP-only nginx site (run setup_ssl.sh once after DNS is ready)."
         sudo cp /tmp/nginx.conf "\$REMOTE_NGINX_CONF"

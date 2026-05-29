@@ -4,6 +4,7 @@ Generic segment WebSocket: reduce REST polling from browser.
 Client connects to `/api/v1/ws/segment/{segment}` and receives push updates:
 - watch_status (server push)
 - watch_events (server push)
+- balance (server push — live margin / USDT + spot)
 
 Client may send commands (server responds on same WS):
 { "op": "arm" | "disarm" | "nuclear_reset" | "refresh" | "ping", "payload": {...} }
@@ -51,6 +52,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "arm": arm_watch,
             "disarm": disarm_watch,
             "nuclear_reset": nuclear_reset_watch,
+            "balance": lambda: get_segment_balance(seg),
         }
     if seg in ("commodity", "mcx", "crude"):
         from services import commodity_trade_service
@@ -78,6 +80,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "arm": arm_watch,
             "disarm": disarm_watch,
             "nuclear_reset": nuclear_reset_watch,
+            "balance": lambda: get_segment_balance(seg),
         }
     if seg in ("crypto", "binance", "btc"):
         from services import crypto_trade_service
@@ -103,6 +106,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "arm": arm_watch,
             "disarm": disarm_watch,
             "nuclear_reset": nuclear_reset_watch,
+            "balance": lambda: get_segment_balance(seg),
         }
     raise ValueError(f"Unknown segment '{segment}'")
 
@@ -122,9 +126,17 @@ async def segment_stream(websocket: WebSocket, segment: str):
 
     last_status_at = 0.0
     last_events_at = 0.0
+    last_balance_at = 0.0
 
     async def _send(msg: Dict[str, Any]) -> None:
         await websocket.send_text(json.dumps(msg))
+
+    async def _push_balance() -> None:
+        fn = h.get("balance")
+        if not fn:
+            return
+        data = await asyncio.to_thread(fn)
+        await _send({"type": "balance", "ts": datetime.utcnow().isoformat(), "data": data})
 
     # Initial snapshot
     try:
@@ -138,6 +150,8 @@ async def segment_stream(websocket: WebSocket, segment: str):
                 "data": list(h["watch_events"](20) or []),
             }
         )
+        await _push_balance()
+        last_balance_at = asyncio.get_running_loop().time()
     except Exception:
         pass
 
@@ -167,9 +181,13 @@ async def segment_stream(websocket: WebSocket, segment: str):
                             "data": list(h["watch_events"](20) or []),
                         }
                     )
+                elif op in ("balance", "refresh_balance"):
+                    await _push_balance()
+                    last_balance_at = asyncio.get_running_loop().time()
                 elif op == "refresh":
                     last_status_at = 0.0
                     last_events_at = 0.0
+                    last_balance_at = 0.0
                 elif op in ("checklist_live", "checklist_analyze", "strategy_analysis", "preview", "place"):
                     fn = h.get(op)
                     if not fn:
@@ -207,6 +225,13 @@ async def segment_stream(websocket: WebSocket, segment: str):
                         "data": list(h["watch_events"](20) or []),
                     }
                 )
+
+            if now - last_balance_at >= BALANCE_PUSH_SEC:
+                last_balance_at = now
+                try:
+                    await _push_balance()
+                except Exception:
+                    pass
 
         except WebSocketDisconnect:
             break
