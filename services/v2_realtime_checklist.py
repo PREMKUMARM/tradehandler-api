@@ -167,23 +167,25 @@ def _intraday_context(kite, token: int) -> Dict[str, Any]:
 
 
 def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """ATM ±5 strikes, nearest expiry — live OI, LTP, spread."""
+    """ATM ±5 strikes, nearest expiry — live OI, LTP, spread + OI sentinel ranks."""
     if spot <= 0 or not universe:
         return {}
-    atm = int(round(spot / 50) * 50)
-    expiries = sorted({u["expiry"] for u in universe if u.get("expiry")})
-    if not expiries:
-        return {}
-    expiry = expiries[0]
-    if hasattr(expiry, "isoformat"):
-        expiry_key = expiry
-    else:
-        expiry_key = expiry
+    from services.v2_oi_sentinel import enrich_chain_with_oi_buildup
+
+    oi_block = enrich_chain_with_oi_buildup(kite, spot, universe)
+    atm = int(oi_block.get("atm") or round(spot / 50) * 50)
+    expiry = oi_block.get("expiry")
+    if not expiry:
+        expiries = sorted({u["expiry"] for u in universe if u.get("expiry")})
+        if not expiries:
+            return oi_block
+        expiry_key = expiries[0]
+        expiry = expiry_key.isoformat() if hasattr(expiry_key, "isoformat") else str(expiry_key)
 
     rows = [
         u
         for u in universe
-        if u.get("expiry") == expiry_key
+        if (u.get("expiry").isoformat() if hasattr(u.get("expiry"), "isoformat") else str(u.get("expiry"))) == str(expiry)
         and abs(int(u.get("strike") or 0) - atm) <= 250
     ]
     keys = [f"NFO:{r['tradingsymbol']}" for r in rows if r.get("tradingsymbol")]
@@ -223,8 +225,11 @@ def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, 
             max_oi_strike = strike
 
     pcr = (pe_oi / ce_oi) if ce_oi > 0 else 0.0
-    exp_str = expiry_key.isoformat() if hasattr(expiry_key, "isoformat") else str(expiry_key)
+    exp_str = expiry if isinstance(expiry, str) else (
+        expiry.isoformat() if hasattr(expiry, "isoformat") else str(expiry)
+    )
     return {
+        **oi_block,
         "expiry": exp_str,
         "atm": atm,
         "pcr": round(pcr, 2),
@@ -289,7 +294,7 @@ def _build_checklist_context(
     kite = get_kite_instance()
     universe = build_nifty_options_universe(kite)
     chain = _chain_live(kite, spot, universe)
-    strategy_analysis = analyze_fno_strategies(direction_pref=direction, margin=margin)
+    strategy_analysis = analyze_fno_strategies(direction_pref=direction, margin=margin, chain_oi=chain)
     trade_plan = None
     validation = None
     if spot > 0:
@@ -387,17 +392,23 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
         if chain:
             ce = chain.get("atm_ce") or {}
             pe = chain.get("atm_pe") or {}
+            anchor = chain.get("active_anchor") or {}
+            second_ce = (chain.get("second_ce_anchor") or {}).get("strike")
+            second_pe = (chain.get("second_pe_anchor") or {}).get("strike")
             out = (
                 f"Expiry {chain.get('expiry')} · ATM {chain.get('atm')} · PCR {chain.get('pcr')} · "
                 f"CE OI {chain.get('ce_oi_total'):,} PE OI {chain.get('pe_oi_total'):,} · "
                 f"Max-OI strike {chain.get('max_pain_strike')} · "
+                f"2nd CE anchor {second_ce} · 2nd PE anchor {second_pe} · "
+                f"Sentinel watch {chain.get('active_kind')} {anchor.get('strike')} "
+                f"(ΔOI {anchor.get('oi_change', 0):,.0f}) · "
                 f"ATM CE ₹{ce.get('ltp', 0)} spread {ce.get('spread_pct', 0)}% · "
                 f"ATM PE ₹{pe.get('ltp', 0)} spread {pe.get('spread_pct', 0)}%"
             )
         else:
             out = "Chain quote unavailable"
             ok = False
-        return _step(i, title, ok, "Option chain (live OI)", out)
+        return _step(i, title, ok, "Option chain (OI green-bar ranks)", out)
     if i == 5:
         ok = bool(trade_plan)
         out = f"Expiry {trade_plan.get('expiry')}" if trade_plan else "—"

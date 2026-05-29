@@ -92,6 +92,9 @@ def _pick_moneyness(
             return "OTM2", "ema_chase", "Far from 9 EMA — cheaper OTM2 (higher risk)"
         return "ATM", "ema_unknown", "9 EMA unavailable — ATM"
 
+    if strategy_id == "green_bar_sentinel_2nd_oi":
+        return "ANCHOR", "oi_sentinel_2nd", "Exact 2nd OI-anchor strike from chain ranking"
+
     # Fallback: use R:R — wide target → slightly OTM
     if reward_pts > 1.8 * risk_pts and risk_pts > 0:
         return "OTM1", "rr_otm", "Reward > 1.8× risk — OTM1 for cost efficiency"
@@ -165,6 +168,28 @@ def refine_spot_levels_from_candles(
         else:
             sl, tgt = entry + risk_pts, entry - risk_pts * rr
         notes.append("Directional SL from live spot % risk")
+
+    elif strategy_id == "green_bar_sentinel_2nd_oi":
+        anchor = int(intra.get("anchor_strike") or 0)
+        buf = 20.0
+        if anchor > 0:
+            if kind == "CE":
+                sl = anchor - buf
+                risk = max(1.0, entry - sl)
+                tgt = entry + rr * risk
+                notes.append(f"Sentinel CE SL below 2nd OI anchor {anchor}")
+            else:
+                sl = anchor + buf
+                risk = max(1.0, sl - entry)
+                tgt = entry - rr * risk
+                notes.append(f"Sentinel PE SL above 2nd OI anchor {anchor}")
+        else:
+            risk_pts = max(18.0, entry * 0.003)
+            if kind == "CE":
+                sl, tgt = entry - risk_pts, entry + risk_pts * rr
+            else:
+                sl, tgt = entry + risk_pts, entry - risk_pts * rr
+            notes.append("Sentinel anchor pending — provisional SL from spot %")
 
     note = "; ".join(notes) if notes else "Levels from strategy score"
     return entry, sl, tgt, note

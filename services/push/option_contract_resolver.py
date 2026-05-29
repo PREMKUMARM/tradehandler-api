@@ -297,6 +297,29 @@ def resolve_nifty_atm_contract(
     )
 
 
+def resolve_nifty_contract_at_strike(
+    *,
+    strike: int,
+    kind: str,
+    name: str = "NIFTY",
+) -> Optional[OptionContract]:
+    """Resolve weekly contract at an exact strike (OI Sentinel anchor)."""
+    kind = (kind or "").upper()
+    if kind not in ("CE", "PE") or strike <= 0:
+        return None
+    if not _ensure_cache(name=name):
+        return None
+    by_ks: Dict[Tuple[str, int], OptionContract] = _cache.get("by_kind_strike") or {}
+    c = by_ks.get((kind, int(strike)))
+    if c:
+        return c
+    strikes: List[int] = list(_cache.get("available_strikes") or [])
+    nearest = _nearest_strike(int(strike), strikes)
+    if nearest is None:
+        return None
+    return by_ks.get((kind, nearest))
+
+
 def fetch_option_ltp(contract: OptionContract) -> Optional[float]:
     """Fetch the live last_price for `contract` via kite.quote()."""
     try:

@@ -11,6 +11,7 @@ from services.push.option_contract_resolver import (
     estimate_delta_from_spot,
     fetch_option_ltp,
     resolve_nifty_contract,
+    resolve_nifty_contract_at_strike,
 )
 from services.kite_live_indicators import get_nifty_bundle_for_v2, get_vix_snapshot, recalculate_from_ticker
 from services.v2_constants import V2_NFO_PRODUCT
@@ -161,7 +162,9 @@ def build_indicator_trade_plan(
         spot = float(sel.get("spot_entry") or spot)
         spot_sl = float(sel.get("spot_stop_loss") or spot)
         spot_tgt = float(sel.get("spot_target") or spot)
+        anchor_strike = sel.get("anchor_strike")
     else:
+        anchor_strike = None
         d = (direction or "AUTO").upper()
         if d in ("CE", "PE"):
             option_kind = d
@@ -176,14 +179,26 @@ def build_indicator_trade_plan(
         else:
             spot_sl, spot_tgt = spot + risk_pts, spot - risk_pts * rr
 
+    sid = strategy_id or "long_atm_directional"
     intra = {
         "pdh": ind.get("pdh"),
         "pdl": ind.get("pdl"),
         "or_high": ind.get("or_high"),
         "or_low": ind.get("or_low"),
         "ema9": ind.get("ema9"),
+        "day_high": ind.get("day_high"),
+        "day_low": ind.get("day_low"),
+        "bb_middle": ind.get("bb_middle"),
+        "bb_upper": ind.get("bb_upper"),
+        "bb_lower": ind.get("bb_lower"),
+        "indicator_sources": ind.get("indicator_sources") or {},
+        "anchor_strike": anchor_strike,
+        "oi_baseline_ready": bool(
+            sid == "green_bar_sentinel_2nd_oi"
+            and anchor_strike
+            and (not strategy_analysis or sel.get("oi_change") is not None)
+        ),
     }
-    sid = strategy_id or "long_atm_directional"
     spot_entry, spot_sl, spot_tgt, level_note = refine_spot_levels_from_candles(
         sid, spot, option_kind, spot_sl, spot_tgt, intra
     )
@@ -191,9 +206,15 @@ def build_indicator_trade_plan(
         sid, spot_entry, option_kind, spot_sl, spot_tgt, intra
     )
 
-    contract = resolve_nifty_contract(
-        spot=spot_entry, kind=option_kind, moneyness=moneyness
-    )
+    contract: Optional[OptionContract] = None
+    if sid == "green_bar_sentinel_2nd_oi" and anchor_strike:
+        contract = resolve_nifty_contract_at_strike(
+            strike=int(anchor_strike), kind=option_kind
+        )
+    if contract is None:
+        contract = resolve_nifty_contract(
+            spot=spot_entry, kind=option_kind, moneyness=moneyness
+        )
     if contract is None:
         return None, ["Could not resolve option contract for live strike"]
 
@@ -302,6 +323,8 @@ def build_indicator_trade_plan(
         "strategy_name": strategy_name,
         "strike_moneyness": moneyness,
         "pattern_tag": pattern_tag,
+        "anchor_strike": anchor_strike,
+        "oi_change": sel.get("oi_change") if strategy_analysis and sid == "green_bar_sentinel_2nd_oi" else None,
         "delta_used": round(delta, 3),
         "atm_reference": int(round(spot_entry / 50) * 50),
         "pricing_note": (

@@ -387,6 +387,43 @@ def _analyze_directional(
     return True, trigger, 65, notes, None
 
 
+def _analyze_green_bar_sentinel(
+    spot: float,
+    kind: str,
+    intra: Dict[str, Any],
+    last_5m: Optional[float],
+) -> Tuple[bool, Optional[float], int, List[str], Optional[str]]:
+    from services.v2_oi_sentinel import reversal_confirmed_at_anchor
+
+    notes: List[str] = []
+    anchor = int(intra.get("anchor_strike") or 0)
+    if anchor <= 0:
+        return False, None, 20, notes, "2nd OI anchor strike unavailable — refresh option chain"
+
+    if not intra.get("oi_baseline_ready"):
+        return (
+            False,
+            float(anchor),
+            25,
+            notes,
+            "OI baseline forming — wait until 9:16+ for green-bar ranking",
+        )
+
+    ready, score, msg = reversal_confirmed_at_anchor(
+        spot=spot,
+        anchor_strike=anchor,
+        kind=kind,
+        intra=intra,
+        last_5m_close=last_5m,
+    )
+    notes.append(msg)
+    trigger = float(anchor)
+    if ready:
+        notes.append(f"Green Bar Sentinel: reversal confirmed at 2nd OI anchor {anchor}")
+        return True, trigger, score, notes, None
+    return False, trigger, score, notes, msg
+
+
 def compute_strategy_entry(
     *,
     strategy_id: str,
@@ -423,14 +460,21 @@ def compute_strategy_entry(
         ready, trigger, score, notes, block = _analyze_ema_pullback(
             spot, kind, intra, prev_close
         )
+    elif sid == "green_bar_sentinel_2nd_oi":
+        ready, trigger, score, notes, block = _analyze_green_bar_sentinel(
+            spot, kind, intra, last_5m
+        )
     else:
         ready, trigger, score, notes, block = _analyze_directional(
             spot, kind, intra, prev_close
         )
 
-    ready, trigger, score, notes, block, bb_style = _apply_bollinger_entry_gate(
-        spot, kind, intra, ready, trigger, score, notes, block
-    )
+    if sid != "green_bar_sentinel_2nd_oi":
+        ready, trigger, score, notes, block, bb_style = _apply_bollinger_entry_gate(
+            spot, kind, intra, ready, trigger, score, notes, block
+        )
+    else:
+        bb_style = "oi_sentinel_reversal"
 
     fair = _structure_fair_premium(
         ref_ltp, spot, trigger if trigger is not None else spot, kind, delta

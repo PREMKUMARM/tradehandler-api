@@ -19,6 +19,7 @@ STRATEGY_IDS = (
     "orb_15m_breakout",
     "pdh_pdl_breakout",
     "ema_pullback_continuation",
+    "green_bar_sentinel_2nd_oi",
 )
 
 
@@ -57,6 +58,8 @@ class StrategyCandidate:
     warnings: List[str]
     strike_moneyness: str = "ATM"
     pattern_tag: str = ""
+    anchor_strike: Optional[int] = None
+    oi_change: Optional[float] = None
 
 
 def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
@@ -395,13 +398,90 @@ def _score_ema_pullback(ctx: MarketContext) -> StrategyCandidate:
     )
 
 
+def _score_green_bar_sentinel(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> StrategyCandidate:
+    from services.v2_oi_sentinel import (
+        STRATEGY_DESC,
+        STRATEGY_ID,
+        STRATEGY_NAME,
+        pick_sentinel_anchor,
+    )
+
+    chain_oi = chain_oi or {}
+    score = 25
+    reasons: List[str] = []
+    warnings: List[str] = []
+
+    if not chain_oi.get("baseline_ready"):
+        warnings.append("OI baseline not ready — wait until 9:16+ for green-bar ranking")
+
+    kind, anchor_strike, meta = pick_sentinel_anchor(chain_oi, ctx.direction_pref)
+    oi_chg = float(meta.get("oi_change") or 0) if meta else 0.0
+    oi_pct = float(meta.get("oi_change_pct") or 0) if meta else 0.0
+
+    if anchor_strike:
+        score += 25
+        reasons.append(
+            f"2nd OI anchor {kind} {anchor_strike} · ΔOI {oi_chg:,.0f} ({oi_pct:.0f}% vs open)"
+        )
+        top_ce = (chain_oi.get("ranked_ce_oi") or [{}])[0] if chain_oi.get("ranked_ce_oi") else {}
+        top_pe = (chain_oi.get("ranked_pe_oi") or [{}])[0] if chain_oi.get("ranked_pe_oi") else {}
+        if top_ce.get("strike"):
+            reasons.append(f"Top CE buildup strike {top_ce.get('strike')} (monitor 2nd: {anchor_strike if kind=='CE' else (chain_oi.get('second_ce_anchor') or {}).get('strike')})")
+        if top_pe.get("strike"):
+            reasons.append(f"Top PE buildup strike {top_pe.get('strike')}")
+    else:
+        warnings.append("Could not rank OI anchors — refresh option chain")
+
+    if 9 * 60 + 16 <= ctx.minutes <= 14 * 60 + 30:
+        score += 20
+        reasons.append("Prime monitoring window after open")
+    elif ctx.minutes < 9 * 60 + 16:
+        warnings.append("Before 9:16 — baseline OI still forming")
+
+    risk_pts = max(18.0, ctx.nifty_ltp * 0.003)
+    rr = 1.8
+    entry = ctx.nifty_ltp
+    if kind == "CE":
+        sl = entry - risk_pts
+        tgt = entry + rr * risk_pts
+    else:
+        sl = entry + risk_pts
+        tgt = entry - rr * risk_pts
+
+    if anchor_strike:
+        if kind == "CE" and entry < anchor_strike:
+            reasons.append(f"Spot below anchor {anchor_strike} — watch for reclaim reversal")
+        if kind == "PE" and entry > anchor_strike:
+            reasons.append(f"Spot above anchor {anchor_strike} — watch for rejection reversal")
+
+    return StrategyCandidate(
+        id=STRATEGY_ID,
+        name=STRATEGY_NAME,
+        description=STRATEGY_DESC,
+        score=max(0, min(100, score)),
+        fit=_fit_label(score),
+        option_kind=kind,
+        spot_entry=entry,
+        spot_stop_loss=sl,
+        spot_target=tgt,
+        rr_ratio=rr,
+        reasons=reasons,
+        warnings=warnings,
+        strike_moneyness="ANCHOR",
+        pattern_tag="oi_sentinel_2nd",
+        anchor_strike=anchor_strike,
+        oi_change=oi_chg if oi_chg else None,
+    )
+
+
 def analyze_fno_strategies(
     direction_pref: str = "AUTO",
     margin: float = 0.0,
     hypothesis_note: Optional[str] = None,
+    chain_oi: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Rank top 4 Nifty F&O intraday strategies using session + prior-step context.
+    Rank Nifty F&O intraday strategies using session + prior-step context.
     """
     ctx = _fetch_market_context(direction_pref, margin)
     candidates = [
@@ -409,6 +489,7 @@ def analyze_fno_strategies(
         _score_orb(ctx),
         _score_pdh_pdl(ctx),
         _score_ema_pullback(ctx),
+        _score_green_bar_sentinel(ctx, chain_oi),
     ]
     try:
         from services.kite_live_indicators import recalculate_from_ticker
@@ -462,6 +543,8 @@ def analyze_fno_strategies(
             "warnings": c.warnings,
             "strike_moneyness": c.strike_moneyness,
             "pattern_tag": c.pattern_tag,
+            "anchor_strike": c.anchor_strike,
+            "oi_change": c.oi_change,
         }
 
     output_lines = [
