@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from agent.ws_manager import broadcast_agent_update
@@ -205,6 +205,8 @@ class CommodityStrategyWatch:
         self._last_market_open = False
         self._last_paper_mode = False
         self._last_kite_connected = False
+        # After exit/place, require entry_ready to go false then true again before re-entry.
+        self._reentry_armed = True
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
@@ -589,6 +591,7 @@ class CommodityStrategyWatch:
                 disarm_after_place=bool(disarm_after_place),
             )
             self._armed = True
+            self._reentry_armed = True
         self._push_event(
             WatchEvent(
                 at=datetime.now(IST).isoformat(),
@@ -621,6 +624,7 @@ class CommodityStrategyWatch:
             self._pending_gtt_trigger_id = None
             self._pending_symbol = None
             self._signal_fired_today = False
+            self._reentry_armed = True
         self._persist()
         log_info("[CommodityWatch] Placement counters reset")
 
@@ -806,6 +810,7 @@ class CommodityStrategyWatch:
                                 self._pending_trade_plan = None
                                 self._pending_gtt_trigger_id = None
                                 self._pending_symbol = None
+                                self._reentry_armed = False
                     elif not session_open:
                         self._cancel_pending(reason="MCX session closed")
                     else:
@@ -881,6 +886,20 @@ class CommodityStrategyWatch:
             and not self._pending_entry_order_id
         )
 
+    def _autonomous_entry_allowed(self, entry_ready: bool) -> Tuple[bool, str]:
+        """Require a fresh entry signal after each place/exit (not perpetual checklist_ready)."""
+        if not entry_ready:
+            with _lock:
+                self._reentry_armed = True
+            return False, "Entry not confirmed (entry_ready=false)"
+        with _lock:
+            if not self._reentry_armed:
+                return (
+                    False,
+                    "Setup must reset after last trade — wait until entry drops then confirms again",
+                )
+        return True, ""
+
     def _evaluate_sync(
         self,
     ) -> tuple[bool, bool, Optional[Dict[str, Any]], Dict[str, Any], bool]:
@@ -955,10 +974,13 @@ class CommodityStrategyWatch:
                     self._signal_fired_today = True
 
             autonomous_armed = self._should_autonomous_place(cfg)
+            aut_entry_ok, aut_entry_msg = self._autonomous_entry_allowed(entry_ready)
             if (
                 autonomous_armed
                 and checklist_ready
                 and can_execute
+                and entry_ready
+                and aut_entry_ok
                 and not self._placing
             ):
                 allowed, guard_msg = autonomous_place_allowed(
@@ -971,7 +993,9 @@ class CommodityStrategyWatch:
                     try_autonomous = True
                 else:
                     self._record_autonomous_skip(guard_msg, plan)
-            elif autonomous_armed and checklist_ready and not can_execute:
+            elif autonomous_armed and checklist_ready and not aut_entry_ok:
+                self._record_autonomous_skip(aut_entry_msg, plan)
+            elif autonomous_armed and checklist_ready and entry_ready and not can_execute:
                 skip_msg = "Waiting for margin/validation or session (can_execute=false)"
                 if not can_place:
                     skip_msg = "Waiting for margin/validation (can_place=false)"
@@ -1126,6 +1150,10 @@ class CommodityStrategyWatch:
                 if paper_seg:
                     log_info("[CommodityWatch] Autonomous place in paper mode")
 
+                from services.commodity_indicator_plan import refresh_plan_at_execution
+
+                plan = refresh_plan_at_execution(dict(plan))
+
                 result = await asyncio.to_thread(
                     commodity_trade_service.place_trade,
                     completed_steps=None,
@@ -1208,6 +1236,7 @@ class CommodityStrategyWatch:
                                 copy.deepcopy(trade_plan) if result.get("gtt_deferred") else None
                             )
                         self._pending_symbol = sym
+                        self._reentry_armed = False
                     kind = "auto_placed"
                 else:
                     msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"

@@ -33,10 +33,11 @@ def resolve_can_execute(
         return False
 
     checklist_ready = bool(preview.get("checklist_ready"))
+    entry_ready = plan.get("entry_ready") is True
     if bool(preview.get("can_place")):
-        return True
+        return entry_ready
     if is_paper_trading(preview) and checklist_ready:
-        return True
+        return entry_ready
     if offhours_allowed:
         return True
     return False

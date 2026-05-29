@@ -118,6 +118,44 @@ def has_open_paper_symbol(segment: str, tradingsymbol: str) -> Tuple[bool, str]:
     return False, ""
 
 
+def _latest_exit_time(segment: str) -> Optional[datetime]:
+    from database.connection import get_database
+
+    seg = segment.strip().lower()
+    db = get_database()
+    conn = db.get_connection()
+    cur = conn.execute(
+        """
+        SELECT exit_at, payload
+        FROM paper_orders
+        WHERE exit_reason IS NOT NULL AND exit_at IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 200
+        """
+    )
+    latest: Optional[datetime] = None
+    for r in cur.fetchall():
+        payload = _parse_payload(r["payload"])
+        if payload.get("paper_exit_leg"):
+            continue
+        if _row_segment(payload) != seg:
+            continue
+        raw = r["exit_at"]
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(raw))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=IST)
+            else:
+                dt = dt.astimezone(IST)
+        except Exception:
+            continue
+        if latest is None or dt > latest:
+            latest = dt
+    return latest
+
+
 def _latest_entry_time(segment: str) -> Optional[datetime]:
     from database.connection import get_database
 
@@ -163,7 +201,20 @@ def seconds_since_last_paper_entry(segment: str) -> Optional[float]:
 
 
 def paper_place_cooldown_ok(segment: str) -> Tuple[bool, str]:
-    cooldown = max(0, _env_int("PAPER_AUTO_COOLDOWN_SEC", 45))
+    """Block rapid re-entry after exit or back-to-back entries."""
+    after_exit = max(0, _env_int("PAPER_AUTO_COOLDOWN_AFTER_EXIT_SEC", 120))
+    if after_exit > 0:
+        last_exit = _latest_exit_time(segment)
+        if last_exit is not None:
+            age_exit = (datetime.now(IST) - last_exit).total_seconds()
+            if age_exit < after_exit:
+                wait = int(after_exit - age_exit) + 1
+                return (
+                    False,
+                    f"Paper cooldown: wait {wait}s after last {segment} exit before re-entry",
+                )
+
+    cooldown = max(0, _env_int("PAPER_AUTO_COOLDOWN_SEC", 60))
     if cooldown <= 0:
         return True, ""
     age = seconds_since_last_paper_entry(segment)
@@ -208,7 +259,7 @@ def paper_entry_quality_for_autonomous(plan: Dict[str, Any]) -> Tuple[bool, str]
     block = plan.get("entry_block_reason")
     if block:
         return False, str(block)
-    min_score = max(30, min(100, _env_int("PAPER_AUTO_MIN_ENTRY_SCORE", 50)))
+    min_score = max(30, min(100, _env_int("PAPER_AUTO_MIN_ENTRY_SCORE", 65)))
     score = int(plan.get("entry_confirmation_score") or 0)
     if score < min_score:
         return False, (

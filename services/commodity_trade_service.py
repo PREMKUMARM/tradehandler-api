@@ -934,6 +934,13 @@ def place_trade(
 
     entry_ready = plan.get("entry_ready", True)
     manual_confirm = confirm and preview.get("checklist_ready")
+    if auto_execute and entry_ready is not True:
+        reason = plan.get("entry_block_reason") or "Entry setup not confirmed by indicators"
+        result["errors"].append(reason)
+        result["errors"].append(
+            "Autonomous place blocked — checklist alone is not enough; entry must be confirmed"
+        )
+        return result
     if not entry_ready and not manual_confirm and not (
         skip_session and allow_offhours_commodity_place()
     ):
