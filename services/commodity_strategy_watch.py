@@ -1019,7 +1019,12 @@ class CommodityStrategyWatch:
             elif autonomous_armed and checklist_ready and entry_ready and not can_execute:
                 skip_msg = "Waiting for margin/validation or session (can_execute=false)"
                 if not can_place:
-                    skip_msg = "Waiting for margin/validation (can_place=false)"
+                    val = preview.get("validation") if isinstance(preview, dict) else None
+                    reasons = (val or {}).get("failure_reasons") if isinstance(val, dict) else None
+                    if reasons:
+                        skip_msg = "; ".join(str(r) for r in reasons[:2])
+                    else:
+                        skip_msg = "Waiting for margin/validation (can_place=false)"
                 self._record_autonomous_skip(skip_msg, plan)
 
         self._persist()

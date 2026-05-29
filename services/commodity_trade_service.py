@@ -428,18 +428,34 @@ def _validate_trade_plan(
     risk_ok = risk_amt <= max_risk
     reward_ok = reward_amt >= min_reward
     premium_cost = entry * units
-    margin_cap = (
+    # Qty/risk validation uses sizing capital (paper balance or live virtual fund).
+    sizing_cap = float(capital) if capital > 0 else 0.0
+    afford_ok = sizing_cap > 0 and premium_cost <= sizing_cap
+    kite_margin_inr = (
         float(available_margin)
         if available_margin is not None and available_margin > 0
-        else capital
+        else None
     )
-    afford_ok = premium_cost <= margin_cap
+    kite_affordable = (
+        premium_cost <= kite_margin_inr if kite_margin_inr is not None else None
+    )
     # MCX: minimum size is one lot; book risk % may be smaller than unavoidable lot premium risk.
     mcx_min_lot = units >= int(plan.get("lot_size") or 100)
     risk_acceptable = risk_ok or (mcx_min_lot and afford_ok)
     is_good = afford_ok and risk_acceptable and (
         reward_ok or reward_amt >= risk_amt * 1.25
     )
+    failure_reasons: List[str] = []
+    if not afford_ok:
+        failure_reasons.append(
+            f"Premium ₹{premium_cost:,.0f} exceeds sizing capital ₹{sizing_cap:,.0f}"
+        )
+    if not risk_acceptable:
+        failure_reasons.append(
+            f"Risk ₹{risk_amt:,.0f} exceeds {risk_pct}% of capital (max ₹{max_risk:,.0f})"
+        )
+    if not reward_ok and reward_amt < risk_amt * 1.25:
+        failure_reasons.append("Reward does not meet risk/reward policy")
     return {
         "is_good_trade": is_good,
         "risk_amount": round(risk_amt, 2),
@@ -450,6 +466,10 @@ def _validate_trade_plan(
         "reward_meets_requirement": reward_ok,
         "premium_cost": round(premium_cost, 2),
         "affordable": afford_ok,
+        "sizing_capital_inr": round(sizing_cap, 2),
+        "kite_margin_inr": round(kite_margin_inr, 2) if kite_margin_inr is not None else None,
+        "kite_affordable": kite_affordable,
+        "failure_reasons": failure_reasons,
     }
 
 
@@ -532,7 +552,18 @@ def _preview_trade_impl(
                 f"Live Crude {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
             )
             if not validation or not validation.get("is_good_trade"):
-                messages.append("Risk/reward validation failed — adjust size or levels")
+                reasons = (validation or {}).get("failure_reasons") or []
+                if reasons:
+                    messages.append("Validation: " + "; ".join(str(r) for r in reasons[:3]))
+                else:
+                    messages.append("Risk/reward validation failed — adjust size or levels")
+            elif validation.get("kite_affordable") is False:
+                km = validation.get("kite_margin_inr")
+                pc = validation.get("premium_cost")
+                messages.append(
+                    f"Checklist OK for sizing — Kite MCX margin ₹{km:,.0f} may be "
+                    f"low for ~₹{pc:,.0f} premium (checked again at place)"
+                )
             elif not market_open and allow_offhours_commodity_place():
                 messages.append(
                     "Test mode: off-hours place enabled (COMMODITY_ALLOW_OFFHOURS_PLACE)"
@@ -978,6 +1009,25 @@ def place_trade(
         result["messages"] = list(result.get("messages", [])) + [
             "Off-hours test: bypassing session gate (LIMIT entry may still be rejected when exchange closed)"
         ]
+
+    try:
+        from services.paper_trading import is_paper_mode_for_segment
+
+        if not is_paper_mode_for_segment("commodity"):
+            kite_ok, kite_avail, kite_msg = _check_kite_and_margin()
+            ls = int(plan.get("lot_size") or 10)
+            est_premium = entry_limit * ls * qty
+            if not kite_ok:
+                result["errors"].append(kite_msg)
+                return result
+            if est_premium > kite_avail:
+                result["errors"].append(
+                    f"Insufficient Kite MCX margin: ~₹{est_premium:,.0f} premium required, "
+                    f"₹{kite_avail:,.0f} available — reduce qty or add funds"
+                )
+                return result
+    except Exception:
+        pass
 
     entry_ready = plan.get("entry_ready", True)
     manual_confirm = confirm and preview.get("checklist_ready")
