@@ -1,17 +1,9 @@
 """
-V2 — strategy-aware entry pricing (not blind ask chase).
+V2 — 5m Bollinger Bands entry pricing (patient LIMIT, not ask chase).
 
-Aligns with common Indian F&O intraday practice:
-- ORB: enter after range breakout close, limit at mid / structure fair premium (Zerodha ITM ORB).
-- PDH/PDL: enter after level break + buffer, prefer pullback limit at break retest.
-- EMA pullback: enter only in EMA zone when trend aligns (do not chase extended moves).
-- Directional: EMA + prior-close alignment; patient mid limit with chase cap.
-
-References: Zerodha ITM ORB, OptionX ORB+EMA, BB mean-reversion pullback entries
-on 5m Nifty (middle / lower for CE, middle / upper for PE).
-
-Bollinger (20, 2σ on 5m) is well suited here: we buy options after spot pulls back
-to the mean or band — not at band extension (reduces chase into expensive premium).
+CE: enter at lower or middle band touch on 5m Nifty.
+PE: enter at upper or middle band touch.
+Blocks band-extension chase (CE at upper, PE at lower).
 """
 from __future__ import annotations
 
@@ -424,6 +416,52 @@ def _analyze_green_bar_sentinel(
     return False, trigger, score, notes, msg
 
 
+def _analyze_bb_5m(
+    spot: float,
+    kind: str,
+    intra: Dict[str, Any],
+) -> Tuple[bool, Optional[float], int, List[str], Optional[str], str]:
+    """5m BB entry: CE at lower/middle, PE at upper/middle; block extension."""
+    mid = intra.get("bb_middle")
+    upper = intra.get("bb_upper")
+    lower = intra.get("bb_lower")
+    notes: List[str] = []
+    if mid is None or upper is None or lower is None:
+        return (
+            False,
+            None,
+            0,
+            notes,
+            "5m Bollinger Bands not ready — need 20 Nifty 5m bars",
+            "",
+        )
+
+    bb = bollinger_zone(float(spot), float(mid), float(upper), float(lower), kind)
+    zone = bb["zone"]
+    style = f"bb5m_{zone}"
+
+    bb_src = (intra.get("indicator_sources") or {}).get("bb_middle", "")
+    if bb_src:
+        notes.append(f"BB source: {bb_src}")
+
+    notes.append(
+        f"5m BB L {lower:.0f} M {mid:.0f} U {upper:.0f} · spot {spot:.0f} · {zone}"
+    )
+
+    if bb["extended"]:
+        return False, float(bb["trigger"]), 28, notes, bb["wait_msg"], style
+
+    if bb["preferred"]:
+        notes.append("BB preferred touch — entry confirmed")
+        return True, float(bb["trigger"]), 88, notes, None, style
+
+    if zone == "between":
+        notes.append("Between bands — patient entry toward middle band")
+        return True, float(mid), 58, notes, None, style
+
+    return False, float(bb["trigger"]), 38, notes, bb["wait_msg"], style
+
+
 def compute_strategy_entry(
     *,
     strategy_id: str,
@@ -436,45 +474,17 @@ def compute_strategy_entry(
     prev_close: float = 0.0,
 ) -> EntryAnalysis:
     """
-    Decide if structural entry is confirmed and compute LIMIT price (patient, not ask chase).
+    Decide if 5m BB entry is confirmed and compute LIMIT price (patient, not ask chase).
     """
     kind = (option_kind or "CE").upper()
-    sid = strategy_id or "long_atm_directional"
+    sid = strategy_id or "bb_5m_mean_reversion"
     bid, ask, ltp, mid, spread_pct = _book(quote)
     ref_ltp = ltp or mid or ask or bid
-    last_5m = intra.get("last_5m_close")
-    if last_5m is not None:
-        last_5m = float(last_5m)
 
-    ready = False
-    trigger: Optional[float] = None
-    score = 0
-    notes: List[str] = []
-    block: Optional[str] = None
-
-    if sid == "orb_15m_breakout":
-        ready, trigger, score, notes, block = _analyze_orb(spot, kind, intra, last_5m)
-    elif sid == "pdh_pdl_breakout":
-        ready, trigger, score, notes, block = _analyze_pdh_pdl(spot, kind, intra, last_5m)
-    elif sid == "ema_pullback_continuation":
-        ready, trigger, score, notes, block = _analyze_ema_pullback(
-            spot, kind, intra, prev_close
-        )
-    elif sid == "green_bar_sentinel_2nd_oi":
-        ready, trigger, score, notes, block = _analyze_green_bar_sentinel(
-            spot, kind, intra, last_5m
-        )
+    if sid == "bb_5m_mean_reversion":
+        ready, trigger, score, notes, block, bb_style = _analyze_bb_5m(spot, kind, intra)
     else:
-        ready, trigger, score, notes, block = _analyze_directional(
-            spot, kind, intra, prev_close
-        )
-
-    if sid != "green_bar_sentinel_2nd_oi":
-        ready, trigger, score, notes, block, bb_style = _apply_bollinger_entry_gate(
-            spot, kind, intra, ready, trigger, score, notes, block
-        )
-    else:
-        bb_style = "oi_sentinel_reversal"
+        ready, trigger, score, notes, block, bb_style = _analyze_bb_5m(spot, kind, intra)
 
     fair = _structure_fair_premium(
         ref_ltp, spot, trigger if trigger is not None else spot, kind, delta

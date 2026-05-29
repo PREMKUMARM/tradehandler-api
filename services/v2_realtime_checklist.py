@@ -416,7 +416,7 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
             i,
             title,
             ok,
-            f"Best: {strategy_analysis.get('selected_name')} ({strategy_analysis.get('selected_score')}/100)",
+            f"5m BB: {strategy_analysis.get('selected_name')} ({strategy_analysis.get('selected_score')}/100)",
             out,
         )
     if i == 4:
@@ -485,10 +485,30 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
             if trade_plan
             else "—"
         )
-        msg = "Entry priced from indicators" if ready else (
-            trade_plan.get("entry_block_reason") or "Entry not confirmed"
+        msg = "Entry priced from 5m BB" if ready else (
+            trade_plan.get("entry_block_reason") or "BB entry not confirmed"
         )
-        return _step(i, title, ok and ready, msg, out)
+        paper_bb_ok = False
+        try:
+            from services.paper_trading import is_paper_mode_for_segment
+
+            sid = strategy_analysis.get("selected_id") or (trade_plan or {}).get("strategy_id", "")
+            bb_zone = ind.get("bb_zone") or ""
+            extended = bb_zone in ("upper", "lower") and (
+                (opt == "CE" and bb_zone == "upper") or (opt == "PE" and bb_zone == "lower")
+            )
+            paper_bb_ok = (
+                is_paper_mode_for_segment("nifty50")
+                and sid == "bb_5m_mean_reversion"
+                and bool(trade_plan)
+                and ind.get("bb_middle")
+                and not extended
+            )
+        except Exception:
+            pass
+        if paper_bb_ok and not ready:
+            msg = "Paper BB debug: bands loaded — autonomous may place on checklist"
+        return _step(i, title, ok and (ready or paper_bb_ok), msg, out)
     if i == 8:
         ok = bool(trade_plan)
         out = (

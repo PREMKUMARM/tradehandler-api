@@ -1,26 +1,24 @@
 """
-V2 — Score top Indian Nifty F&O intraday strategies using prior checklist context.
+V2 — Nifty50 paper/live strategy: simple 5m Bollinger Bands (20, 2σ) mean reversion.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from utils.kite_utils import get_kite_instance
 from utils.logger import log_warning
 
 IST = ZoneInfo("Asia/Kolkata")
 
-# Widely used profitable Nifty F&O intraday frameworks (single-leg long option execution).
-STRATEGY_IDS = (
-    "long_atm_directional",
-    "orb_15m_breakout",
-    "pdh_pdl_breakout",
-    "ema_pullback_continuation",
-    "green_bar_sentinel_2nd_oi",
+STRATEGY_ID = "bb_5m_mean_reversion"
+STRATEGY_NAME = "5m Bollinger Bands"
+STRATEGY_DESC = (
+    "Buy ATM options on 5m BB pullbacks: CE at lower/middle band, PE at upper/middle band."
 )
+
+STRATEGY_IDS = (STRATEGY_ID,)
 
 
 @dataclass
@@ -28,16 +26,13 @@ class MarketContext:
     nifty_ltp: float = 0.0
     prev_close: float = 0.0
     day_open: float = 0.0
-    day_high: float = 0.0
-    day_low: float = 0.0
     margin: float = 0.0
     direction_pref: str = "AUTO"
     vix_ltp: Optional[float] = None
-    pdh: Optional[float] = None
-    pdl: Optional[float] = None
-    or_high: Optional[float] = None
-    or_low: Optional[float] = None
-    ema9: Optional[float] = None
+    bb_middle: Optional[float] = None
+    bb_upper: Optional[float] = None
+    bb_lower: Optional[float] = None
+    bb_zone: str = ""
     minutes: int = 0
     is_weekday: bool = True
 
@@ -48,8 +43,8 @@ class StrategyCandidate:
     name: str
     description: str
     score: int
-    fit: str  # excellent | good | fair | poor
-    option_kind: str  # CE | PE
+    fit: str
+    option_kind: str
     spot_entry: float
     spot_stop_loss: float
     spot_target: float
@@ -57,43 +52,9 @@ class StrategyCandidate:
     reasons: List[str]
     warnings: List[str]
     strike_moneyness: str = "ATM"
-    pattern_tag: str = ""
+    pattern_tag: str = "bb_5m"
     anchor_strike: Optional[int] = None
     oi_change: Optional[float] = None
-
-
-def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
-    ctx = MarketContext(margin=margin, direction_pref=(direction_pref or "AUTO").upper())
-    now = datetime.now(IST)
-    ctx.minutes = now.hour * 60 + now.minute
-    ctx.is_weekday = 1 <= now.weekday() <= 5
-
-    try:
-        from services.kite_live_indicators import recalculate_from_ticker
-
-        live = recalculate_from_ticker()
-        ctx.nifty_ltp = float(live.get("nifty_spot") or 0)
-        ctx.prev_close = float(live.get("prev_close") or ctx.nifty_ltp)
-        ctx.day_open = float(live.get("day_open") or ctx.nifty_ltp)
-        ctx.day_high = float(live.get("day_high") or ctx.nifty_ltp)
-        ctx.day_low = float(live.get("day_low") or ctx.nifty_ltp)
-        if live.get("vix"):
-            ctx.vix_ltp = float(live["vix"])
-        if live.get("pdh"):
-            ctx.pdh = float(live["pdh"])
-        if live.get("pdl"):
-            ctx.pdl = float(live["pdl"])
-        if live.get("or_high"):
-            ctx.or_high = float(live["or_high"])
-        if live.get("or_low"):
-            ctx.or_low = float(live["or_low"])
-        if live.get("ema9"):
-            ctx.ema9 = float(live["ema9"])
-    except Exception as exc:
-        log_warning(f"[V2 strategy] live indicators failed: {exc}")
-        return ctx
-
-    return ctx
 
 
 def _fit_label(score: int) -> str:
@@ -116,73 +77,54 @@ def _resolve_kind(ctx: MarketContext, bias: str) -> str:
     return "CE"
 
 
-def _score_long_atm(ctx: MarketContext) -> StrategyCandidate:
+def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
+    ctx = MarketContext(margin=margin, direction_pref=(direction_pref or "AUTO").upper())
+    now = datetime.now(IST)
+    ctx.minutes = now.hour * 60 + now.minute
+    ctx.is_weekday = 1 <= now.weekday() <= 5
+
+    try:
+        from services.kite_live_indicators import bollinger_zone, recalculate_from_ticker
+
+        live = recalculate_from_ticker()
+        ctx.nifty_ltp = float(live.get("nifty_spot") or 0)
+        ctx.prev_close = float(live.get("prev_close") or ctx.nifty_ltp)
+        ctx.day_open = float(live.get("day_open") or ctx.nifty_ltp)
+        if live.get("vix"):
+            ctx.vix_ltp = float(live["vix"])
+        mid = live.get("bb_middle")
+        upper = live.get("bb_upper")
+        lower = live.get("bb_lower")
+        if mid is not None and upper is not None and lower is not None:
+            ctx.bb_middle = float(mid)
+            ctx.bb_upper = float(upper)
+            ctx.bb_lower = float(lower)
+            kind = _resolve_kind(ctx, "AUTO")
+            bb = bollinger_zone(
+                ctx.nifty_ltp, ctx.bb_middle, ctx.bb_upper, ctx.bb_lower, kind
+            )
+            ctx.bb_zone = str(bb.get("zone") or "")
+    except Exception as exc:
+        log_warning(f"[V2 strategy] live indicators failed: {exc}")
+
+    return ctx
+
+
+def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
     kind = _resolve_kind(ctx, "AUTO")
-    risk_pts = max(15.0, ctx.nifty_ltp * 0.0035)
-    rr = 2.0
-    if kind == "CE":
-        sl, tgt = ctx.nifty_ltp - risk_pts, ctx.nifty_ltp + risk_pts * rr
-    else:
-        sl, tgt = ctx.nifty_ltp + risk_pts, ctx.nifty_ltp - risk_pts * rr
-
-    score = 50
-    reasons: List[str] = []
-    warnings: List[str] = []
-
-    if ctx.nifty_ltp > 0 and ctx.margin > 5000:
-        score += 15
-        reasons.append(f"Margin ₹{ctx.margin:,.0f} supports ATM buy")
-    gap_pct = abs(ctx.day_open - ctx.prev_close) / ctx.prev_close * 100 if ctx.prev_close else 0
-    if gap_pct < 0.8:
-        score += 10
-        reasons.append("No extreme gap — trend read reliable")
-    else:
-        warnings.append(f"Gap {gap_pct:.1f}% — wait for ORB/PDH clarity")
-
-    if ctx.vix_ltp:
-        if 12 <= ctx.vix_ltp <= 22:
-            score += 15
-            reasons.append(f"VIX {ctx.vix_ltp:.1f} in buy-zone (not too cheap/expensive)")
-        elif ctx.vix_ltp > 24:
-            score -= 10
-            warnings.append(f"VIX {ctx.vix_ltp:.1f} elevated — premium expensive")
-
-    if (kind == "CE" and ctx.nifty_ltp >= ctx.prev_close) or (
-        kind == "PE" and ctx.nifty_ltp < ctx.prev_close
-    ):
-        score += 10
-        reasons.append(f"Spot vs prior close favours {kind}")
-
-    return StrategyCandidate(
-        id="long_atm_directional",
-        name="Long ATM directional",
-        description="Buy ATM CE/PE in direction of session bias; GTT on premium.",
-        score=max(0, min(100, score)),
-        fit=_fit_label(score),
-        option_kind=kind,
-        spot_entry=ctx.nifty_ltp,
-        spot_stop_loss=sl,
-        spot_target=tgt,
-        rr_ratio=rr,
-        reasons=reasons,
-        warnings=warnings,
-    )
-
-
-def _score_orb(ctx: MarketContext) -> StrategyCandidate:
-    kind = "CE"
-    sl, tgt, entry = ctx.nifty_ltp, ctx.nifty_ltp - 30, ctx.nifty_ltp
+    entry = ctx.nifty_ltp
     rr = 1.5
-    score = 25
+    score = 20
     reasons: List[str] = []
     warnings: List[str] = []
 
-    if ctx.or_high is None or ctx.or_low is None:
-        warnings.append("Opening range not built yet (need 9:15–9:30 15m candles)")
+    if ctx.nifty_ltp <= 0:
+        warnings.append("Nifty spot unavailable — connect Kite ticker")
+        sl, tgt = entry - 30, entry + 45
         return StrategyCandidate(
-            id="orb_15m_breakout",
-            name="15m Opening Range Breakout",
-            description="Break of 9:15–9:30 IST range with OR as stop reference.",
+            id=STRATEGY_ID,
+            name=STRATEGY_NAME,
+            description=STRATEGY_DESC,
             score=score,
             fit=_fit_label(score),
             option_kind=kind,
@@ -194,75 +136,17 @@ def _score_orb(ctx: MarketContext) -> StrategyCandidate:
             warnings=warnings,
         )
 
-    or_range = ctx.or_high - ctx.or_low
-    entry = ctx.nifty_ltp
-    if entry > ctx.or_high:
-        kind = "CE"
-        sl = ctx.or_low - 2
-        risk = max(1.0, entry - sl)
-        tgt = entry + rr * risk
-        score += 35
-        reasons.append(f"Price above OR high {ctx.or_high:.0f} — long breakout")
-    elif entry < ctx.or_low:
-        kind = "PE"
-        sl = ctx.or_high + 2
-        risk = max(1.0, sl - entry)
-        tgt = entry - rr * risk
-        score += 35
-        reasons.append(f"Price below OR low {ctx.or_low:.0f} — short breakout")
-    else:
-        warnings.append(f"Inside OR ({ctx.or_low:.0f}–{ctx.or_high:.0f}) — no breakout yet")
-        kind = _resolve_kind(ctx, "AUTO")
+    if ctx.bb_middle is None or ctx.bb_upper is None or ctx.bb_lower is None:
+        warnings.append("5m BB not ready — need 20 session 5m bars on Nifty")
+        risk = max(15.0, entry * 0.003)
         if kind == "CE":
-            sl, tgt = ctx.or_low - 2, ctx.or_high + or_range * 0.5
+            sl, tgt = entry - risk, entry + risk * rr
         else:
-            sl, tgt = ctx.or_high + 2, ctx.or_low - or_range * 0.5
-
-    if 25 <= or_range <= 180:
-        score += 25
-        reasons.append(f"OR range {or_range:.0f} pts in tradeable band")
-    else:
-        warnings.append(f"OR range {or_range:.0f} pts outside 25–180 sweet spot")
-
-    if ctx.minutes > 9 * 60 + 30:
-        score += 10
-    if ctx.minutes < 13 * 60 + 30:
-        score += 10
-        reasons.append("Within ORB window (before 13:30 cutoff)")
-    else:
-        warnings.append("Past ORB cutoff — lower edge")
-
-    return StrategyCandidate(
-        id="orb_15m_breakout",
-        name="15m Opening Range Breakout",
-        description="Nifty ORB: break 9:15–9:30 range, SL opposite side of range.",
-        score=max(0, min(100, score)),
-        fit=_fit_label(score),
-        option_kind=kind,
-        spot_entry=entry,
-        spot_stop_loss=sl,
-        spot_target=tgt,
-        rr_ratio=rr,
-        reasons=reasons,
-        warnings=warnings,
-    )
-
-
-def _score_pdh_pdl(ctx: MarketContext) -> StrategyCandidate:
-    kind = _resolve_kind(ctx, "AUTO")
-    entry = ctx.nifty_ltp
-    sl, tgt = entry - 20, entry + 30
-    rr = 1.5
-    score = 30
-    reasons: List[str] = []
-    warnings: List[str] = []
-
-    if not ctx.pdh or not ctx.pdl:
-        warnings.append("PDH/PDL unavailable — need prior day daily candle")
+            sl, tgt = entry + risk, entry - risk * rr
         return StrategyCandidate(
-            id="pdh_pdl_breakout",
-            name="PDH / PDL breakout",
-            description="Break prior day high/low with structure stop.",
+            id=STRATEGY_ID,
+            name=STRATEGY_NAME,
+            description=STRATEGY_DESC,
             score=score,
             fit=_fit_label(score),
             option_kind=kind,
@@ -274,185 +158,63 @@ def _score_pdh_pdl(ctx: MarketContext) -> StrategyCandidate:
             warnings=warnings,
         )
 
-    buf = 3.0
-    if entry > ctx.pdh:
-        kind = "CE"
-        sl = ctx.pdh - buf
+    from services.kite_live_indicators import bollinger_zone
+
+    bb = bollinger_zone(
+        entry, ctx.bb_middle, ctx.bb_upper, ctx.bb_lower, kind
+    )
+    zone = bb["zone"]
+    buf = max(6.0, (ctx.bb_upper - ctx.bb_lower) * 0.04)
+
+    if kind == "CE":
+        sl = ctx.bb_lower - buf
         risk = max(1.0, entry - sl)
-        tgt = entry + rr * risk
-        score += 40
-        reasons.append(f"Above PDH {ctx.pdh:.0f} — bullish day structure")
-    elif entry < ctx.pdl:
-        kind = "PE"
-        sl = ctx.pdl + buf
-        risk = max(1.0, sl - entry)
-        tgt = entry - rr * risk
-        score += 40
-        reasons.append(f"Below PDL {ctx.pdl:.0f} — bearish day structure")
-    else:
-        warnings.append(f"Between PDL {ctx.pdl:.0f} and PDH {ctx.pdh:.0f} — wait for break")
-        mid = (ctx.pdh + ctx.pdl) / 2
-        if entry >= mid:
-            kind, sl, tgt = "CE", ctx.pdl, ctx.pdh + (ctx.pdh - ctx.pdl) * 0.5
+        tgt = ctx.bb_middle + rr * risk * 0.85
+        if zone == "lower":
+            score = 88
+            reasons.append(f"CE entry zone: 5m BB lower touch ({ctx.bb_lower:.0f})")
+        elif zone == "middle":
+            score = 78
+            reasons.append(f"CE entry zone: 5m BB middle ({ctx.bb_middle:.0f})")
+        elif zone == "between":
+            score = 62
+            reasons.append("CE: spot between bands — patient limit toward middle/lower")
+        elif bb["extended"]:
+            score = 25
+            warnings.append("CE blocked: spot at upper band extension — wait for pullback")
         else:
-            kind, sl, tgt = "PE", ctx.pdh, ctx.pdl - (ctx.pdh - ctx.pdl) * 0.5
-
-    if ctx.minutes >= 9 * 60 + 30:
-        score += 15
-        reasons.append("After 9:30 warm-up — PDH/PDL valid")
-    if ctx.pdh - ctx.pdl > 50:
-        score += 10
-        reasons.append("Prior day range wide enough for breakout follow-through")
-
-    return StrategyCandidate(
-        id="pdh_pdl_breakout",
-        name="PDH / PDL breakout",
-        description="Trade break of previous day high/low; SL at broken level.",
-        score=max(0, min(100, score)),
-        fit=_fit_label(score),
-        option_kind=kind,
-        spot_entry=entry,
-        spot_stop_loss=sl,
-        spot_target=tgt,
-        rr_ratio=rr,
-        reasons=reasons,
-        warnings=warnings,
-    )
-
-
-def _score_ema_pullback(ctx: MarketContext) -> StrategyCandidate:
-    kind = _resolve_kind(ctx, "AUTO")
-    entry = ctx.nifty_ltp
-    risk_pts = max(12.0, entry * 0.0025)
-    rr = 1.8
-    if kind == "CE":
-        sl, tgt = entry - risk_pts, entry + risk_pts * rr
+            score = 45
+            warnings.append(bb["wait_msg"])
     else:
-        sl, tgt = entry + risk_pts, entry - risk_pts * rr
-
-    score = 35
-    reasons: List[str] = []
-    warnings: List[str] = []
-
-    if ctx.ema9 is None:
-        warnings.append("9 EMA not computed — need 5m history")
-        return StrategyCandidate(
-            id="ema_pullback_continuation",
-            name="9 EMA pullback continuation",
-            description="Trend day: buy CE/PE after pullback to 9 EMA on 5m.",
-            score=score,
-            fit=_fit_label(score),
-            option_kind=kind,
-            spot_entry=entry,
-            spot_stop_loss=sl,
-            spot_target=tgt,
-            rr_ratio=rr,
-            reasons=reasons,
-            warnings=warnings,
-        )
-
-    dist = entry - ctx.ema9
-    if entry > ctx.ema9 and entry > ctx.prev_close:
-        kind = "CE"
-        sl = min(ctx.ema9 - 5, entry - risk_pts)
-        risk = max(1.0, entry - sl)
-        tgt = entry + rr * risk
-        if 0 <= dist <= 25:
-            score += 35
-            reasons.append(f"Uptrend — pullback near 9 EMA ({ctx.ema9:.0f})")
-        elif dist > 25:
-            score += 15
-            reasons.append("Uptrend but extended above EMA — chase risk")
-            warnings.append("Far above 9 EMA — wait for pullback")
-    elif entry < ctx.ema9 and entry < ctx.prev_close:
-        kind = "PE"
-        sl = max(ctx.ema9 + 5, entry + risk_pts)
+        sl = ctx.bb_upper + buf
         risk = max(1.0, sl - entry)
-        tgt = entry - rr * risk
-        if 0 >= dist >= -25:
-            score += 35
-            reasons.append(f"Downtrend — pullback near 9 EMA ({ctx.ema9:.0f})")
-        elif dist < -25:
-            score += 15
-            warnings.append("Far below 9 EMA — wait for pullback")
-    else:
-        warnings.append("No clear trend vs EMA — mixed session")
+        tgt = ctx.bb_middle - rr * risk * 0.85
+        if zone == "upper":
+            score = 88
+            reasons.append(f"PE entry zone: 5m BB upper touch ({ctx.bb_upper:.0f})")
+        elif zone == "middle":
+            score = 78
+            reasons.append(f"PE entry zone: 5m BB middle ({ctx.bb_middle:.0f})")
+        elif zone == "between":
+            score = 62
+            reasons.append("PE: spot between bands — patient limit toward middle/upper")
+        elif bb["extended"]:
+            score = 25
+            warnings.append("PE blocked: spot at lower band extension — wait for rally")
+        else:
+            score = 45
+            warnings.append(bb["wait_msg"])
 
-    if 10 * 60 + 15 <= ctx.minutes <= 14 * 60 + 30:
-        score += 15
-        reasons.append("Prime session window for pullback entries")
+    if ctx.margin > 5000:
+        score += 8
+        reasons.append(f"Margin ₹{ctx.margin:,.0f} OK for ATM buy")
+    if ctx.vix_ltp and 12 <= ctx.vix_ltp <= 24:
+        score += 5
+        reasons.append(f"VIX {ctx.vix_ltp:.1f} in tradeable range")
 
-    return StrategyCandidate(
-        id="ema_pullback_continuation",
-        name="9 EMA pullback continuation",
-        description="Intraday trend: enter after hold/pullback to 9 EMA (5m).",
-        score=max(0, min(100, score)),
-        fit=_fit_label(score),
-        option_kind=kind,
-        spot_entry=entry,
-        spot_stop_loss=sl,
-        spot_target=tgt,
-        rr_ratio=rr,
-        reasons=reasons,
-        warnings=warnings,
+    reasons.append(
+        f"BB L {ctx.bb_lower:.0f} M {ctx.bb_middle:.0f} U {ctx.bb_upper:.0f} · zone {zone}"
     )
-
-
-def _score_green_bar_sentinel(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> StrategyCandidate:
-    from services.v2_oi_sentinel import (
-        STRATEGY_DESC,
-        STRATEGY_ID,
-        STRATEGY_NAME,
-        pick_sentinel_anchor,
-    )
-
-    chain_oi = chain_oi or {}
-    score = 25
-    reasons: List[str] = []
-    warnings: List[str] = []
-
-    if not chain_oi.get("baseline_ready"):
-        warnings.append("OI baseline not ready — wait until 9:16+ for green-bar ranking")
-
-    kind, anchor_strike, meta = pick_sentinel_anchor(chain_oi, ctx.direction_pref)
-    oi_chg = float(meta.get("oi_change") or 0) if meta else 0.0
-    oi_pct = float(meta.get("oi_change_pct") or 0) if meta else 0.0
-
-    if anchor_strike:
-        score += 25
-        reasons.append(
-            f"2nd OI anchor {kind} {anchor_strike} · ΔOI {oi_chg:,.0f} ({oi_pct:.0f}% vs open)"
-        )
-        top_ce = (chain_oi.get("ranked_ce_oi") or [{}])[0] if chain_oi.get("ranked_ce_oi") else {}
-        top_pe = (chain_oi.get("ranked_pe_oi") or [{}])[0] if chain_oi.get("ranked_pe_oi") else {}
-        if top_ce.get("strike"):
-            reasons.append(f"Top CE buildup strike {top_ce.get('strike')} (monitor 2nd: {anchor_strike if kind=='CE' else (chain_oi.get('second_ce_anchor') or {}).get('strike')})")
-        if top_pe.get("strike"):
-            reasons.append(f"Top PE buildup strike {top_pe.get('strike')}")
-    else:
-        warnings.append("Could not rank OI anchors — refresh option chain")
-
-    if 9 * 60 + 16 <= ctx.minutes <= 14 * 60 + 30:
-        score += 20
-        reasons.append("Prime monitoring window after open")
-    elif ctx.minutes < 9 * 60 + 16:
-        warnings.append("Before 9:16 — baseline OI still forming")
-
-    risk_pts = max(18.0, ctx.nifty_ltp * 0.003)
-    rr = 1.8
-    entry = ctx.nifty_ltp
-    if kind == "CE":
-        sl = entry - risk_pts
-        tgt = entry + rr * risk_pts
-    else:
-        sl = entry + risk_pts
-        tgt = entry - rr * risk_pts
-
-    if anchor_strike:
-        if kind == "CE" and entry < anchor_strike:
-            reasons.append(f"Spot below anchor {anchor_strike} — watch for reclaim reversal")
-        if kind == "PE" and entry > anchor_strike:
-            reasons.append(f"Spot above anchor {anchor_strike} — watch for rejection reversal")
 
     return StrategyCandidate(
         id=STRATEGY_ID,
@@ -467,10 +229,8 @@ def _score_green_bar_sentinel(ctx: MarketContext, chain_oi: Optional[Dict[str, A
         rr_ratio=rr,
         reasons=reasons,
         warnings=warnings,
-        strike_moneyness="ANCHOR",
-        pattern_tag="oi_sentinel_2nd",
-        anchor_strike=anchor_strike,
-        oi_change=oi_chg if oi_chg else None,
+        strike_moneyness="ATM",
+        pattern_tag=f"bb_{zone}",
     )
 
 
@@ -480,17 +240,11 @@ def analyze_fno_strategies(
     hypothesis_note: Optional[str] = None,
     chain_oi: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Rank Nifty F&O intraday strategies using session + prior-step context.
-    """
+    """Single 5m Bollinger Bands strategy for Nifty50 (paper debug + live)."""
+    del chain_oi  # OI ranking not used for BB-only strategy
     ctx = _fetch_market_context(direction_pref, margin)
-    candidates = [
-        _score_long_atm(ctx),
-        _score_orb(ctx),
-        _score_pdh_pdl(ctx),
-        _score_ema_pullback(ctx),
-        _score_green_bar_sentinel(ctx, chain_oi),
-    ]
+    selected = _score_bb_5m(ctx)
+
     try:
         from services.kite_live_indicators import recalculate_from_ticker
 
@@ -501,30 +255,33 @@ def analyze_fno_strategies(
 
     from services.v2_strike_pricing import _pick_moneyness
 
-    for c in candidates:
-        m, pt, reason = _pick_moneyness(
-            c.id, ctx.nifty_ltp, c.option_kind, c.spot_stop_loss, c.spot_target, intra
-        )
-        c.strike_moneyness = m
-        c.pattern_tag = pt
-        if reason:
-            c.reasons = list(c.reasons) + [f"Strike {m}: {reason}"]
+    m, pt, reason = _pick_moneyness(
+        selected.id,
+        ctx.nifty_ltp,
+        selected.option_kind,
+        selected.spot_stop_loss,
+        selected.spot_target,
+        intra,
+    )
+    selected.strike_moneyness = m
+    selected.pattern_tag = pt
+    if reason:
+        selected.reasons = list(selected.reasons) + [f"Strike {m}: {reason}"]
 
-    ranked = sorted(candidates, key=lambda c: c.score, reverse=True)
-    selected = ranked[0]
+    ranked = [selected]
 
     context_summary = {
         "nifty_spot": round(ctx.nifty_ltp, 2),
         "prev_close": round(ctx.prev_close, 2),
         "margin": round(ctx.margin, 2),
         "vix": round(ctx.vix_ltp, 2) if ctx.vix_ltp else None,
-        "pdh": round(ctx.pdh, 2) if ctx.pdh else None,
-        "pdl": round(ctx.pdl, 2) if ctx.pdl else None,
-        "or_high": round(ctx.or_high, 2) if ctx.or_high else None,
-        "or_low": round(ctx.or_low, 2) if ctx.or_low else None,
-        "ema9": round(ctx.ema9, 2) if ctx.ema9 else None,
+        "bb_middle": round(ctx.bb_middle, 2) if ctx.bb_middle else None,
+        "bb_upper": round(ctx.bb_upper, 2) if ctx.bb_upper else None,
+        "bb_lower": round(ctx.bb_lower, 2) if ctx.bb_lower else None,
+        "bb_zone": ctx.bb_zone or None,
         "direction_pref": ctx.direction_pref,
         "hypothesis_note": hypothesis_note,
+        "strategy_mode": "bb_5m_only",
     }
 
     def _to_dict(c: StrategyCandidate) -> Dict[str, Any]:
@@ -549,7 +306,8 @@ def analyze_fno_strategies(
 
     output_lines = [
         f"Selected: {selected.name} (score {selected.score}/100, {selected.fit})",
-        f"Leg: BUY Nifty {selected.option_kind} · SL {selected.spot_stop_loss:.0f} · Tgt {selected.spot_target:.0f}",
+        f"Leg: BUY Nifty {selected.option_kind} · BB zone {ctx.bb_zone or '—'}",
+        f"SL {selected.spot_stop_loss:.0f} · Tgt {selected.spot_target:.0f}",
     ]
     if selected.reasons:
         output_lines.append("Why: " + "; ".join(selected.reasons[:3]))

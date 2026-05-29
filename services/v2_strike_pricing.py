@@ -42,6 +42,9 @@ def _pick_moneyness(
     risk_pts = abs(spot - spot_sl)
     reward_pts = abs(spot_tgt - spot)
 
+    if strategy_id == "bb_5m_mean_reversion":
+        return "ATM", "bb_5m", "5m BB mean reversion — ATM for liquidity and delta"
+
     if strategy_id == "long_atm_directional":
         return "ATM", "directional", "Session bias — ATM for delta ~0.5 and liquidity"
 
@@ -161,6 +164,22 @@ def refine_spot_levels_from_candles(
             tgt = entry - rr * risk
             notes.append(f"EMA pullback SL near {ema9:.0f}")
 
+    elif strategy_id == "bb_5m_mean_reversion":
+        lower = intra.get("bb_lower")
+        upper = intra.get("bb_upper")
+        mid = intra.get("bb_middle")
+        if lower and upper and mid:
+            buf = max(6.0, (float(upper) - float(lower)) * 0.04)
+            if kind == "CE":
+                sl = float(lower) - buf
+                risk = max(1.0, entry - sl)
+                tgt = float(mid) + rr * risk * 0.85
+            else:
+                sl = float(upper) + buf
+                risk = max(1.0, sl - entry)
+                tgt = float(mid) - rr * risk * 0.85
+            notes.append("BB SL beyond band, target toward middle")
+
     elif strategy_id == "long_atm_directional":
         risk_pts = max(15.0, entry * 0.0035)
         if kind == "CE":
@@ -225,7 +244,7 @@ def build_dynamic_option_leg(
     if live_spot > 0:
         spot_entry = live_spot
 
-    sid = strategy_id or "long_atm_directional"
+    sid = strategy_id or "bb_5m_mean_reversion"
     entry, sl, tgt, level_note = refine_spot_levels_from_candles(
         sid, spot_entry, kind, spot_stop_loss, spot_target, intra
     )

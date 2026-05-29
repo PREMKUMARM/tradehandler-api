@@ -179,7 +179,7 @@ def build_indicator_trade_plan(
         else:
             spot_sl, spot_tgt = spot + risk_pts, spot - risk_pts * rr
 
-    sid = strategy_id or "long_atm_directional"
+    sid = strategy_id or "bb_5m_mean_reversion"
     intra = {
         "pdh": ind.get("pdh"),
         "pdl": ind.get("pdl"),
@@ -366,7 +366,7 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         "or_low": live.get("or_low"),
         "ema9": live.get("ema9"),
     }
-    sid = plan.get("strategy_id") or "long_atm_directional"
+    sid = plan.get("strategy_id") or "bb_5m_mean_reversion"
     kind = plan.get("option_type", "CE")
     spot_sl = float(plan.get("spot_stop_loss", 0))
     spot_tgt = float(plan.get("spot_target", 0))
