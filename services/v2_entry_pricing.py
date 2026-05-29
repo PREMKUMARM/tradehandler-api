@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.kite_live_indicators import bollinger_zone
+from services.option_contract_indicators import contract_bb_is_active, contract_price_for_bb
 from utils.kite_order_utils import round_to_tick
 
 ORB_BREAK_BUFFER = 5.0
@@ -288,13 +289,16 @@ def _apply_bollinger_entry_gate(
             + (f" ({bb_src})" if bb_src else "")
         )
 
-    bb = bollinger_zone(float(spot), float(mid), float(upper), float(lower), kind)
+    px = contract_price_for_bb(spot, intra)
+    bb = bollinger_zone(px, float(mid), float(upper), float(lower), kind)
     zone = bb["zone"]
     style_suffix = f"bb_{zone}"
+    on_contract = contract_bb_is_active(intra)
+    fmt = ".2f" if on_contract or px < 5000 else ".0f"
 
     if bb["extended"]:
         notes.append(
-            f"BB {zone}: spot extended — prefer middle ({mid:.0f}) not band chase"
+            f"BB {zone}: contract LTP extended — prefer middle ({mid:{fmt}}) not band chase"
         )
         if ready:
             return False, bb["trigger"], score, notes, bb["wait_msg"], style_suffix
@@ -302,7 +306,7 @@ def _apply_bollinger_entry_gate(
 
     if bb["preferred"]:
         notes.append(
-            f"BB {zone} touch (mid {mid:.0f}, L {lower:.0f}, U {upper:.0f}) — preferred entry zone"
+            f"BB {zone} touch (mid {mid:{fmt}}, L {lower:{fmt}}, U {upper:{fmt}}) — preferred entry zone"
         )
         new_trigger = float(bb["trigger"])
         if ready:
@@ -436,16 +440,18 @@ def _analyze_bb_5m(
             "",
         )
 
-    bb = bollinger_zone(float(spot), float(mid), float(upper), float(lower), kind)
+    px = contract_price_for_bb(spot, intra)
+    bb = bollinger_zone(px, float(mid), float(upper), float(lower), kind)
     zone = bb["zone"]
     style = f"bb5m_{zone}"
 
     bb_src = (intra.get("indicator_sources") or {}).get("bb_middle", "")
+    sym = intra.get("bb_on_contract") or ""
     if bb_src:
-        notes.append(f"BB source: {bb_src}")
+        notes.append(f"BB source: {bb_src}" + (f" · {sym}" if sym else ""))
 
     notes.append(
-        f"5m BB (contract) L {lower:.2f} M {mid:.2f} U {upper:.2f} · LTP {spot:.2f} · {zone}"
+        f"5m BB (contract) L {lower:.2f} M {mid:.2f} U {upper:.2f} · LTP {px:.2f} · {zone}"
     )
 
     if bb["extended"]:

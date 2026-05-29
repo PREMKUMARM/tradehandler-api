@@ -16,6 +16,10 @@ from services.push.option_contract_resolver import (
 from services.kite_live_indicators import get_nifty_bundle_for_v2, get_vix_snapshot, recalculate_from_ticker
 from services.v2_constants import V2_NFO_PRODUCT
 from services.v2_entry_pricing import EntryAnalysis, compute_strategy_entry
+from services.option_contract_indicators import (
+    merge_option_bb_into_intra,
+    order_exit_levels_from_contract_bb,
+)
 from services.v2_strike_pricing import (
     _pick_moneyness,
     refine_spot_levels_from_candles,
@@ -180,6 +184,8 @@ def build_indicator_trade_plan(
             spot_sl, spot_tgt = spot + risk_pts, spot - risk_pts * rr
 
     sid = strategy_id or "bb_5m_mean_reversion"
+    # Index structure only — BB for order prices comes from the selected contract chart.
+    nifty_spot = float(ind["nifty_spot"])
     intra = {
         "pdh": ind.get("pdh"),
         "pdl": ind.get("pdl"),
@@ -188,25 +194,24 @@ def build_indicator_trade_plan(
         "ema9": ind.get("ema9"),
         "day_high": ind.get("day_high"),
         "day_low": ind.get("day_low"),
-        "bb_middle": ind.get("bb_middle"),
-        "bb_upper": ind.get("bb_upper"),
-        "bb_lower": ind.get("bb_lower"),
         "indicator_sources": ind.get("indicator_sources") or {},
         "anchor_strike": anchor_strike,
+        "nifty_spot": nifty_spot,
         "oi_baseline_ready": bool(
             sid == "green_bar_sentinel_2nd_oi"
             and anchor_strike
             and (not strategy_analysis or sel.get("oi_change") is not None)
         ),
     }
-    use_option_bb = sid == "bb_5m_mean_reversion"
+    spot_entry = nifty_spot
+    if strategy_analysis:
+        cand_entry = float(sel.get("spot_entry") or nifty_spot)
+        if cand_entry > 5000:
+            spot_entry = cand_entry
     level_note = ""
-    if use_option_bb:
-        spot_entry = spot
-    else:
-        spot_entry, spot_sl, spot_tgt, level_note = refine_spot_levels_from_candles(
-            sid, spot, option_kind, spot_sl, spot_tgt, intra
-        )
+    spot_entry, spot_sl, spot_tgt, level_note = refine_spot_levels_from_candles(
+        sid, spot_entry, option_kind, spot_sl, spot_tgt, intra
+    )
 
     moneyness, pattern_tag, m_reason = _pick_moneyness(
         sid, spot_entry, option_kind, spot_sl, spot_tgt, intra
@@ -233,57 +238,39 @@ def build_indicator_trade_plan(
     from services.kite_live_indicators import get_option_bollinger_snapshot
 
     opt_bb = get_option_bollinger_snapshot(contract.tradingsymbol, "NFO")
-    intra_bb = dict(intra)
-    if opt_bb.get("bb_middle") is not None:
-        intra_bb["bb_lower"] = opt_bb["bb_lower"]
-        intra_bb["bb_middle"] = opt_bb["bb_middle"]
-        intra_bb["bb_upper"] = opt_bb["bb_upper"]
-        intra_bb["last_5m_close"] = opt_bb.get("last_5m_close")
-        intra_bb["indicator_sources"] = {
-            **(intra.get("indicator_sources") or {}),
-            **(opt_bb.get("indicator_sources") or {}),
-        }
-    elif use_option_bb:
+    intra_bb = merge_option_bb_into_intra(intra, opt_bb, contract.tradingsymbol)
+    intra_bb["contract_ltp"] = float(entry_prem)
+    intra_bb["option_ltp"] = quote.get("ltp") or opt_bb.get("option_ltp")
+    if opt_bb.get("bb_middle") is None:
         messages.append(
-            "Option 5m Bollinger not ready — need 20×5m bars on the contract in Kite"
+            f"Option 5m BB not ready on {contract.tradingsymbol} — "
+            "need 20×5m bars (order SL/TP uses fallback until loaded)"
         )
 
-    if use_option_bb:
-        prem = float(entry_prem)
-        spot_entry, spot_sl, spot_tgt, level_note = refine_spot_levels_from_candles(
-            sid, prem, option_kind, prem, prem, intra_bb
-        )
-        sl_prem = round_to_tick(max(0.05, float(spot_sl)))
-        tgt_prem = round_to_tick(float(spot_tgt))
-        delta = estimate_delta_from_spot(
-            float(ind["nifty_spot"]),
-            contract.strike,
-            option_kind,
-            vix=ind.get("vix"),
-        )
-        entry_spot_for_analysis = prem
-        intra_for_entry = intra_bb
-    else:
-        sl_prem, tgt_prem, delta = premium_levels_from_indicators(
-            entry_premium=float(entry_prem),
-            spot_entry=spot_entry,
-            spot_sl=spot_sl,
-            spot_tgt=spot_tgt,
-            strike=contract.strike,
-            kind=option_kind,
-            vix=ind.get("vix"),
-        )
-        entry_spot_for_analysis = spot_entry
-        intra_for_entry = {**intra, "last_5m_close": ind.get("last_5m_close")}
+    rr_ratio = reward_pct / risk_pct if risk_pct > 0 else 1.5
+    sl_prem, tgt_prem, spot_sl, spot_tgt, bb_note = order_exit_levels_from_contract_bb(
+        float(entry_prem),
+        option_kind,
+        intra_bb,
+        reward_ratio=rr_ratio,
+    )
+    if bb_note:
+        level_note = (level_note + " · " + bb_note).strip(" ·")
+    delta = estimate_delta_from_spot(
+        nifty_spot,
+        contract.strike,
+        option_kind,
+        vix=ind.get("vix"),
+    )
 
     entry_analysis = compute_strategy_entry(
         strategy_id=sid,
         option_kind=option_kind,
         quote=quote,
-        spot=entry_spot_for_analysis,
+        spot=nifty_spot,
         strike=contract.strike,
         delta=delta,
-        intra=intra_for_entry,
+        intra=intra_bb,
         prev_close=float(ind.get("prev_close") or 0),
     )
     entry_limit = entry_analysis.entry_limit_price
@@ -316,9 +303,8 @@ def build_indicator_trade_plan(
     if bb_mid is not None and bb_up is not None and bb_lo is not None:
         from services.kite_live_indicators import bollinger_zone
 
-        bb_price = float(entry_prem) if use_option_bb else float(spot_entry)
         bb_zone = bollinger_zone(
-            bb_price,
+            float(entry_prem),
             float(bb_mid),
             float(bb_up),
             float(bb_lo),
@@ -336,15 +322,16 @@ def build_indicator_trade_plan(
         "indicator_sources": intra_bb.get("indicator_sources") or {},
         "strategy_id": sid,
         "pattern_tag": pattern_tag,
-        "spot_entry": round(float(entry_prem) if use_option_bb else spot_entry, 2),
+        "spot_entry": round(float(entry_prem), 2),
         "spot_stop_loss": round(spot_sl, 2),
         "spot_target": round(spot_tgt, 2),
         "level_note": level_note,
         "option_bid": quote.get("bid"),
         "option_ask": quote.get("ask"),
         "option_ltp": quote.get("ltp") or opt_bb.get("option_ltp"),
-        "nifty_spot": round(float(ind.get("nifty_spot") or spot), 2),
-        "bb_on_contract": contract.tradingsymbol if use_option_bb else None,
+        "nifty_spot": round(nifty_spot, 2),
+        "bb_on_contract": contract.tradingsymbol,
+        "contract_ltp": round(float(entry_prem), 2),
     }
 
     plan = {
@@ -366,7 +353,7 @@ def build_indicator_trade_plan(
         "nifty_spot": round(float(ind.get("nifty_spot") or spot), 2),
         "spot_stop_loss": round(spot_sl, 2),
         "spot_target": round(spot_tgt, 2),
-        "bb_on_contract": contract.tradingsymbol if use_option_bb else None,
+        "bb_on_contract": contract.tradingsymbol,
         "risk_inr": round(risk_inr, 2),
         "reward_inr": round(reward_inr, 2),
         "reward_ratio": round(rr, 2),
@@ -378,7 +365,7 @@ def build_indicator_trade_plan(
         "anchor_strike": anchor_strike,
         "oi_change": sel.get("oi_change") if strategy_analysis and sid == "green_bar_sentinel_2nd_oi" else None,
         "delta_used": round(delta, 3),
-        "atm_reference": int(round(spot_entry / 50) * 50),
+        "atm_reference": int(round(nifty_spot / 50) * 50),
         "pricing_note": (
             f"{m_reason} · {level_note} · {entry_analysis.entry_style} LIMIT ₹{entry_limit} "
             f"(fair ₹{entry_analysis.fair_premium}) · GTT SL ₹{sl_prem} TP ₹{tgt_prem}"
@@ -392,56 +379,66 @@ def build_indicator_trade_plan(
         "indicators": indicator_snapshot,
     }
     messages.append(
-        f"Indicators: Nifty {spot_entry:.0f} | OR {ind.get('or_low')}-{ind.get('or_high')} | "
+        f"Indicators: Nifty {nifty_spot:.0f} | OR {ind.get('or_low')}-{ind.get('or_high')} | "
         f"PDH {ind.get('pdh')} PDL {ind.get('pdl')} | EMA9 {ind.get('ema9')} | VIX {ind.get('vix')}"
     )
     messages.append(
         f"Entry LIMIT ₹{entry_limit} (LTP ₹{entry_prem:.2f}) · {qty_lots} lot(s) × {lot_size} = {quantity} qty · "
-        f"Risk ₹{risk_inr:.0f} · GTT exit SL ₹{sl_prem} TP ₹{tgt_prem}"
+        f"Risk ₹{risk_inr:.0f} · GTT exit SL ₹{sl_prem} TP ₹{tgt_prem} "
+        f"(from {contract.tradingsymbol} 5m BB)"
     )
     return plan, messages
 
 
 def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
-    """Re-quote option + refresh indicators from latest ticks before place."""
+    """Re-quote option + refresh contract BB for entry / SL / TP before place."""
     live = recalculate_from_ticker()
     sym = plan.get("tradingsymbol")
     if not sym:
         return plan
     quote = live_option_quote(sym)
-    entry_prem = quote["ltp"] or plan.get("entry_premium", 0)
-    spot_entry = float(live.get("nifty_spot") or plan.get("nifty_spot", 0))
+    entry_prem = float(quote["ltp"] or plan.get("entry_premium", 0) or 0)
+    nifty_spot = float(live.get("nifty_spot") or plan.get("nifty_spot", 0))
     intra = {
         "pdh": live.get("pdh"),
         "pdl": live.get("pdl"),
         "or_high": live.get("or_high"),
         "or_low": live.get("or_low"),
         "ema9": live.get("ema9"),
+        "nifty_spot": nifty_spot,
     }
     sid = plan.get("strategy_id") or "bb_5m_mean_reversion"
     kind = plan.get("option_type", "CE")
-    spot_sl = float(plan.get("spot_stop_loss", 0))
-    spot_tgt = float(plan.get("spot_target", 0))
-    spot_entry, spot_sl, spot_tgt, _ = refine_spot_levels_from_candles(
-        sid, spot_entry, kind, spot_sl, spot_tgt, intra
+    from services.kite_live_indicators import get_option_bollinger_snapshot
+
+    opt_bb = get_option_bollinger_snapshot(sym, "NFO")
+    intra_bb = merge_option_bb_into_intra(intra, opt_bb, sym)
+    intra_bb["contract_ltp"] = entry_prem
+    intra_bb["option_ltp"] = quote.get("ltp") or opt_bb.get("option_ltp")
+
+    ind_meta = plan.get("indicators") or {}
+    risk_pct = float(ind_meta.get("risk_pct") or 1.0)
+    rr_ratio = 1.5
+    sl_prem, tgt_prem, spot_sl, spot_tgt, _ = order_exit_levels_from_contract_bb(
+        entry_prem,
+        kind,
+        intra_bb,
+        reward_ratio=rr_ratio,
     )
-    sl_prem, tgt_prem, delta = premium_levels_from_indicators(
-        entry_premium=float(entry_prem),
-        spot_entry=spot_entry,
-        spot_sl=spot_sl,
-        spot_tgt=spot_tgt,
-        strike=int(plan.get("strike", 0)),
-        kind=kind,
+    delta = estimate_delta_from_spot(
+        nifty_spot,
+        int(plan.get("strike", 0)),
+        kind,
         vix=live.get("vix"),
     )
     entry_analysis = compute_strategy_entry(
         strategy_id=sid,
         option_kind=kind,
         quote=quote,
-        spot=spot_entry,
+        spot=nifty_spot,
         strike=int(plan.get("strike", 0)),
         delta=delta,
-        intra={**intra, "last_5m_close": live.get("last_5m_close")},
+        intra=intra_bb,
         prev_close=float(live.get("prev_close") or 0),
     )
     entry_limit = entry_analysis.entry_limit_price
@@ -491,9 +488,10 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
             "num_lots": qty_lots,
             "quantity": quantity,
             "risk_inr": round(risk_inr, 2) if risk_inr else plan.get("risk_inr"),
-            "nifty_spot": round(spot_entry, 2),
+            "nifty_spot": round(nifty_spot, 2),
             "spot_stop_loss": round(spot_sl, 2),
             "spot_target": round(spot_tgt, 2),
+            "bb_on_contract": sym,
             "entry_ready": entry_analysis.entry_ready,
             "entry_style": entry_analysis.entry_style,
             "entry_fair_premium": entry_analysis.fair_premium,
@@ -506,6 +504,11 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     ind.update(live)
     ind.update(
         {
+            "bb_lower": intra_bb.get("bb_lower"),
+            "bb_middle": intra_bb.get("bb_middle"),
+            "bb_upper": intra_bb.get("bb_upper"),
+            "bb_on_contract": sym,
+            "contract_ltp": round(entry_prem, 2),
             "option_bid": quote.get("bid"),
             "option_ask": quote.get("ask"),
             "option_ltp": quote.get("ltp"),

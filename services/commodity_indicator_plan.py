@@ -304,13 +304,29 @@ def build_indicator_trade_plan(
         entry_prem = max(1.0, 0.007 * spot_entry)
         messages.append("Live option LTP unavailable — using estimate")
 
-    sl_prem, tgt_prem, delta = premium_levels_from_indicators(
-        entry_premium=float(entry_prem),
-        spot_entry=spot_entry,
-        spot_sl=spot_sl,
-        spot_tgt=spot_tgt,
-        strike=contract.strike,
-        kind=option_kind,
+    from services.kite_live_indicators import get_option_bollinger_snapshot
+    from services.option_contract_indicators import (
+        merge_option_bb_into_intra,
+        order_exit_levels_from_contract_bb,
+    )
+
+    opt_bb = get_option_bollinger_snapshot(contract.tradingsymbol, "MCX")
+    intra_bb = merge_option_bb_into_intra(intra, opt_bb, contract.tradingsymbol)
+    intra_bb["contract_ltp"] = float(entry_prem)
+    intra_bb["underlying_spot"] = spot_entry
+    rr_ratio = reward_pct / risk_pct if risk_pct > 0 else 1.5
+    sl_prem, tgt_prem, spot_sl, spot_tgt, bb_note = order_exit_levels_from_contract_bb(
+        float(entry_prem),
+        option_kind,
+        intra_bb,
+        reward_ratio=rr_ratio,
+    )
+    if bb_note:
+        level_note = (level_note + " · " + bb_note).strip(" ·")
+    delta = estimate_delta_from_spot(
+        spot_entry,
+        contract.strike,
+        option_kind,
         vix=ind.get("vix"),
     )
 
@@ -321,7 +337,7 @@ def build_indicator_trade_plan(
         spot=spot_entry,
         strike=contract.strike,
         delta=delta,
-        intra={**intra, "last_5m_close": ind.get("last_5m_close")},
+        intra=intra_bb,
         prev_close=float(ind.get("prev_close") or 0),
     )
     entry_limit = entry_analysis.entry_limit_price

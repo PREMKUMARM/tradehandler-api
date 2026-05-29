@@ -84,7 +84,7 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
     ctx.is_weekday = 1 <= now.weekday() <= 5
 
     try:
-        from services.kite_live_indicators import bollinger_zone, recalculate_from_ticker
+        from services.kite_live_indicators import recalculate_from_ticker
 
         live = recalculate_from_ticker()
         ctx.nifty_ltp = float(live.get("nifty_spot") or 0)
@@ -92,18 +92,6 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
         ctx.day_open = float(live.get("day_open") or ctx.nifty_ltp)
         if live.get("vix"):
             ctx.vix_ltp = float(live["vix"])
-        mid = live.get("bb_middle")
-        upper = live.get("bb_upper")
-        lower = live.get("bb_lower")
-        if mid is not None and upper is not None and lower is not None:
-            ctx.bb_middle = float(mid)
-            ctx.bb_upper = float(upper)
-            ctx.bb_lower = float(lower)
-            kind = _resolve_kind(ctx, "AUTO")
-            bb = bollinger_zone(
-                ctx.nifty_ltp, ctx.bb_middle, ctx.bb_upper, ctx.bb_lower, kind
-            )
-            ctx.bb_zone = str(bb.get("zone") or "")
     except Exception as exc:
         log_warning(f"[V2 strategy] live indicators failed: {exc}")
 
@@ -112,15 +100,14 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
 
 def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
     kind = _resolve_kind(ctx, "AUTO")
-    entry = ctx.nifty_ltp
+    nifty = ctx.nifty_ltp
     rr = 1.5
     score = 20
     reasons: List[str] = []
     warnings: List[str] = []
 
-    if ctx.nifty_ltp <= 0:
+    if nifty <= 0:
         warnings.append("Nifty spot unavailable — connect Kite ticker")
-        sl, tgt = entry - 30, entry + 45
         return StrategyCandidate(
             id=STRATEGY_ID,
             name=STRATEGY_NAME,
@@ -128,21 +115,50 @@ def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
             score=score,
             fit=_fit_label(score),
             option_kind=kind,
-            spot_entry=entry,
-            spot_stop_loss=sl,
-            spot_target=tgt,
+            spot_entry=nifty,
+            spot_stop_loss=nifty - 30,
+            spot_target=nifty + 45,
             rr_ratio=rr,
             reasons=reasons,
             warnings=warnings,
         )
 
-    if ctx.bb_middle is None or ctx.bb_upper is None or ctx.bb_lower is None:
-        warnings.append("5m BB not ready — need 20 session 5m bars on Nifty")
-        risk = max(15.0, entry * 0.003)
+    from services.kite_live_indicators import bollinger_zone, get_option_bollinger_snapshot
+    from services.push.option_contract_resolver import resolve_nifty_contract
+
+    contract = resolve_nifty_contract(spot=nifty, kind=kind, moneyness="ATM")
+    if contract is None:
+        warnings.append("Could not resolve ATM option for contract BB")
+        return StrategyCandidate(
+            id=STRATEGY_ID,
+            name=STRATEGY_NAME,
+            description=STRATEGY_DESC,
+            score=score,
+            fit=_fit_label(score),
+            option_kind=kind,
+            spot_entry=nifty,
+            spot_stop_loss=nifty - 30,
+            spot_target=nifty + 45,
+            rr_ratio=rr,
+            reasons=reasons,
+            warnings=warnings,
+        )
+
+    opt_bb = get_option_bollinger_snapshot(contract.tradingsymbol, "NFO")
+    entry = float(opt_bb.get("option_ltp") or 0)
+    mid = opt_bb.get("bb_middle")
+    upper = opt_bb.get("bb_upper")
+    lower = opt_bb.get("bb_lower")
+
+    if entry <= 0 or mid is None or upper is None or lower is None:
+        warnings.append(
+            f"5m BB not ready on {contract.tradingsymbol} — need 20×5m bars on contract chart"
+        )
+        risk = max(0.5, (entry or 50) * 0.12)
         if kind == "CE":
-            sl, tgt = entry - risk, entry + risk * rr
+            sl, tgt = (entry or 50) - risk, (entry or 50) + risk * rr
         else:
-            sl, tgt = entry + risk, entry - risk * rr
+            sl, tgt = (entry or 50) + risk, (entry or 50) - risk * rr
         return StrategyCandidate(
             id=STRATEGY_ID,
             name=STRATEGY_NAME,
@@ -150,7 +166,7 @@ def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
             score=score,
             fit=_fit_label(score),
             option_kind=kind,
-            spot_entry=entry,
+            spot_entry=nifty,
             spot_stop_loss=sl,
             spot_target=tgt,
             rr_ratio=rr,
@@ -158,49 +174,50 @@ def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
             warnings=warnings,
         )
 
-    from services.kite_live_indicators import bollinger_zone
+    ctx.bb_middle = float(mid)
+    ctx.bb_upper = float(upper)
+    ctx.bb_lower = float(lower)
 
-    bb = bollinger_zone(
-        entry, ctx.bb_middle, ctx.bb_upper, ctx.bb_lower, kind
-    )
+    bb = bollinger_zone(entry, ctx.bb_middle, ctx.bb_upper, ctx.bb_lower, kind)
     zone = bb["zone"]
-    buf = max(6.0, (ctx.bb_upper - ctx.bb_lower) * 0.04)
+    width = ctx.bb_upper - ctx.bb_lower
+    buf = max(0.5, width * 0.04)
 
     if kind == "CE":
         sl = ctx.bb_lower - buf
-        risk = max(1.0, entry - sl)
+        risk = max(0.05, entry - sl)
         tgt = ctx.bb_middle + rr * risk * 0.85
         if zone == "lower":
             score = 88
-            reasons.append(f"CE entry zone: 5m BB lower touch ({ctx.bb_lower:.0f})")
+            reasons.append(f"CE: contract BB lower touch (₹{ctx.bb_lower:.2f})")
         elif zone == "middle":
             score = 78
-            reasons.append(f"CE entry zone: 5m BB middle ({ctx.bb_middle:.0f})")
+            reasons.append(f"CE: contract BB middle (₹{ctx.bb_middle:.2f})")
         elif zone == "between":
             score = 62
-            reasons.append("CE: spot between bands — patient limit toward middle/lower")
+            reasons.append("CE: LTP between contract bands — patient limit")
         elif bb["extended"]:
             score = 25
-            warnings.append("CE blocked: spot at upper band extension — wait for pullback")
+            warnings.append("CE blocked: LTP at upper band — wait for pullback")
         else:
             score = 45
             warnings.append(bb["wait_msg"])
     else:
         sl = ctx.bb_upper + buf
-        risk = max(1.0, sl - entry)
+        risk = max(0.05, sl - entry)
         tgt = ctx.bb_middle - rr * risk * 0.85
         if zone == "upper":
             score = 88
-            reasons.append(f"PE entry zone: 5m BB upper touch ({ctx.bb_upper:.0f})")
+            reasons.append(f"PE: contract BB upper touch (₹{ctx.bb_upper:.2f})")
         elif zone == "middle":
             score = 78
-            reasons.append(f"PE entry zone: 5m BB middle ({ctx.bb_middle:.0f})")
+            reasons.append(f"PE: contract BB middle (₹{ctx.bb_middle:.2f})")
         elif zone == "between":
             score = 62
-            reasons.append("PE: spot between bands — patient limit toward middle/upper")
+            reasons.append("PE: LTP between contract bands — patient limit")
         elif bb["extended"]:
             score = 25
-            warnings.append("PE blocked: spot at lower band extension — wait for rally")
+            warnings.append("PE blocked: LTP at lower band — wait for rally")
         else:
             score = 45
             warnings.append(bb["wait_msg"])
@@ -213,7 +230,8 @@ def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
         reasons.append(f"VIX {ctx.vix_ltp:.1f} in tradeable range")
 
     reasons.append(
-        f"BB L {ctx.bb_lower:.0f} M {ctx.bb_middle:.0f} U {ctx.bb_upper:.0f} · zone {zone}"
+        f"{contract.tradingsymbol} BB L ₹{ctx.bb_lower:.2f} M ₹{ctx.bb_middle:.2f} "
+        f"U ₹{ctx.bb_upper:.2f} · LTP ₹{entry:.2f} · zone {zone}"
     )
 
     return StrategyCandidate(
@@ -223,7 +241,7 @@ def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
         score=max(0, min(100, score)),
         fit=_fit_label(score),
         option_kind=kind,
-        spot_entry=entry,
+        spot_entry=nifty,
         spot_stop_loss=sl,
         spot_target=tgt,
         rr_ratio=rr,

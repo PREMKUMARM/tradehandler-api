@@ -93,8 +93,8 @@ def bollinger_zone(
         )
         trigger = lower if at_lower else middle
         wait_msg = (
-            f"Wait for Nifty pullback to BB middle ({middle:.0f}) or lower ({lower:.0f}) "
-            f"— spot {spot:.0f} at {zone}"
+            f"Wait for pullback to BB middle ({middle:.2f}) or lower ({lower:.2f}) "
+            f"— price {spot:.2f} at {zone}"
         )
     else:
         at_upper = spot >= upper - buf
@@ -108,8 +108,8 @@ def bollinger_zone(
         )
         trigger = upper if at_upper else middle
         wait_msg = (
-            f"Wait for Nifty rally to BB middle ({middle:.0f}) or upper ({upper:.0f}) "
-            f"— spot {spot:.0f} at {zone}"
+            f"Wait for rally to BB middle ({middle:.2f}) or upper ({upper:.2f}) "
+            f"— price {spot:.2f} at {zone}"
         )
     return {
         "zone": zone,

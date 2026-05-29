@@ -360,7 +360,9 @@ def _build_pricing_reason(
         entry_detail += f" · score {score}"
     steps.append({"title": "Entry price", "detail": entry_detail})
 
-    if sid == "bb_5m_mean_reversion" and spot_sl is not None and spot_tp is not None:
+    if spot_sl is not None and spot_tp is not None and (
+        sid == "bb_5m_mean_reversion" or ind.get("bb_on_contract")
+    ):
         steps.append(
             {
                 "title": "SL / target (option premium from contract BB)",
