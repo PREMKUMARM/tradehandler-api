@@ -60,6 +60,7 @@ def place_order_tool(
         from services.strategy_run_fills import record_strategy_fill_if_run
 
         est_value = float((price or 0) * max(quantity, 1))
+        seg = segment or infer_segment_from_order(exchange, tradingsymbol)
         ok, reason = check_order_allowed(
             exchange,
             tradingsymbol,
@@ -67,6 +68,7 @@ def place_order_tool(
             transaction_type,
             est_value,
             skip_session_check=skip_session_check,
+            segment=seg,
         )
         if not ok:
             log_execution_audit(
@@ -98,14 +100,13 @@ def place_order_tool(
             "trailing_stoploss": trailing_stoploss,
         }
 
-        seg = segment or infer_segment_from_order(exchange, tradingsymbol)
         order_payload["segment"] = seg
         if is_paper_mode_for_segment(seg):
             try:
                 oid = paper_place_order(order_payload)
             except ValueError as e:
                 return {"status": "error", "error": str(e)}
-            record_order_placed(est_value)
+            # Paper ledger only — do not consume live broker daily trade limits.
             log_execution_audit(
                 "PLACE_ORDER",
                 exchange=exchange,

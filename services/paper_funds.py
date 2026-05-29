@@ -411,6 +411,12 @@ def reset_segment_funds(segment: str) -> Dict[str, Any]:
             deleted += 1
     conn.commit()
     log_info(f"[PaperFunds] reset {seg}: deleted {deleted} paper row(s)")
+    try:
+        from services.watch_placement_reset import reset_watch_placement_for_segment
+
+        reset_watch_placement_for_segment(seg)
+    except Exception as exc:
+        log_warning(f"[PaperFunds] watch counter reset failed for {seg}: {exc}")
     snap = get_fund_snapshot(seg)
     snap["deleted_orders"] = deleted
     return snap

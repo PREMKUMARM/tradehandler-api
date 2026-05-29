@@ -132,7 +132,6 @@ def autonomous_place_allowed(
                 plan,
                 placed_today=placed_today,
                 segment=segment,
-                entry_quality_check=entry_quality_for_autonomous,
             )
     except Exception:
         pass

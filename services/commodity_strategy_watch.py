@@ -608,6 +608,22 @@ class CommodityStrategyWatch:
         self._ensure_loop_task()
         return self.status()
 
+    def reset_placement_counters(self) -> None:
+        """Clear daily place slots (e.g. after paper fund reset). Watch stays armed."""
+        with _lock:
+            self._placed_count_today = 0
+            self._placed_today = False
+            self._placed_symbol_today = None
+            self._placed_symbols_today = []
+            self._pending_entry_order_id = None
+            self._pending_entry_placed_at = None
+            self._pending_trade_plan = None
+            self._pending_gtt_trigger_id = None
+            self._pending_symbol = None
+            self._signal_fired_today = False
+        self._persist()
+        log_info("[CommodityWatch] Placement counters reset")
+
     def disarm(self) -> Dict[str, Any]:
         with _lock:
             was = self._armed
@@ -1239,6 +1255,10 @@ def arm_watch(**kwargs: Any) -> Dict[str, Any]:
 
 def disarm_watch() -> Dict[str, Any]:
     return _watch.disarm()
+
+
+def reset_commodity_watch_placement_counters() -> None:
+    _watch.reset_placement_counters()
 
 
 def nuclear_reset_watch() -> Dict[str, Any]:

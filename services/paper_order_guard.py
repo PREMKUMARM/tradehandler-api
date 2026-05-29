@@ -198,6 +198,28 @@ def widen_paper_exits(
     return round_to_tick(sl), round_to_tick(tp)
 
 
+def paper_entry_quality_for_autonomous(plan: Dict[str, Any]) -> Tuple[bool, str]:
+    """Relaxed entry gate for paper autonomous (default min score 50)."""
+    if not plan:
+        return False, "No trade plan"
+    if plan.get("entry_ready") is not True:
+        reason = plan.get("entry_block_reason") or "Entry not confirmed by indicators"
+        return False, reason
+    block = plan.get("entry_block_reason")
+    if block:
+        return False, str(block)
+    min_score = max(30, min(100, _env_int("PAPER_AUTO_MIN_ENTRY_SCORE", 50)))
+    score = int(plan.get("entry_confirmation_score") or 0)
+    if score < min_score:
+        return False, (
+            f"Confirmation score {score} below paper minimum {min_score} for autonomous entry"
+        )
+    style = str(plan.get("entry_style") or "")
+    if "blocked" in style.lower() or style == "blocked_wait":
+        return False, "Entry style blocked — wait for setup"
+    return True, "Entry confirmed (paper)"
+
+
 def paper_autonomous_place_allowed(
     plan: Dict[str, Any],
     *,
@@ -217,8 +239,8 @@ def paper_autonomous_place_allowed(
     seg = segment.strip().lower()
     sym = str(plan.get("tradingsymbol") or "")
 
-    if _env_bool("PAPER_AUTO_STRICT_ENTRY", True) and entry_quality_check:
-        ok, msg = entry_quality_check(plan)
+    if _env_bool("PAPER_AUTO_STRICT_ENTRY", True):
+        ok, msg = paper_entry_quality_for_autonomous(plan)
         if not ok:
             return False, msg
 

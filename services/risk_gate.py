@@ -173,11 +173,19 @@ def check_order_allowed(
         label = f" ({seg})" if seg else ""
         return False, f"Execution kill switch is ON{label} — orders blocked."
 
+    paper_seg = seg
+    if paper_seg == "nifty":
+        paper_seg = "nifty50"
     try:
         from services.paper_trading import is_paper_mode_for_segment
 
-        if is_paper_mode_for_segment(seg):
-            skip_session_check = True
+        if is_paper_mode_for_segment(paper_seg):
+            ok_ex, msg_ex = _exchange_allowed(exchange)
+            if not ok_ex:
+                return False, msg_ex
+            if quantity <= 0:
+                return False, "Quantity must be positive."
+            return True, "ok (paper ledger — funds checked at place)"
     except Exception:
         pass
 
