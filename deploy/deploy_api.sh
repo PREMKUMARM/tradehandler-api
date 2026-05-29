@@ -2,8 +2,10 @@
 
 # =================================================================
 # AlgoFeast Backend Deployment Script
-# This script connects to EC2, pulls latest code, updates dependencies,
-# and restarts the API service.
+# This script connects to EC2, pulls latest code, and restarts the API service.
+# Does NOT run pip install by default (full reinstall can OOM small instances).
+# To install deps manually when requirements.txt changes:
+#   DEPLOY_INSTALL_DEPS=1 bash deploy/deploy_api.sh
 # =================================================================
 
 # --- CONFIGURATION ---
@@ -236,14 +238,19 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" << EOF
         git stash drop 2>/dev/null || true
     fi
     
-    echo "🔧 Recreating Python 3.11 virtual environment..."
-    rm -rf algo-env
-    python3.11 -m venv algo-env
-    
-    echo "📦 Installing/updating Python dependencies..."
-    $REMOTE_API_PATH/algo-env/bin/python3.11 -m pip install --upgrade pip
-    $REMOTE_API_PATH/algo-env/bin/python3.11 -m pip install -r requirements.txt
-    
+    if [ ! -x "$REMOTE_API_PATH/algo-env/bin/python3.11" ]; then
+        echo "❌ Virtualenv missing at $REMOTE_API_PATH/algo-env"
+        echo "   Create once on EC2: python3.11 -m venv algo-env && algo-env/bin/pip install -r requirements.txt"
+        exit 1
+    fi
+
+    if [ "${DEPLOY_INSTALL_DEPS:-0}" = "1" ]; then
+        echo "📦 Installing Python dependencies (DEPLOY_INSTALL_DEPS=1)..."
+        $REMOTE_API_PATH/algo-env/bin/python3.11 -m pip install -r requirements.txt
+    else
+        echo "⏭️  Skipping pip install (set DEPLOY_INSTALL_DEPS=1 to enable)"
+    fi
+
     echo "🔄 Restarting API service..."
     sudo systemctl daemon-reload
     sudo systemctl restart $SERVICE_NAME
