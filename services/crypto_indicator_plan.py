@@ -77,15 +77,22 @@ def build_trade_plan(
         target_price = round_price(SYMBOL, spot_entry - tp_dist)
 
     if quantity_btc is None:
-        # Size from available USDT so the wizard works out-of-box without manual qty.
-        try:
-            usdt = float(get_usdt_balance() or 0)
-        except Exception:
-            usdt = 0.0
+        from services.paper_trading import is_paper_mode_for_segment
+
+        if is_paper_mode_for_segment("crypto"):
+            from services.paper_funds import get_available_balance
+
+            usdt = get_available_balance("crypto")
+            messages.append(f"Paper fund: ${usdt:,.2f} USDT available")
+        else:
+            try:
+                usdt = float(get_usdt_balance() or 0)
+            except Exception:
+                usdt = 0.0
+            messages.append(f"Sizing: {MAX_NOTIONAL_PCT_OF_USDT:.0f}% of live USDT @ {DEFAULT_LEVERAGE}x")
         budget = usdt * (MAX_NOTIONAL_PCT_OF_USDT / 100.0) * DEFAULT_LEVERAGE
         sized_qty = (budget / spot) if (spot > 0 and budget > 0) else DEFAULT_QUANTITY_BTC
         qty = round_quantity(SYMBOL, float(sized_qty))
-        messages.append(f"Sizing: {MAX_NOTIONAL_PCT_OF_USDT:.0f}% of USDT balance @ {DEFAULT_LEVERAGE}x")
     else:
         qty = round_quantity(SYMBOL, float(quantity_btc or DEFAULT_QUANTITY_BTC))
     notional = qty * spot

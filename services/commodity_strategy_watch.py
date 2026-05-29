@@ -317,9 +317,14 @@ class CommodityStrategyWatch:
             self._last_checklist_ready = None
             self._eval_count = 0
 
-    @staticmethod
-    def _max_trades_per_day() -> int:
-        """Configurable per-day autonomous trade cap (default 10)."""
+    def _max_trades_per_day(self) -> int:
+        """Per-day autonomous cap — higher in paper mode."""
+        if self._last_paper_mode:
+            try:
+                raw = os.getenv("PAPER_AUTO_MAX_TRADES_PER_DAY", "30").strip()
+                return max(1, min(100, int(raw or 30)))
+            except Exception:
+                return 30
         try:
             raw = os.getenv("COMMODITY_WATCH_MAX_TRADES_PER_DAY", "").strip()
             if raw:
@@ -333,6 +338,8 @@ class CommodityStrategyWatch:
 
     def _setup_invalidated(self, plan: Dict[str, Any]) -> tuple[bool, str]:
         """B-mode: cancel only when setup invalidates (not time-based)."""
+        if self._last_paper_mode:
+            return False, ""
         if not plan:
             return True, "No plan (setup invalidated)"
         if plan.get("entry_ready") is not True:
@@ -773,7 +780,13 @@ class CommodityStrategyWatch:
 
                 session_open = commodity_trade_service.is_mcx_session_open()
                 if self._pending_entry_order_id:
-                    if not session_open:
+                    if str(self._pending_entry_order_id).upper().startswith("PAPER-"):
+                        with _lock:
+                            self._pending_entry_order_id = None
+                            self._pending_entry_placed_at = None
+                            self._pending_trade_plan = None
+                            self._pending_gtt_trigger_id = None
+                    elif not session_open:
                         self._cancel_pending(reason="MCX session closed")
                     else:
                         # Cancel stale LIMIT entry if it sits too long unfilled.
@@ -806,7 +819,7 @@ class CommodityStrategyWatch:
                         elif status in ("CANCELLED", "REJECTED") or rec.get("clear_entry"):
                             self._cancel_pending(reason=f"Order {status.lower() if status else 'reconciled'}")
 
-                if session_open:
+                if session_open or self._last_paper_mode:
                     fire_signal, try_autonomous, preview, plan, can_place = await asyncio.to_thread(
                         self._evaluate_sync
                     )
@@ -924,6 +937,7 @@ class CommodityStrategyWatch:
                 allowed, guard_msg = autonomous_place_allowed(
                     plan,
                     placed_today=self._placed_count_today >= self._max_trades_per_day(),
+                    segment="commodity",
                 )
                 if allowed:
                     self._last_autonomous_block_reason = None
@@ -1028,6 +1042,7 @@ class CommodityStrategyWatch:
                 allowed, guard_msg = autonomous_place_allowed(
                     plan,
                     placed_today=at_limit,
+                    segment="commodity",
                 )
                 if not allowed:
                     self._push_event(
@@ -1042,7 +1057,7 @@ class CommodityStrategyWatch:
                 self._placing = True
 
             try:
-                from services.paper_trading import is_paper_mode
+                from services.paper_trading import is_paper_mode_for_segment
                 from services.risk_gate import check_order_allowed, is_kill_switch_active
 
                 if is_kill_switch_active("commodity"):
@@ -1060,12 +1075,15 @@ class CommodityStrategyWatch:
                 units = int(plan.get("lot_size") or 10)
                 entry_px = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
                 est_value = entry_px * units * qty_lots
+                paper_seg = is_paper_mode_for_segment("commodity")
                 ok, gate_msg = check_order_allowed(
                     "MCX",
                     sym,
                     qty_lots,
                     "BUY",
                     estimated_value_inr=est_value,
+                    skip_session_check=paper_seg,
+                    segment="commodity",
                 )
                 if not ok:
                     self._push_event(
@@ -1078,7 +1096,7 @@ class CommodityStrategyWatch:
                     )
                     return
 
-                if is_paper_mode():
+                if paper_seg:
                     log_info("[CommodityWatch] Autonomous place in paper mode")
 
                 result = await asyncio.to_thread(
@@ -1143,16 +1161,26 @@ class CommodityStrategyWatch:
                             up = sym.upper()
                             if up not in self._placed_symbols_today:
                                 self._placed_symbols_today.append(up)
-                        # Keep watch alive for lifecycle (cancel if setup invalidates / clear on fill).
-                        self._pending_entry_order_id = str(entry_id) if entry_id else None
-                        self._pending_entry_placed_at = datetime.now(IST).isoformat() if entry_id else None
-                        self._pending_gtt_trigger_id = (
-                            str(result.get("gtt_trigger_id")) if result.get("gtt_trigger_id") else None
-                        )
+                        is_paper_oid = entry_id and str(entry_id).upper().startswith("PAPER-")
+                        if is_paper_oid:
+                            self._pending_entry_order_id = None
+                            self._pending_entry_placed_at = None
+                            self._pending_gtt_trigger_id = None
+                            self._pending_trade_plan = None
+                        else:
+                            self._pending_entry_order_id = str(entry_id) if entry_id else None
+                            self._pending_entry_placed_at = (
+                                datetime.now(IST).isoformat() if entry_id else None
+                            )
+                            self._pending_gtt_trigger_id = (
+                                str(result.get("gtt_trigger_id"))
+                                if result.get("gtt_trigger_id")
+                                else None
+                            )
+                            self._pending_trade_plan = (
+                                copy.deepcopy(trade_plan) if result.get("gtt_deferred") else None
+                            )
                         self._pending_symbol = sym
-                        self._pending_trade_plan = (
-                            copy.deepcopy(trade_plan) if result.get("gtt_deferred") else None
-                        )
                     kind = "auto_placed"
                 else:
                     msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"

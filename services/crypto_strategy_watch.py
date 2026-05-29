@@ -267,14 +267,20 @@ class CryptoStrategyWatch:
                 cfg = self._cfg
             try:
                 if self._pending_entry_order_id:
-                    st = await asyncio.to_thread(get_order_status, SYMBOL, self._pending_entry_order_id)
-                    if st == "FILLED":
-                        await self._on_entry_filled()
-                    elif st in ("CANCELED", "REJECTED", "EXPIRED"):
+                    pid = str(self._pending_entry_order_id)
+                    if pid.upper().startswith("PAPER-"):
                         with _lock:
                             self._pending_entry_order_id = None
                             self._pending_trade_plan = None
-                        self._push("auto_cancelled", f"Entry {st.lower()}")
+                    else:
+                        st = await asyncio.to_thread(get_order_status, SYMBOL, pid)
+                        if st == "FILLED":
+                            await self._on_entry_filled()
+                        elif st in ("CANCELED", "REJECTED", "EXPIRED"):
+                            with _lock:
+                                self._pending_entry_order_id = None
+                                self._pending_trade_plan = None
+                            self._push("auto_cancelled", f"Entry {st.lower()}")
 
                 preview = await asyncio.to_thread(
                     crypto_trade_service.preview_trade,
@@ -293,15 +299,20 @@ class CryptoStrategyWatch:
                     self._last_paper_mode = bool(preview.get("paper_trading_mode"))
                     self._last_eval_at = datetime.now(IST)
 
-                if (
+                paper = bool(preview.get("paper_trading_mode"))
+                ready = bool(preview.get("checklist_ready"))
+                entry_ok = bool(plan.get("entry_ready"))
+                should_place = (
                     cfg.mode == "autonomous"
                     and cfg.auto_place_on_signal
                     and not self._pending_entry_order_id
-                    and not self._placed_today
+                    and (paper or not self._placed_today)
                     and not self._kill_switch()
                     and preview.get("can_execute")
-                    and plan.get("entry_ready")
-                ):
+                    and ready
+                    and (entry_ok or paper)
+                )
+                if should_place:
                     await self._try_place(preview, plan)
             except Exception as exc:
                 log_error(f"[CryptoWatch] loop: {exc}")
@@ -328,11 +339,23 @@ class CryptoStrategyWatch:
                     True,
                 )
                 if result.get("entry_order_id"):
+                    oid = str(result["entry_order_id"])
+                    paper_fill = bool(result.get("entry_paper"))
                     with _lock:
-                        self._pending_entry_order_id = str(result["entry_order_id"])
-                        self._pending_trade_plan = copy.deepcopy(plan)
-                        self._placed_today = True
-                    self._push("auto_placed", f"Entry {result['entry_order_id']} submitted", placed=True, tradingsymbol=SYMBOL)
+                        if paper_fill:
+                            self._pending_entry_order_id = None
+                            self._pending_trade_plan = None
+                        else:
+                            self._pending_entry_order_id = oid
+                            self._pending_trade_plan = copy.deepcopy(plan)
+                            self._placed_today = True
+                    venue = "paper" if paper_fill else "Binance"
+                    self._push(
+                        "auto_placed",
+                        f"Entry {oid} on {venue}",
+                        placed=True,
+                        tradingsymbol=SYMBOL,
+                    )
                 else:
                     err = "; ".join(result.get("errors") or ["skipped"])
                     self._push("auto_skipped", err, tradingsymbol=SYMBOL)

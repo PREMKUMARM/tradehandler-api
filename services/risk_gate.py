@@ -173,6 +173,14 @@ def check_order_allowed(
         label = f" ({seg})" if seg else ""
         return False, f"Execution kill switch is ON{label} — orders blocked."
 
+    try:
+        from services.paper_trading import is_paper_mode_for_segment
+
+        if is_paper_mode_for_segment(seg):
+            skip_session_check = True
+    except Exception:
+        pass
+
     ok_ex, msg_ex = _exchange_allowed(exchange)
     if not ok_ex:
         return False, msg_ex

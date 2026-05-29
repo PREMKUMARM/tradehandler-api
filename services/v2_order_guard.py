@@ -118,9 +118,19 @@ def autonomous_place_allowed(
     plan: Dict[str, Any],
     *,
     placed_today: bool,
+    segment: str = "nifty50",
 ) -> Tuple[bool, str]:
     if placed_today:
         return False, "Max autonomous Nifty trades per day reached"
+    try:
+        from services.paper_trading import is_paper_mode_for_segment
+
+        if is_paper_mode_for_segment(segment):
+            if not plan or not plan.get("tradingsymbol"):
+                return False, "No trade plan from checklist/strategy"
+            return True, "Paper autonomous (checklist + strategy)"
+    except Exception:
+        pass
     sym = str(plan.get("tradingsymbol") or "")
     ok, msg = entry_quality_for_autonomous(plan)
     if not ok:

@@ -345,9 +345,19 @@ def paper_place_order(payload: Dict[str, Any]) -> str:
             str(to_store.get("exchange") or ""),
             str(to_store.get("tradingsymbol") or ""),
         )
+    seg = str(to_store.get("segment"))
     fp = _resolve_paper_fill_price(to_store)
     if fp is not None:
         to_store["paper_fill_price"] = fp
+
+    if not to_store.get("paper_exit_leg"):
+        from services.paper_funds import assert_can_allocate, entry_cost_from_payload
+
+        cost = entry_cost_from_payload(to_store, fp)
+        ok, msg = assert_can_allocate(seg, cost)
+        if not ok:
+            raise ValueError(msg)
+        to_store["paper_entry_cost"] = round(cost, 2)
 
     sl = _float_or_none(to_store.get("stoploss"))
     tgt = _float_or_none(to_store.get("target"))

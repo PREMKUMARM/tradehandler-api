@@ -126,12 +126,20 @@ def build_readiness_payload(
     loss_cap_hit = max_loss_inr > 0 and pnl_inr <= -abs(max_loss_inr)
     premium_cap_hit = max_premium_inr > 0 and premium_spent >= max_premium_inr
 
+    # Paper: place when live checklist + strategy plan are ready (no live broker entry gate).
+    if paper_trading_mode:
+        entry_gate_ok = checklist_ready and can_execute
+        score_gate_ok = True
+    else:
+        entry_gate_ok = entry_ok
+        score_gate_ok = score_ok
+
     can_auto_place = (
         armed
         and autonomous_mode
         and checklist_ready
-        and entry_ok
-        and score_ok
+        and entry_gate_ok
+        and score_gate_ok
         and can_execute
         and guards_ok
         and not kill_switch_active

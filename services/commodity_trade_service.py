@@ -361,11 +361,14 @@ def build_trade_plan(
 
 
 def _commodity_risk_capital(margin: float, cfg_capital: float) -> float:
-    """Risk % applies to book capital; MCX margin alone understates sizing headroom."""
-    base = float(cfg_capital or 100000)
-    if margin > 0:
-        return max(margin, base)
-    return base
+    """Risk sizing capital — paper available balance or live margin."""
+    from services.paper_funds import resolve_capital_for_segment
+
+    return resolve_capital_for_segment(
+        "commodity",
+        margin_fallback=margin,
+        cfg_capital=float(cfg_capital or 100000),
+    )
 
 
 def _validate_trade_plan(

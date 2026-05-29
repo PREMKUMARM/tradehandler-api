@@ -80,6 +80,17 @@ def _resolve_can_place(
     return False
 
 
+def _resolve_v2_capital(margin: float = 0.0) -> float:
+    from services.paper_funds import resolve_capital_for_segment
+
+    cfg = get_agent_config()
+    return resolve_capital_for_segment(
+        "nifty50",
+        margin_fallback=margin,
+        cfg_capital=float(cfg.trading_capital or 100000),
+    )
+
+
 def _check_kite_and_margin() -> Tuple[bool, float, str]:
     try:
         token = get_access_token()
@@ -118,7 +129,7 @@ def fetch_live_checklist(
     """Run checklist steps on live Kite data; None if not connected."""
     kite_ok, margin, _ = _check_kite_and_margin()
     if capital <= 0:
-        capital = margin if margin > 0 else float(get_agent_config().trading_capital or 100000)
+        capital = _resolve_v2_capital(margin)
     if not kite_ok or margin <= 0:
         return None
     from services.v2_realtime_checklist import run_realtime_checklist
@@ -462,7 +473,7 @@ def preview_trade(
 
     messages: List[str] = []
     _, margin, _ = _check_kite_and_margin()
-    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    capital = _resolve_v2_capital(margin)
 
     trade_plan = None
     validation = None
@@ -571,7 +582,19 @@ def preview_trade(
         "allow_test_place": allow_offhours_v2_place(),
         "paper_trading_mode": paper_mode,
         "strategy_analysis": strategy_analysis,
+        "paper_funds": _paper_funds_payload(paper_mode),
     }
+
+
+def _paper_funds_payload(paper_mode: bool) -> Optional[Dict[str, Any]]:
+    if not paper_mode:
+        return None
+    try:
+        from services.paper_funds import get_fund_snapshot
+
+        return get_fund_snapshot("nifty50")
+    except Exception:
+        return None
 
 
 def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
@@ -598,7 +621,7 @@ def get_checklist_analyze(
     market_open = is_market_session_open()
     indices = step_indices_for_analysis(step)
     _, margin, kite_msg = _check_kite_and_margin()
-    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    capital = _resolve_v2_capital(margin)
     live = fetch_live_checklist(
         direction,
         market_open,
@@ -653,7 +676,7 @@ def get_checklist_live(
     reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
     market_open = is_market_session_open()
     _, margin, kite_msg = _check_kite_and_margin()
-    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
+    capital = _resolve_v2_capital(margin)
     live = fetch_live_checklist(
         direction, market_open, risk_pct, reward_pct, num_lots, capital
     )

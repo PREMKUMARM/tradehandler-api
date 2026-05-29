@@ -6,6 +6,12 @@ from pydantic import BaseModel
 
 from core.exceptions import ValidationError
 from schemas.support_ops import KillSwitchUpdate
+from services.paper_funds import (
+    get_all_fund_snapshots,
+    get_fund_snapshot,
+    reset_segment_funds,
+    set_segment_allocated,
+)
 from services.paper_trading import (
     get_segment_paper_modes,
     is_paper_mode,
@@ -43,6 +49,15 @@ class SegmentPaperUpdate(BaseModel):
     active: bool
 
 
+class SegmentPaperFundsUpdate(BaseModel):
+    segment: str
+    allocated: float
+
+
+class SegmentPaperSegmentBody(BaseModel):
+    segment: str
+
+
 @router.get("/paper-trading/segments")
 def get_paper_trading_segments():
     """Per-segment paper/live flags (Nifty50, Commodity, Crypto). Default paper when unset."""
@@ -50,8 +65,35 @@ def get_paper_trading_segments():
         "data": {
             "segments": get_segment_paper_modes(),
             "paper_trading_env_locks_ui": paper_trading_env_locks_ui(),
+            "funds": get_all_fund_snapshots(),
         }
     }
+
+
+@router.get("/paper-trading/funds")
+def get_paper_trading_funds(segment: Optional[str] = None):
+    """Paper fund allocation and available balance per segment."""
+    if segment:
+        return {"data": get_fund_snapshot(segment)}
+    return {"data": get_all_fund_snapshots()}
+
+
+@router.post("/paper-trading/funds")
+def post_paper_trading_funds(body: SegmentPaperFundsUpdate):
+    """Set configured paper fund amount for a segment (INR or USDT)."""
+    try:
+        snap = set_segment_allocated(body.segment, body.allocated)
+    except ValueError as e:
+        raise ValidationError(message=str(e), field="allocated") from e
+    return {"data": snap}
+
+
+@router.post("/paper-trading/funds/reset")
+def post_paper_trading_funds_reset(body: SegmentPaperSegmentBody):
+    """Clear segment paper trades and restore available balance to allocated amount."""
+    seg = normalize_segment(body.segment)
+    snap = reset_segment_funds(seg)
+    return {"data": snap}
 
 
 @router.post("/paper-trading/segment")

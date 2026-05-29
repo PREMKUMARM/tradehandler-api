@@ -101,7 +101,10 @@ def place_order_tool(
         seg = segment or infer_segment_from_order(exchange, tradingsymbol)
         order_payload["segment"] = seg
         if is_paper_mode_for_segment(seg):
-            oid = paper_place_order(order_payload)
+            try:
+                oid = paper_place_order(order_payload)
+            except ValueError as e:
+                return {"status": "error", "error": str(e)}
             record_order_placed(est_value)
             log_execution_audit(
                 "PLACE_ORDER",
