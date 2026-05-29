@@ -32,6 +32,38 @@ def step_indices_for_analysis(step_index: int) -> List[int]:
     deps = V2_STEP_DEPENDS_ON[step_index]
     return sorted(set(deps + [step_index]))
 
+
+def enforce_step_dependencies(
+    statuses: List[ChecklistStepStatus],
+) -> Tuple[List[ChecklistStepStatus], List[int]]:
+    """
+    A step cannot pass if any declared prerequisite step failed.
+    Propagates transitively (e.g. step 7 fail → 9 → 10 → 11).
+    """
+    by_idx: Dict[int, ChecklistStepStatus] = {s.index: s for s in statuses}
+    changed = True
+    while changed:
+        changed = False
+        for i, st in list(by_idx.items()):
+            if not st.server_ok:
+                continue
+            deps = V2_STEP_DEPENDS_ON[i] if i < len(V2_STEP_DEPENDS_ON) else []
+            failed = [d for d in deps if d in by_idx and not by_idx[d].server_ok]
+            if not failed:
+                continue
+            blocker = failed[0] + 1
+            by_idx[i] = st.model_copy(
+                update={
+                    "server_ok": False,
+                    "completed": False,
+                    "message": f"Complete step {blocker} first",
+                }
+            )
+            changed = True
+    updated = sorted(by_idx.values(), key=lambda s: s.index)
+    missing = [s.index for s in updated if not s.server_ok]
+    return updated, missing
+
 from schemas.v2_trading import ChecklistStepStatus
 from services.nifty_option_chain import build_nifty_options_universe, nifty50_index_token
 from services.v2_strategy_analysis import analyze_fno_strategies
@@ -543,10 +575,14 @@ def run_realtime_checklist(
         if not st.server_ok:
             missing.append(i)
 
+    if statuses:
+        statuses, missing = enforce_step_dependencies(statuses)
+        missing = sorted(set(missing))
+
     if 0 in emit and 0 not in missing and ctx.margin <= 0:
         missing.append(0)
     if not ctx.trade_plan:
-        for idx in range(4, 12):
+        for idx in range(4, len(STEP_TITLES)):
             if idx in emit and idx not in missing:
                 missing.append(idx)
 
