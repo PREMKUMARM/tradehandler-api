@@ -139,4 +139,18 @@ def list_paper_trades(
             }
         )
 
-    return {"data": trades, "meta": meta, "segment": seg_filter or "all"}
+    funds = None
+    if seg_filter:
+        try:
+            from services.paper_funds import get_fund_snapshot
+
+            funds = get_fund_snapshot(seg_filter)
+        except Exception:
+            funds = None
+
+    return {
+        "data": trades,
+        "meta": meta,
+        "segment": seg_filter or "all",
+        "funds": funds,
+    }

@@ -104,6 +104,29 @@ def _entry_price_from_row(row: Dict[str, Any], payload: Dict[str, Any]) -> Optio
     return None
 
 
+def _open_position_cost(row: Dict[str, Any], payload: Dict[str, Any]) -> float:
+    """Capital locked by an open entry (prefer stored paper_entry_cost)."""
+    v = payload.get("paper_entry_cost")
+    if v is not None:
+        try:
+            c = float(v)
+            if c > 0:
+                return c
+        except (TypeError, ValueError):
+            pass
+    entry = _entry_price_from_row(row, payload)
+    if entry is None:
+        return 0.0
+    qty_raw = payload.get("quantity")
+    try:
+        qty = int(qty_raw) if qty_raw is not None else 0
+    except (TypeError, ValueError):
+        qty = 0
+    if qty <= 0:
+        return 0.0
+    return max(0.0, entry * qty)
+
+
 def _row_segment(row: Dict[str, Any], payload: Dict[str, Any]) -> str:
     if payload.get("segment"):
         return normalize_segment(str(payload["segment"]))
@@ -147,27 +170,28 @@ def _sum_open_and_realized(segment: str) -> Tuple[float, int, float, int]:
     closed_count = 0
     for row in _load_segment_order_rows(segment):
         payload = row.get("payload") or {}
+        entry = _entry_price_from_row(row, payload)
         qty_raw = payload.get("quantity")
         try:
             qty = int(qty_raw) if qty_raw is not None else 0
         except (TypeError, ValueError):
             qty = 0
-        if qty <= 0:
-            continue
-        entry = _entry_price_from_row(row, payload)
-        if entry is None:
-            continue
         tt = str(payload.get("transaction_type") or "BUY").upper()
         if row.get("exit_reason"):
             closed_count += 1
+            if entry is None:
+                continue
             exit_px = float(row.get("exit_price") or entry)
             if tt == "BUY":
                 realized += (exit_px - entry) * qty
             else:
                 realized += (entry - exit_px) * qty
         else:
+            cost = _open_position_cost(row, payload)
+            if cost <= 0:
+                continue
             open_count += 1
-            open_locked += entry * qty
+            open_locked += cost
     return open_locked, open_count, realized, closed_count
 
 
