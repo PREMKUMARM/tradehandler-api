@@ -34,6 +34,12 @@ def on_segment_paper_mode_changed(segment: str, was_paper: bool, is_paper: bool)
             log_info(
                 f"[V2Watch] Nifty50 {'paper' if is_paper else 'live'} — placement counters reset"
             )
+        # Paper fills must not consume the live daily trade-count cap (MAX_TRADES_PER_DAY).
+        if was_paper and not is_paper:
+            from utils.trade_limits import trade_limits
+
+            trade_limits.reset_daily_limits()
+            log_info(f"[Watch] {seg} paper→live — global daily trade limits reset")
         log_info(
             f"[Watch] segment {seg} mode {'paper' if is_paper else 'live'} "
             f"(was {'paper' if was_paper else 'live'}) — watch counters cleared"

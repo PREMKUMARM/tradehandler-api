@@ -429,14 +429,15 @@ class CommodityStrategyWatch:
                 try:
                     from services.risk_gate import record_order_placed
 
-                    qty = int(plan.get("quantity") or 0)
-                    px = float(
-                        fill_px
-                        or plan.get("entry_limit_price")
-                        or plan.get("entry_premium")
-                        or 0
-                    )
-                    record_order_placed(max(0.0, qty * px))
+                    if not str(entry_id or "").upper().startswith("PAPER-"):
+                        qty = int(plan.get("quantity") or 0)
+                        px = float(
+                            fill_px
+                            or plan.get("entry_limit_price")
+                            or plan.get("entry_premium")
+                            or 0
+                        )
+                        record_order_placed(max(0.0, qty * px))
                 except Exception:
                     pass
 
