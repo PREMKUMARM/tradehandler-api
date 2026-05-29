@@ -131,8 +131,15 @@ async def segment_stream(websocket: WebSocket, segment: str):
     last_events_at = 0.0
     last_balance_at = 0.0
 
-    async def _send(msg: Dict[str, Any]) -> None:
-        await websocket.send_text(json.dumps(msg))
+    async def _send(msg: Dict[str, Any]) -> bool:
+        try:
+            await websocket.send_text(json.dumps(msg))
+            return True
+        except (WebSocketDisconnect, RuntimeError):
+            return False
+        except Exception as exc:
+            log_warning(f"[WS] segment send failed: {exc}")
+            return False
 
     async def _push_balance() -> None:
         fn = h.get("balance")
@@ -202,8 +209,10 @@ async def segment_stream(websocket: WebSocket, segment: str):
                             }
                         )
                     else:
-                        out = fn(**(payload if isinstance(payload, dict) else {}))
-                        await _send({"type": op, "ts": datetime.utcnow().isoformat(), "data": out})
+                        kw = payload if isinstance(payload, dict) else {}
+                        out = await asyncio.to_thread(fn, **kw)
+                        if not await _send({"type": op, "ts": datetime.utcnow().isoformat(), "data": out}):
+                            break
                 else:
                     if op:
                         await _send({"type": "error", "ts": datetime.utcnow().isoformat(), "message": f"Unknown op '{op}'"})
@@ -215,19 +224,21 @@ async def segment_stream(websocket: WebSocket, segment: str):
             now = asyncio.get_running_loop().time()
             if now - last_status_at >= 2.0:
                 last_status_at = now
-                await _send(
+                if not await _send(
                     {"type": "watch_status", "ts": datetime.utcnow().isoformat(), "data": h["watch_status"]()}
-                )
+                ):
+                    break
 
             if now - last_events_at >= 4.0:
                 last_events_at = now
-                await _send(
+                if not await _send(
                     {
                         "type": "watch_events",
                         "ts": datetime.utcnow().isoformat(),
                         "data": list(h["watch_events"](20) or []),
                     }
-                )
+                ):
+                    break
 
             if now - last_balance_at >= BALANCE_PUSH_SEC:
                 last_balance_at = now
@@ -237,6 +248,11 @@ async def segment_stream(websocket: WebSocket, segment: str):
                     pass
 
         except WebSocketDisconnect:
+            break
+        except RuntimeError as exc:
+            if "websocket.send" in str(exc).lower() or "websocket.close" in str(exc).lower():
+                break
+            log_error(f"[WS] segment loop error: {exc}")
             break
         except Exception as exc:
             log_error(f"[WS] segment loop error: {exc}")
