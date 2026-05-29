@@ -978,7 +978,7 @@ def place_trade(
                 "GTT OCO will attach after entry fills",
             ]
         else:
-            gtt_result = place_gtt_for_plan(plan)
+            gtt_result = place_gtt_for_plan(plan, entry_order_id=entry_id)
             result["trade_plan"] = gtt_result.get("trade_plan") or plan
             if gtt_result.get("gtt_trigger_id"):
                 result["gtt_trigger_id"] = gtt_result["gtt_trigger_id"]

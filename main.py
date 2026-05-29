@@ -229,6 +229,12 @@ async def startup_event():
     except Exception as e:
         log_error(f"[Startup] Paper order monitor failed (API still starting): {e}")
 
+    try:
+        from services.exit_trail_monitor import exit_trail_monitor
+        await exit_trail_monitor.start()
+    except Exception as e:
+        log_error(f"[Startup] Exit trail monitor failed (API still starting): {e}")
+
     # Error handlers + metrics
     try:
         from utils.performance_monitor import start_metrics_cleanup

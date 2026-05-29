@@ -82,6 +82,22 @@ class PaperOrderMonitor:
             await asyncio.sleep(3)
 
     def _tick_sync(self) -> None:
+        from services.momentum_trail import get_momentum_trail_config
+
+        trail_cfg = get_momentum_trail_config()
+        managed_paper: set = set()
+        if trail_cfg.enabled:
+            try:
+                from services.exit_trail_store import list_open_exit_trails
+
+                managed_paper = {
+                    str(t.get("paper_order_id") or "")
+                    for t in list_open_exit_trails()
+                    if t.get("paper")
+                }
+            except Exception:
+                managed_paper = set()
+
         from database.connection import get_database
         from services.paper_trading import paper_place_order
 
@@ -123,6 +139,8 @@ class PaperOrderMonitor:
                 continue
             qk = f"{ex}:{sym}"
             oid = str(row["order_id"])
+            if oid in managed_paper:
+                continue
             tt = str(p.get("transaction_type") or "").upper()
             if tt not in ("BUY", "SELL"):
                 continue
@@ -239,6 +257,9 @@ class PaperOrderMonitor:
                 elif tt == "SELL" and ltp >= eff_sl:
                     hit = "SL"
             if hit is None and tgt is not None:
+                if trail_cfg.enabled and oid in managed_paper:
+                    if tt == "BUY" and ltp >= tgt and ltp > item["entry"]:
+                        continue
                 if tt == "BUY" and ltp >= tgt:
                     hit = "TARGET"
                 elif tt == "SELL" and ltp <= tgt:

@@ -100,7 +100,7 @@ class ExitTrailMonitor:
 
             if not trail_active and min_hold > 0:
                 try:
-                    updated = t.get("updated_at") or t.get("created_at")
+                    updated = t.get("created_at") or t.get("updated_at")
                     if updated:
                         placed = datetime.fromisoformat(str(updated))
                         if placed.tzinfo is None:

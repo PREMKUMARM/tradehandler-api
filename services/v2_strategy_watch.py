@@ -415,6 +415,7 @@ class V2StrategyWatch:
                     v2_trade_service.place_gtt_for_plan,
                     plan,
                     fill_price=fill_px,
+                    entry_order_id=entry_id,
                 )
                 executed_plan = gtt_result.get("trade_plan") or plan
                 gtt_id = gtt_result.get("gtt_trigger_id")

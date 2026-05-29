@@ -86,7 +86,7 @@ def list_open_exit_trails() -> List[Dict[str, Any]]:
     conn = db.get_connection()
     cur = conn.execute(
         """
-        SELECT id, segment, entry_order_id, gtt_trigger_id, tradingsymbol, exchange,
+        SELECT id, created_at, segment, entry_order_id, gtt_trigger_id, tradingsymbol, exchange,
                product, quantity, entry_price, stop_loss, target, peak_ltp,
                trail_active, paper, paper_order_id, status, updated_at
         FROM exit_trails
