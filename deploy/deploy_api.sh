@@ -212,8 +212,8 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" << EOF
     cd $REMOTE_API_PATH
     
     echo "📥 Syncing latest code from git..."
-    # Stash tracked changes; -u includes untracked files (fixes "would be overwritten by merge").
-    git stash push -u -m "deploy-pre-pull-\$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    # Stash tracked changes only — never stash algo-env (untracked venv; losing it forces a heavy pip reinstall).
+    git stash push -m "deploy-pre-pull-\$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
 
     # Remove untracked paths that block merge when stash did not catch them (e.g. partial copies on EC2).
     for f in \
