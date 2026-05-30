@@ -313,3 +313,19 @@ def get_order_status(symbol: str, order_id: str) -> Optional[str]:
         return str(o.get("status") or "").upper() or None
     except Exception:
         return None
+
+
+def get_order_avg_fill_price(symbol: str, order_id: str) -> Optional[float]:
+    try:
+        o = signed_request(
+            "GET",
+            "/fapi/v1/order",
+            {"symbol": symbol.upper(), "orderId": int(order_id)},
+        )
+        avg = float(o.get("avgPrice") or 0)
+        if avg > 0:
+            return avg
+        px = float(o.get("price") or 0)
+        return px if px > 0 else None
+    except Exception:
+        return None

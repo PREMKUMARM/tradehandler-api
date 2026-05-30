@@ -1,6 +1,7 @@
 """BTCUSDT perp trade plan from live Binance data — 5m Bollinger Bands mean reversion."""
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.crypto_config import (
@@ -15,6 +16,13 @@ from services.crypto_config import (
 from services.crypto_live_indicators import recalculate_from_ticker
 from services.kite_live_indicators import bollinger_zone
 from utils.binance_order_utils import get_usdt_balance, round_price, round_quantity
+
+
+def _sl_band_mult() -> float:
+    try:
+        return max(0.15, min(1.0, float(os.getenv("CRYPTO_BB_SL_BAND_MULT", "0.45") or 0.45)))
+    except (TypeError, ValueError):
+        return 0.45
 
 
 def _resolve_side(direction: str, live: Dict[str, Any]) -> str:
@@ -49,7 +57,7 @@ def _resolve_side(direction: str, live: Dict[str, Any]) -> str:
 def _bb_entry_analysis(
     side: str, spot: float, live: Dict[str, Any]
 ) -> Tuple[bool, Optional[str], int, str, float, Optional[str]]:
-    """5m BB entry: LONG at lower/middle, SHORT at upper/middle; block extension."""
+    """5m BB entry: only at band touch (preferred). Block between-band chop."""
     kind = "CE" if side == "LONG" else "PE"
     mid = live.get("bb_middle")
     upper = live.get("bb_upper")
@@ -71,29 +79,81 @@ def _bb_entry_analysis(
     if bb.get("extended"):
         return False, str(bb.get("wait_msg") or "BB extension — wait for pullback"), 28, style, float(bb["trigger"]), zone
 
+    if zone == "between":
+        return (
+            False,
+            str(bb.get("wait_msg") or "Price between BB bands — wait for band touch"),
+            42,
+            "blocked_between",
+            float(bb["trigger"]),
+            zone,
+        )
+
     if bb.get("preferred"):
         trigger = float(bb["trigger"])
         limit = round_price(SYMBOL, trigger)
         return True, None, 88, style, limit, zone
 
-    if zone == "between":
-        limit = round_price(SYMBOL, float(mid))
-        return True, None, 70, f"{style}_patient", limit, zone
-
     return False, str(bb.get("wait_msg") or f"Wait for {side} BB setup"), 38, style, float(bb["trigger"]), zone
 
 
-def _bb_exit_levels(side: str, spot: float, live: Dict[str, Any], rr: float) -> Tuple[float, float, float]:
-    upper = float(live.get("bb_upper") or spot)
-    lower = float(live.get("bb_lower") or spot)
-    width = max(upper - lower, spot * 0.002)
+def _bb_exit_levels(
+    side: str,
+    entry_price: float,
+    live: Dict[str, Any],
+    *,
+    bb_zone: Optional[str] = None,
+) -> Tuple[float, float, float]:
+    """
+    Mean-reversion exits: TP toward middle band; SL beyond opposite band edge.
+    Avoids placing SHORT stop at upper band when entry is mid-band (prior bug).
+    """
+    upper = float(live.get("bb_upper") or entry_price)
+    lower = float(live.get("bb_lower") or entry_price)
+    middle = float(live.get("bb_middle") or entry_price)
+    width = max(upper - lower, entry_price * 0.002)
+    sl_mult = _sl_band_mult()
+    zone = (bb_zone or "").lower()
+
     if side == "LONG":
-        sl = round_price(SYMBOL, min(lower, spot - width * 0.25))
-        tp = round_price(SYMBOL, spot + width * rr * 0.5)
+        sl = round_price(SYMBOL, lower - width * sl_mult)
+        if zone == "lower":
+            tp = round_price(SYMBOL, middle)
+        else:
+            tp = round_price(SYMBOL, middle + width * 0.25)
     else:
-        sl = round_price(SYMBOL, max(upper, spot + width * 0.25))
-        tp = round_price(SYMBOL, spot - width * rr * 0.5)
-    return spot, sl, tp
+        sl = round_price(SYMBOL, upper + width * sl_mult)
+        if zone == "upper":
+            tp = round_price(SYMBOL, middle)
+        else:
+            tp = round_price(SYMBOL, middle - width * 0.25)
+
+    return entry_price, sl, tp
+
+
+def refresh_exits_at_fill(plan: Dict[str, Any], *, fill_price: float) -> Dict[str, Any]:
+    """Recompute SL/TP from live BB at fill — do not use stale levels from signal time."""
+    live = recalculate_from_ticker()
+    side = str(plan.get("side") or "LONG").upper()
+    entry = float(fill_price or plan.get("entry_limit_price") or 0)
+    if entry <= 0 or not live.get("connected"):
+        return plan
+    _, sl, tp = _bb_exit_levels(
+        side,
+        entry,
+        live,
+        bb_zone=str(plan.get("bb_zone") or ""),
+    )
+    out = dict(plan)
+    out["entry_limit_price"] = round_price(SYMBOL, entry)
+    out["entry_premium"] = out["entry_limit_price"]
+    out["stop_loss_premium"] = sl
+    out["target_premium"] = tp
+    out["spot_stop_loss"] = sl
+    out["spot_target"] = tp
+    out["nifty_spot"] = entry
+    out["indicators"] = {**(plan.get("indicators") or {}), **live}
+    return out
 
 
 def build_trade_plan(
@@ -112,7 +172,10 @@ def build_trade_plan(
     spot = float(live.get("btc_spot") or 0)
     entry_ready, block, score, entry_style, entry_limit, bb_zone = _bb_entry_analysis(side, spot, live)
     spot_entry, stop_loss_price, target_price = _bb_exit_levels(
-        side, spot, live, reward_percentage or DEFAULT_REWARD_RATIO
+        side,
+        float(entry_limit or spot),
+        live,
+        bb_zone=bb_zone,
     )
 
     risk_pct = float(risk_percentage or DEFAULT_RISK_PCT)
@@ -172,6 +235,11 @@ def build_trade_plan(
     if bb_lo is not None and bb_mid is not None and bb_up is not None:
         messages.append(
             f"5m BB L ${float(bb_lo):,.2f} M ${float(bb_mid):,.2f} U ${float(bb_up):,.2f} · zone {bb_zone or '—'}"
+        )
+    if entry_ready and sl_dist > 0:
+        messages.append(
+            f"SL ${stop_loss_price:,.2f} ({sl_dist:,.0f} pts from entry) · "
+            f"TP ${target_price:,.2f} (mean reversion target)"
         )
 
     plan: Dict[str, Any] = {

@@ -16,11 +16,17 @@ from zoneinfo import ZoneInfo
 from agent.ws_manager import broadcast_agent_update
 from services import crypto_trade_service
 from services.crypto_config import CRYPTO_WATCH_MAX_TRADES_PER_DAY, DEFAULT_LEVERAGE, SYMBOL
-from services.crypto_indicator_plan import refresh_plan_at_execution
+from services.crypto_indicator_plan import refresh_exits_at_fill, refresh_plan_at_execution
 from services.crypto_order_guard import autonomous_place_allowed, format_pre_place_analysis
 from services.push.push_service import push_service
 from services.watch_readiness import build_readiness_payload
-from utils.binance_order_utils import cancel_order, get_order_status, place_limit_order, place_stop_market
+from utils.binance_order_utils import (
+    cancel_order,
+    get_order_avg_fill_price,
+    get_order_status,
+    place_limit_order,
+    place_stop_market,
+)
 from utils.logger import log_error, log_info, log_warning
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -369,11 +375,16 @@ class CryptoStrategyWatch:
     async def _on_entry_filled(self) -> None:
         with _lock:
             plan = copy.deepcopy(self._pending_trade_plan) if self._pending_trade_plan else None
+            entry_oid = self._pending_entry_order_id
             disarm = self._should_disarm_watch()
             self._reentry_armed = False
         self._clear_pending_entry()
         if not plan:
             return
+        fill_px = await asyncio.to_thread(get_order_avg_fill_price, SYMBOL, str(entry_oid or ""))
+        if not fill_px:
+            fill_px = float(plan.get("entry_limit_price") or 0)
+        plan = await asyncio.to_thread(refresh_exits_at_fill, plan, fill_price=fill_px)
         side = str(plan.get("side") or "LONG").upper()
         exit_side = "SELL" if side == "LONG" else "BUY"
         qty = float(plan.get("quantity") or 0.001)
@@ -398,7 +409,7 @@ class CryptoStrategyWatch:
             )
         sl_ok = sl.get("ok")
         tp_ok = bool(tp and tp.get("ok"))
-        msg = f"Entry filled — SL @ ${sl_px:,.0f}"
+        msg = f"Entry filled @ ${fill_px:,.2f} — SL @ ${sl_px:,.0f}"
         if sl_ok:
             msg += f" algo {sl.get('order_id')}"
         else:
