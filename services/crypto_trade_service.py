@@ -25,7 +25,7 @@ STEP_TITLES = [
     "Market session (24/7)",
     "Direction hypothesis (LONG / SHORT)",
     "Structure: OR / PDH / PDL / VWAP",
-    "Entry setup vs EMA",
+    "Entry setup (5m BB)",
     "Position size & leverage",
     "Stop loss & take profit",
     "Final order review",
@@ -38,12 +38,14 @@ def _step_statuses_from_live(
   plan: Dict[str, Any],
   live: Dict[str, Any],
   balance: float,
+  *,
+  paper_mode: bool = False,
 ) -> List[Dict[str, Any]]:
     side = plan.get("side") or "LONG"
     spot = float(live.get("btc_spot") or 0)
     out: List[Dict[str, Any]] = []
     checks = [
-        balance > 10,
+        balance > 10 or (paper_mode and bool(live.get("connected"))),
         is_crypto_session_open(),
         side in ("LONG", "SHORT"),
         spot > 0 and live.get("or_high"),
@@ -74,15 +76,38 @@ def get_checklist_live(
     reward_percentage: Optional[float] = None,
     quantity_btc: Optional[float] = None,
 ) -> Dict[str, Any]:
+    paper_mode = False
     try:
-        get_binance_credentials()
-        balance = get_usdt_balance()
-        connected = True
-        msg = f"Binance connected · USDT available ${balance:,.2f}"
-    except Exception as exc:
-        balance = 0.0
-        connected = False
-        msg = str(exc)
+        from services.paper_trading import is_paper_mode_for_segment
+
+        paper_mode = is_paper_mode_for_segment("crypto")
+    except Exception:
+        pass
+
+    connected = False
+    balance = 0.0
+    msg = ""
+    if paper_mode:
+        try:
+            from services.paper_funds import get_available_balance
+
+            balance = float(get_available_balance("crypto") or 0)
+            connected = True
+            msg = f"Paper mode · ${balance:,.2f} USDT available (public Binance quotes)"
+        except Exception as exc:
+            balance = 0.0
+            connected = True
+            msg = f"Paper mode · fund lookup: {exc}"
+    else:
+        try:
+            get_binance_credentials()
+            balance = get_usdt_balance()
+            connected = True
+            msg = f"Binance connected · USDT available ${balance:,.2f}"
+        except Exception as exc:
+            balance = 0.0
+            connected = False
+            msg = str(exc)
 
     plan, messages = build_trade_plan(
         direction=direction,
@@ -91,19 +116,24 @@ def get_checklist_live(
         quantity_btc=quantity_btc,
     )
     live = plan.get("indicators") or recalculate_from_ticker()
-    steps = _step_statuses_from_live(plan, live, balance)
+    if not plan and live.get("connected"):
+        connected = True
+    steps = _step_statuses_from_live(plan, live, balance, paper_mode=paper_mode)
     missing = [s["index"] for s in steps if not s["server_ok"]]
     ready = len(missing) == 0
 
-    paper_mode = False
-    try:
-        from services.paper_trading import is_paper_mode_for_segment
+    if paper_mode:
+        messages.append("Paper mode ON (Crypto) — simulated Binance fills in paper ledger")
 
-        paper_mode = is_paper_mode_for_segment("crypto")
-        if paper_mode:
-            messages.append("Paper mode ON (Crypto) — simulated Binance fills in paper ledger")
-    except Exception:
-        pass
+    from services.watch_execute import resolve_can_execute
+
+    preview_stub = {
+        "checklist_ready": ready,
+        "can_place": ready and connected and bool(plan) and not paper_mode,
+        "paper_trading_mode": paper_mode,
+        "trade_plan": plan or None,
+    }
+    can_execute = resolve_can_execute(preview_stub, plan)
 
     return {
         "connected": connected,
@@ -113,7 +143,7 @@ def get_checklist_live(
         "step_statuses": steps,
         "trade_plan": plan or None,
         "can_place": ready and connected and bool(plan) and not paper_mode,
-        "can_execute": ready and connected and bool(plan),
+        "can_execute": can_execute,
         "market_open": is_crypto_session_open(),
         "allow_test_place": allow_offhours_crypto_place(),
         "paper_trading_mode": paper_mode,
@@ -126,22 +156,23 @@ def get_checklist_live(
 def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
     plan, _ = build_trade_plan(direction=direction)
     side = plan.get("side") or "LONG"
+    sid = plan.get("strategy_id") or "bb_5m_mean_reversion"
     return {
-        "selected_id": "btc_trend",
-        "selected_name": f"BTCUSDT {side}",
+        "selected_id": sid,
+        "selected_name": f"BTCUSDT {side} BB 5m",
         "selected_score": int(plan.get("entry_confirmation_score") or 60),
         "selected_fit": "good" if plan.get("entry_ready") else "wait",
         "selected_option_kind": side,
         "strategies": [
             {
-                "id": "btc_trend",
-                "name": f"BTCUSDT {side} {DEFAULT_LEVERAGE}x",
+                "id": sid,
+                "name": f"BTCUSDT {side} BB 5m {DEFAULT_LEVERAGE}x",
                 "score": int(plan.get("entry_confirmation_score") or 60),
                 "fit": "good" if plan.get("entry_ready") else "wait",
                 "option_kind": side,
             }
         ],
-        "output_summary": plan.get("note") or f"{SYMBOL} {side} perp",
+        "output_summary": plan.get("note") or f"{SYMBOL} {side} perp · 5m BB mean reversion",
     }
 
 
@@ -197,8 +228,9 @@ def preview_trade(
             if idx < len(completed_steps) and not completed_steps[idx]:
                 can_place = False
     can_execute = bool(live_data.get("can_execute"))
-    if live_data.get("paper_trading_mode") and live_data.get("checklist_ready"):
-        can_execute = True
+    from services.watch_execute import resolve_can_execute
+
+    can_execute = resolve_can_execute(live_data, plan)
     return {
         **live_data,
         "can_execute": can_execute,
@@ -279,6 +311,7 @@ def place_trade(
                 "price": entry_limit,
                 "product": "ISOLATED",
                 "segment": "crypto",
+                "leverage": DEFAULT_LEVERAGE,
                 "stoploss": sl_px,
                 "target": tp_px,
                 "paper_fill_price": entry_limit,

@@ -64,6 +64,10 @@ def recalculate_from_ticker() -> Dict[str, Any]:
     closes = [b["close"] for b in k5]
     ema9 = _ema(closes, 9) or spot
 
+    from services.kite_live_indicators import compute_bollinger_bands
+
+    bb_mid, bb_upper, bb_lower = compute_bollinger_bands(closes, period=20)
+
     # Session VWAP on 5m
     cum_pv = 0.0
     cum_v = 0.0
@@ -86,6 +90,14 @@ def recalculate_from_ticker() -> Dict[str, Any]:
         "pdl": round(pdl, 2),
         "ema9": round(ema9, 2),
         "vwap": round(vwap, 2),
+        "bb_middle": round(bb_mid, 2) if bb_mid is not None else None,
+        "bb_upper": round(bb_upper, 2) if bb_upper is not None else None,
+        "bb_lower": round(bb_lower, 2) if bb_lower is not None else None,
         "last_5m_close": round(closes[-2], 2) if len(closes) >= 2 else round(spot, 2),
         "data_source": "binance_futures",
+        "indicator_sources": {
+            "bb_middle": "binance_futures_5m",
+            "bb_upper": "binance_futures_5m",
+            "bb_lower": "binance_futures_5m",
+        },
     }

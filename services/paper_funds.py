@@ -121,10 +121,28 @@ def _mcx_notional_multiplier(payload: Dict[str, Any]) -> int:
     return mcx_notional_multiplier(payload)
 
 
+def _quantity_from_payload(payload: Dict[str, Any]) -> float:
+    """NFO/MCX use integer lots; crypto uses fractional BTC qty."""
+    seg = normalize_segment(str(payload.get("segment") or ""))
+    ex = str(payload.get("exchange") or "").upper()
+    qty_raw = payload.get("quantity")
+    if qty_raw is None:
+        return 0.0
+    if seg == "crypto" or ex == "BINANCE":
+        try:
+            return max(0.0, float(qty_raw))
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        return float(max(0, int(qty_raw)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _premium_pnl(
     entry: float,
     mark: float,
-    qty: int,
+    qty: float,
     payload: Dict[str, Any],
     *,
     buy: bool = True,
@@ -149,10 +167,7 @@ def _open_position_cost(row: Dict[str, Any], payload: Dict[str, Any]) -> float:
     if entry is None:
         return 0.0
     qty_raw = payload.get("quantity")
-    try:
-        qty = int(qty_raw) if qty_raw is not None else 0
-    except (TypeError, ValueError):
-        qty = 0
+    qty = _quantity_from_payload(payload)
     if qty <= 0:
         return 0.0
     return max(0.0, entry * qty * _mcx_notional_multiplier(payload))
@@ -219,7 +234,7 @@ def _unrealized_from_row(row: Dict[str, Any], payload: Dict[str, Any]) -> Option
     if entry is None or ltp is None:
         return None
     try:
-        qty = int(payload.get("quantity") or 0)
+        qty = _quantity_from_payload(payload)
         ltp_f = float(ltp)
     except (TypeError, ValueError):
         return None
@@ -239,7 +254,7 @@ def _realized_from_row(row: Dict[str, Any], payload: Dict[str, Any]) -> Optional
     if entry is None or not row.get("exit_reason"):
         return None
     try:
-        qty = int(payload.get("quantity") or 0)
+        qty = _quantity_from_payload(payload)
         exit_px = float(row.get("exit_price") or entry)
     except (TypeError, ValueError):
         return None
@@ -260,11 +275,7 @@ def _sum_open_and_realized(segment: str) -> Tuple[float, int, float, int]:
     for row in _load_segment_order_rows(segment):
         payload = row.get("payload") or {}
         entry = _entry_price_from_row(row, payload)
-        qty_raw = payload.get("quantity")
-        try:
-            qty = int(qty_raw) if qty_raw is not None else 0
-        except (TypeError, ValueError):
-            qty = 0
+        qty = _quantity_from_payload(payload)
         tt = str(payload.get("transaction_type") or "BUY").upper()
         if row.get("exit_reason"):
             closed_count += 1
@@ -420,11 +431,18 @@ def entry_cost_from_payload(payload: Dict[str, Any], fill_price: Optional[float]
                     pass
     if px is None or px <= 0:
         return 0.0
-    try:
-        qty = int(payload.get("quantity") or 0)
-    except (TypeError, ValueError):
-        qty = 0
-    return max(0.0, px * qty * _mcx_notional_multiplier(payload))
+    qty = _quantity_from_payload(payload)
+    cost = max(0.0, px * qty * _mcx_notional_multiplier(payload))
+    lev = payload.get("leverage")
+    if lev is None:
+        lev = (payload.get("paper_trade_plan") or {}).get("leverage")
+    seg = normalize_segment(str(payload.get("segment") or ""))
+    if seg == "crypto" and lev:
+        try:
+            cost = cost / max(1.0, float(lev))
+        except (TypeError, ValueError):
+            pass
+    return cost
 
 
 def assert_can_allocate(segment: str, entry_cost: float) -> Tuple[bool, str]:

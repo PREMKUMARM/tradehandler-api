@@ -302,18 +302,34 @@ class CryptoStrategyWatch:
                 paper = bool(preview.get("paper_trading_mode"))
                 ready = bool(preview.get("checklist_ready"))
                 entry_ok = bool(plan.get("entry_ready"))
+                from services.watch_execute import resolve_can_execute
+
+                can_execute = resolve_can_execute(preview, plan)
+                guard_ok = True
+                guard_msg = ""
+                if paper and can_execute:
+                    from services.paper_order_guard import paper_autonomous_place_allowed
+
+                    guard_ok, guard_msg = paper_autonomous_place_allowed(
+                        plan,
+                        placed_today=self._placed_today,
+                        segment="crypto",
+                    )
                 should_place = (
                     cfg.mode == "autonomous"
                     and cfg.auto_place_on_signal
                     and not self._pending_entry_order_id
                     and (paper or not self._placed_today)
                     and not self._kill_switch()
-                    and preview.get("can_execute")
+                    and can_execute
                     and ready
-                    and (entry_ok or paper)
+                    and entry_ok
+                    and guard_ok
                 )
                 if should_place:
                     await self._try_place(preview, plan)
+                elif can_execute and ready and entry_ok and not guard_ok and guard_msg:
+                    self._push("auto_skipped", guard_msg, tradingsymbol=SYMBOL)
             except Exception as exc:
                 log_error(f"[CryptoWatch] loop: {exc}")
                 self._push("eval_error", str(exc)[:200])
