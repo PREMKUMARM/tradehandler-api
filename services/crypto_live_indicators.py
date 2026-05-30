@@ -60,6 +60,9 @@ def recalculate_from_ticker() -> Dict[str, Any]:
 
     pdh = float(k1d[-1]["high"]) if k1d else spot
     pdl = float(k1d[-1]["low"]) if k1d else spot
+    day_open = float(k1d[-1]["open"]) if k1d else spot
+    day_candle_green = spot > day_open
+    day_candle_red = spot < day_open
 
     closes = [b["close"] for b in k5]
     ema9 = _ema(closes, 9) or spot
@@ -88,6 +91,9 @@ def recalculate_from_ticker() -> Dict[str, Any]:
         "or_low": round(or_low, 2),
         "pdh": round(pdh, 2),
         "pdl": round(pdl, 2),
+        "day_open": round(day_open, 2),
+        "day_candle_green": day_candle_green,
+        "day_candle_red": day_candle_red,
         "ema9": round(ema9, 2),
         "vwap": round(vwap, 2),
         "bb_middle": round(bb_mid, 2) if bb_mid is not None else None,

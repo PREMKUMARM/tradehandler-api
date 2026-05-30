@@ -25,6 +25,51 @@ def _sl_band_mult() -> float:
         return 0.45
 
 
+def _daily_filter_enabled() -> bool:
+    return os.getenv("CRYPTO_DAILY_CANDLE_FILTER", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def daily_candle_bias(live: Dict[str, Any]) -> Tuple[Optional[str], str]:
+    """
+    Forming 1d candle bias: green day → LONG only, red day → SHORT only.
+    Uses spot vs today's daily open (Binance UTC 1d kline).
+    """
+    spot = float(live.get("btc_spot") or 0)
+    day_open = live.get("day_open")
+    if day_open is None or spot <= 0:
+        return None, "Daily candle not ready"
+    day_open = float(day_open)
+    if spot > day_open:
+        return (
+            "LONG",
+            f"1d candle green (${spot:,.0f} > open ${day_open:,.0f}) — LONG/BUY only",
+        )
+    if spot < day_open:
+        return (
+            "SHORT",
+            f"1d candle red (${spot:,.0f} < open ${day_open:,.0f}) — SHORT/SELL only",
+        )
+    return None, f"1d candle flat at open ${day_open:,.0f} — wait"
+
+
+def side_aligns_with_daily_candle(side: str, live: Dict[str, Any]) -> Tuple[bool, str]:
+    """Block entries that fight the forming daily candle direction."""
+    if not _daily_filter_enabled():
+        return True, "Daily candle filter off"
+    allowed, msg = daily_candle_bias(live)
+    if allowed is None:
+        return False, msg
+    side_u = str(side or "").upper()
+    if side_u == allowed:
+        return True, msg
+    return False, f"{side_u} blocked — {msg}"
+
+
 def _resolve_side(direction: str, live: Dict[str, Any]) -> str:
     d = (direction or "AUTO").upper()
     if d in ("LONG", "SHORT"):
@@ -171,6 +216,16 @@ def build_trade_plan(
     side = _resolve_side(direction, live)
     spot = float(live.get("btc_spot") or 0)
     entry_ready, block, score, entry_style, entry_limit, bb_zone = _bb_entry_analysis(side, spot, live)
+
+    if entry_ready:
+        ok_day, day_msg = side_aligns_with_daily_candle(side, live)
+        if not ok_day:
+            entry_ready = False
+            block = day_msg
+            score = min(int(score or 0), 40)
+        else:
+            messages.append(day_msg)
+
     spot_entry, stop_loss_price, target_price = _bb_exit_levels(
         side,
         float(entry_limit or spot),
@@ -276,6 +331,9 @@ def build_trade_plan(
         "bb_middle": bb_mid,
         "bb_upper": bb_up,
         "bb_zone": bb_zone,
+        "day_open": live.get("day_open"),
+        "day_candle_green": live.get("day_candle_green"),
+        "daily_bias": daily_candle_bias(live)[0],
         "indicators": live,
     }
     messages.append(
