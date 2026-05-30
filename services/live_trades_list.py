@@ -431,12 +431,9 @@ def list_live_trades(
     """Today's Kite orders grouped as live trade rows."""
     seg_filter = normalize_segment(segment) if segment else None
     if seg_filter == "crypto":
-        return {
-            "data": [],
-            "meta": {"quotes_ok": True, "quote_error": None, "source": "kite"},
-            "segment": seg_filter,
-            "message": "Live crypto trades are on Binance — not shown here.",
-        }
+        from services.crypto_live_trades_list import list_binance_crypto_trades
+
+        return list_binance_crypto_trades(limit=limit)
 
     meta: Dict[str, Any] = {"quotes_ok": True, "quote_error": None, "source": "kite"}
     try:
