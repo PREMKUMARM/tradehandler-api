@@ -1,10 +1,12 @@
 """Binance BTCUSDT futures wizard API."""
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Request
 
 from core.responses import SuccessResponse
 from schemas.crypto_trading import CryptoTradePlaceRequest, CryptoTradePreviewRequest, CryptoWatchArmRequest
 from services import crypto_trade_service
-from services.crypto_config import DEFAULT_LEVERAGE, SYMBOL
+from services.crypto_config import DEFAULT_LEVERAGE, LIVE_MARGIN_USDT, SYMBOL
 from services.crypto_strategy_watch import (
     arm_watch,
     disarm_watch,
@@ -34,6 +36,7 @@ async def crypto_config(request: Request):
         data={
             "symbol": SYMBOL,
             "leverage": DEFAULT_LEVERAGE,
+            "live_margin_usdt": LIVE_MARGIN_USDT,
             "exchange": "BINANCE",
         },
         message="Crypto config",
@@ -44,7 +47,7 @@ async def crypto_config(request: Request):
 async def checklist_live_crypto(
     request: Request,
     direction: str = "AUTO",
-    quantity_btc: float = 0.001,
+    quantity_btc: Optional[float] = None,
 ):
     data = crypto_trade_service.get_checklist_live(
         direction=direction,
@@ -58,7 +61,7 @@ async def checklist_analyze_crypto(
     request: Request,
     step: int,
     direction: str = "AUTO",
-    quantity_btc: float = 0.001,
+    quantity_btc: Optional[float] = None,
 ):
     data = crypto_trade_service.get_checklist_analyze(
         step=step,

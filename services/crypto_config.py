@@ -23,7 +23,15 @@ MAX_NOTIONAL_PCT_OF_USDT = max(0.0, min(100.0, MAX_NOTIONAL_PCT_OF_USDT))
 LIVE_MARGIN_USE_PCT = float(os.getenv("CRYPTO_MARGIN_USE_PCT", "100") or 100)
 LIVE_MARGIN_USE_PCT = max(1.0, min(100.0, LIVE_MARGIN_USE_PCT))
 
-MIN_LIVE_USDT_BALANCE = float(os.getenv("CRYPTO_MIN_LIVE_USDT", "10") or 10)
+MIN_LIVE_USDT_BALANCE = float(os.getenv("CRYPTO_MIN_LIVE_USDT", "15") or 15)
+
+# Live: fixed USDT margin per trade (e.g. $15 @ 50x → $750 notional). 0 = use LIVE_MARGIN_USE_PCT.
+LIVE_MARGIN_USDT = float(os.getenv("CRYPTO_LIVE_MARGIN_USDT", "15") or 15)
+LIVE_MARGIN_USDT = max(0.0, LIVE_MARGIN_USDT)
+
+# Paper: fixed margin per trade; 0 = use MAX_NOTIONAL_PCT_OF_USDT.
+PAPER_MARGIN_USDT = float(os.getenv("CRYPTO_PAPER_MARGIN_USDT", "0") or 0)
+PAPER_MARGIN_USDT = max(0.0, PAPER_MARGIN_USDT)
 
 # Autonomous watch — max entries per IST calendar day (paper + live).
 CRYPTO_WATCH_MAX_TRADES_PER_DAY = max(
@@ -77,18 +85,31 @@ def compute_crypto_quantity(
     min_qty = _lot_size_min(symbol)
 
     if paper:
-        margin = usdt * (MAX_NOTIONAL_PCT_OF_USDT / 100.0)
+        if PAPER_MARGIN_USDT > 0:
+            margin = min(usdt, PAPER_MARGIN_USDT)
+            messages.append(
+                f"Paper sizing: ${margin:,.2f} margin (target ${PAPER_MARGIN_USDT:,.2f} of ${usdt:,.2f}) @ {lev}x"
+            )
+        else:
+            margin = usdt * (MAX_NOTIONAL_PCT_OF_USDT / 100.0)
+            messages.append(
+                f"Paper sizing: {MAX_NOTIONAL_PCT_OF_USDT:.0f}% of ${usdt:,.2f} @ {lev}x"
+            )
         notional = margin * lev
-        messages.append(
-            f"Paper sizing: {MAX_NOTIONAL_PCT_OF_USDT:.0f}% of ${usdt:,.2f} @ {lev}x"
-        )
     else:
-        margin = usdt * (LIVE_MARGIN_USE_PCT / 100.0)
+        if LIVE_MARGIN_USDT > 0:
+            margin = min(usdt, LIVE_MARGIN_USDT)
+            messages.append(
+                f"Live sizing: ${margin:,.2f} margin (target ${LIVE_MARGIN_USDT:,.2f}, avail ${usdt:,.2f}) "
+                f"@ {lev}x → ~${margin * lev:,.2f} notional"
+            )
+        else:
+            margin = usdt * (LIVE_MARGIN_USE_PCT / 100.0)
+            messages.append(
+                f"Live sizing: ${margin:,.2f} margin ({LIVE_MARGIN_USE_PCT:.0f}% of ${usdt:,.2f}) "
+                f"@ {lev}x → ~${margin * lev:,.2f} notional"
+            )
         notional = margin * lev
-        messages.append(
-            f"Live sizing: ${margin:,.2f} margin ({LIVE_MARGIN_USE_PCT:.0f}% of ${usdt:,.2f}) "
-            f"@ {lev}x → ~${notional:,.2f} notional"
-        )
 
     if spot <= 0 or notional <= 0:
         return 0.0, messages + ["No USDT or spot price for sizing"]

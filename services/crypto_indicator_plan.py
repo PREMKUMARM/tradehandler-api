@@ -223,7 +223,7 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     direction = plan.get("side") or plan.get("option_type") or "AUTO"
     fresh, _ = build_trade_plan(
         direction=str(direction),
-        quantity_btc=float(plan.get("quantity") or DEFAULT_QUANTITY_BTC),
+        quantity_btc=None,
     )
     if not fresh:
         return plan
