@@ -214,14 +214,14 @@ def preview_trade(
     direction: str = "AUTO",
     risk_percentage: Optional[float] = None,
     reward_percentage: Optional[float] = None,
-    quantity_btc: float = 0.001,
+    quantity_btc: Optional[float] = None,
     auto_execute: bool = False,
 ) -> Dict[str, Any]:
     live_data = get_checklist_live(
         direction=direction,
         risk_percentage=risk_percentage,
         reward_percentage=reward_percentage,
-        quantity_btc=quantity_btc or None,
+        quantity_btc=quantity_btc,
     )
     plan = live_data.get("trade_plan") or {}
     can_place = bool(live_data.get("can_place"))
@@ -249,7 +249,7 @@ def place_trade(
     direction: str = "AUTO",
     risk_percentage: Optional[float] = None,
     reward_percentage: Optional[float] = None,
-    quantity_btc: float = 0.001,
+    quantity_btc: Optional[float] = None,
     confirm: bool = False,
     auto_execute: bool = False,
     trade_plan_snapshot: Optional[Dict[str, Any]] = None,
@@ -292,10 +292,14 @@ def place_trade(
     side = str(plan.get("side") or "LONG").upper()
     order_side = "BUY" if side == "LONG" else "SELL"
     exit_side = "SELL" if side == "LONG" else "BUY"
-    qty = float(plan.get("quantity") or 0.001)
+    qty = float(plan.get("quantity") or 0)
     entry_limit = float(plan.get("entry_limit_price") or 0)
     sl_px = float(plan.get("stop_loss_premium") or 0)
     tp_px = float(plan.get("target_premium") or 0)
+
+    if qty <= 0:
+        result["errors"].append("Position size is zero — insufficient USDT for min BTCUSDT lot at current leverage")
+        return result
 
     try:
         from services.paper_trading import is_paper_mode_for_segment, paper_place_order
@@ -333,6 +337,19 @@ def place_trade(
             return result
 
         set_margin_type(SYMBOL, "ISOLATED")
+        try:
+            live_usdt = float(get_usdt_balance() or 0)
+            need_margin = (qty * entry_limit) / max(1, DEFAULT_LEVERAGE)
+            if live_usdt + 0.01 < need_margin:
+                result["errors"].append(
+                    f"Insufficient margin: need ${need_margin:,.2f} USDT @ {DEFAULT_LEVERAGE}x "
+                    f"for {qty} BTC, have ${live_usdt:,.2f}"
+                )
+                return result
+        except Exception as exc:
+            result["errors"].append(f"Binance balance check failed: {exc}")
+            return result
+
         entry = place_limit_order(
             symbol=SYMBOL,
             side=order_side,

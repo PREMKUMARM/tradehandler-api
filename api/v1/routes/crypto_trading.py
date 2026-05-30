@@ -81,7 +81,7 @@ async def preview_crypto_trade(request: Request, body: CryptoTradePreviewRequest
         direction=body.direction,
         risk_percentage=body.risk_percentage,
         reward_percentage=body.reward_percentage,
-        quantity_btc=body.quantity_btc or 0.001,
+        quantity_btc=body.quantity_btc,
         auto_execute=body.auto_execute,
     )
     return SuccessResponse(data=data, message="Trade preview ready")
@@ -94,7 +94,7 @@ async def place_crypto_trade(request: Request, body: CryptoTradePlaceRequest):
         direction=body.direction,
         risk_percentage=body.risk_percentage,
         reward_percentage=body.reward_percentage,
-        quantity_btc=body.quantity_btc or 0.001,
+        quantity_btc=body.quantity_btc,
         confirm=body.confirm,
         auto_execute=body.auto_execute,
         trade_plan_snapshot=body.trade_plan,
@@ -108,7 +108,7 @@ async def arm_crypto_watch(request: Request, body: CryptoWatchArmRequest):
     try:
         data = arm_watch(
             direction=body.direction,
-            quantity_btc=body.quantity_btc or 0.001,
+            quantity_btc=body.quantity_btc,
             mode=body.mode,
             auto_place_on_signal=body.auto_place_on_signal,
             auto_execute_checklist=body.auto_execute_checklist,

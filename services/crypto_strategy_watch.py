@@ -42,7 +42,7 @@ class WatchEvent:
 @dataclass
 class WatchConfig:
     direction: str = "AUTO"
-    quantity_btc: float = 0.001
+    quantity_btc: Optional[float] = None  # None = auto-size from USDT balance × leverage
     mode: str = "autonomous"
     auto_place_on_signal: bool = True
     auto_execute_checklist: bool = True
@@ -79,7 +79,7 @@ class CryptoStrategyWatch:
             cfg = data.get("config") or {}
             self._cfg = WatchConfig(
                 direction=str(cfg.get("direction") or "AUTO"),
-                quantity_btc=float(cfg.get("quantity_btc") or 0.001),
+                quantity_btc=float(cfg["quantity_btc"]) if cfg.get("quantity_btc") is not None else None,
                 mode=str(cfg.get("mode") or "autonomous"),
                 auto_place_on_signal=bool(cfg.get("auto_place_on_signal", True)),
                 auto_execute_checklist=bool(cfg.get("auto_execute_checklist", True)),
@@ -119,7 +119,7 @@ class CryptoStrategyWatch:
         self,
         *,
         direction: str = "AUTO",
-        quantity_btc: float = 0.001,
+        quantity_btc: Optional[float] = None,
         mode: str = "autonomous",
         auto_place_on_signal: bool = True,
         auto_execute_checklist: bool = True,
@@ -128,7 +128,7 @@ class CryptoStrategyWatch:
         with _lock:
             self._cfg = WatchConfig(
                 direction=direction,
-                quantity_btc=max(0.001, float(quantity_btc or 0.001)),
+                quantity_btc=float(quantity_btc) if quantity_btc is not None else None,
                 mode=mode,
                 auto_place_on_signal=auto_place_on_signal,
                 auto_execute_checklist=auto_execute_checklist,

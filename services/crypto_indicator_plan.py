@@ -145,7 +145,24 @@ def build_trade_plan(
             entry_ready = False
             score = min(int(score or 0), 38)
     else:
-        qty = round_quantity(SYMBOL, float(quantity_btc or DEFAULT_QUANTITY_BTC))
+        from services.paper_trading import is_paper_mode_for_segment
+
+        qty = round_quantity(SYMBOL, float(quantity_btc))
+        if not is_paper_mode_for_segment("crypto"):
+            try:
+                usdt = float(get_usdt_balance() or 0)
+            except Exception:
+                usdt = 0.0
+            need_margin = (qty * spot) / max(1, DEFAULT_LEVERAGE)
+            if usdt + 0.01 < need_margin:
+                block = (
+                    block
+                    or f"Insufficient margin for {qty} BTC: need ${need_margin:,.2f} @ {DEFAULT_LEVERAGE}x, "
+                    f"have ${usdt:,.2f} USDT"
+                )
+                entry_ready = False
+                score = min(int(score or 0), 38)
+                messages.append(block)
     notional = qty * spot
     risk_inr = notional * (risk_pct / 100.0) * DEFAULT_LEVERAGE
 

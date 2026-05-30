@@ -10,7 +10,7 @@ class CryptoTradePreviewRequest(BaseModel):
     direction: str = Field(default="AUTO", description="LONG, SHORT, or AUTO")
     risk_percentage: Optional[float] = Field(default=None, gt=0, le=100)
     reward_percentage: Optional[float] = Field(default=None, gt=0, le=100)
-    quantity_btc: Optional[float] = Field(default=0.001, gt=0, le=10)
+    quantity_btc: Optional[float] = Field(default=None, gt=0, le=10)
 
 
 class CryptoTradePlaceRequest(CryptoTradePreviewRequest):
@@ -20,7 +20,7 @@ class CryptoTradePlaceRequest(CryptoTradePreviewRequest):
 
 class CryptoWatchArmRequest(BaseModel):
     direction: str = "AUTO"
-    quantity_btc: Optional[float] = Field(default=0.001, gt=0, le=10)
+    quantity_btc: Optional[float] = Field(default=None, gt=0, le=10)
     mode: str = "autonomous"
     auto_place_on_signal: bool = True
     disarm_after_place: bool = True
