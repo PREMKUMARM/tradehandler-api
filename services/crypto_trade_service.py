@@ -10,7 +10,12 @@ from services.crypto_config import (
     allow_offhours_crypto_place,
     is_crypto_session_open,
 )
-from services.crypto_indicator_plan import build_trade_plan, refresh_plan_at_execution
+from services.crypto_indicator_plan import (
+    STRATEGY_PENDING_REASON,
+    build_trade_plan,
+    is_strategy_configured,
+    refresh_plan_at_execution,
+)
 from services.crypto_live_indicators import recalculate_from_ticker
 from utils.binance_order_utils import (
     get_binance_credentials,
@@ -19,52 +24,85 @@ from utils.binance_order_utils import (
     place_stop_market,
     set_margin_type,
 )
-from utils.logger import log_error, log_info
+from utils.logger import log_error
 
 STEP_TITLES = [
     "Binance API & USDT balance",
     "Market session (24/7)",
-    "Direction hypothesis (LONG / SHORT)",
-    "Structure: OR / PDH / PDL / VWAP",
-    "Entry setup (5m BB)",
+    "Direction (LONG / SHORT / AUTO)",
+    "Entry rules",
+    "Exit & stop loss",
     "Position size & leverage",
-    "Stop loss & take profit",
+    "Risk / reward",
     "Final order review",
 ]
 
-REQUIRED_MARKED_STEPS = [0, 2, 5, 7]
+REQUIRED_MARKED_STEPS = [0, 2, 7]
+PENDING_MSG = "Awaiting strategy configuration"
 
 
 def _step_statuses_from_live(
-  plan: Dict[str, Any],
-  live: Dict[str, Any],
-  balance: float,
-  *,
-  paper_mode: bool = False,
+    plan: Dict[str, Any],
+    live: Dict[str, Any],
+    balance: float,
+    *,
+    paper_mode: bool = False,
 ) -> List[Dict[str, Any]]:
-    side = plan.get("side") or "LONG"
-    spot = float(live.get("btc_spot") or 0)
-    out: List[Dict[str, Any]] = []
+    side = (plan.get("side") or "AUTO").upper()
+    strategy_ok = is_strategy_configured()
     min_bal = MIN_LIVE_USDT_BALANCE if not paper_mode else 0.0
-    checks = [
-        balance >= min_bal or (paper_mode and bool(live.get("connected"))),
-        is_crypto_session_open(),
-        side in ("LONG", "SHORT"),
-        spot > 0 and live.get("or_high"),
-        bool(plan.get("entry_ready")),
-        float(plan.get("quantity") or 0) > 0,
-        float(plan.get("stop_loss_premium") or 0) > 0,
-        float(plan.get("entry_limit_price") or 0) > 0,
+    qty = float(plan.get("quantity") or 0)
+    sl = float(plan.get("stop_loss_premium") or 0)
+    entry_px = float(plan.get("entry_limit_price") or 0)
+
+    checks: List[tuple[bool, str]] = [
+        (
+            balance >= min_bal or (paper_mode and bool(live.get("connected"))),
+            "Pass" if balance >= min_bal or paper_mode else "Insufficient USDT balance",
+        ),
+        (
+            is_crypto_session_open(),
+            "Pass" if is_crypto_session_open() else "Market closed",
+        ),
+        (
+            side in ("LONG", "SHORT", "AUTO"),
+            "Pass" if side in ("LONG", "SHORT", "AUTO") else "Pick LONG, SHORT, or AUTO",
+        ),
+        (
+            strategy_ok and bool(plan.get("entry_ready")),
+            PENDING_MSG if not strategy_ok else (plan.get("entry_block_reason") or "Entry not ready"),
+        ),
+        (
+            strategy_ok and sl > 0,
+            PENDING_MSG if not strategy_ok else "Stop loss not set",
+        ),
+        (
+            qty > 0,
+            "Pass" if qty > 0 else "Position size is zero — check USDT margin",
+        ),
+        (
+            strategy_ok and sl > 0 and entry_px > 0 and float(plan.get("target_premium") or 0) > 0,
+            PENDING_MSG if not strategy_ok else "Risk / reward not validated",
+        ),
+        (
+            False,
+            PENDING_MSG,
+        ),
     ]
+
+    out: List[Dict[str, Any]] = []
     for i, title in enumerate(STEP_TITLES):
-        ok = bool(checks[i]) if i < len(checks) else False
+        ok, msg = checks[i] if i < len(checks) else (False, PENDING_MSG)
+        if i == 7:
+            ok = all(c[0] for c in checks[:7])
+            msg = "Pass" if ok else (PENDING_MSG if not strategy_ok else "Complete prior steps")
         out.append(
             {
                 "index": i,
                 "title": title,
                 "completed": ok,
                 "server_ok": ok,
-                "message": "Pass" if ok else "Needs attention",
+                "message": msg if not ok else "Pass",
                 "output": "",
             }
         )
@@ -127,6 +165,9 @@ def get_checklist_live(
     if paper_mode:
         messages.append("Paper mode ON (Crypto) — simulated Binance fills in paper ledger")
 
+    if not is_strategy_configured():
+        messages.append(STRATEGY_PENDING_REASON)
+
     from services.watch_execute import resolve_can_execute
 
     preview_stub = {
@@ -152,29 +193,19 @@ def get_checklist_live(
         "messages": messages,
         "binance_balance_usdt": balance,
         "leverage": DEFAULT_LEVERAGE,
+        "strategy_configured": is_strategy_configured(),
     }
 
 
 def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
-    plan, _ = build_trade_plan(direction=direction)
-    side = plan.get("side") or "LONG"
-    sid = plan.get("strategy_id") or "bb_5m_mean_reversion"
     return {
-        "selected_id": sid,
-        "selected_name": f"BTCUSDT {side} BB 5m",
-        "selected_score": int(plan.get("entry_confirmation_score") or 60),
-        "selected_fit": "good" if plan.get("entry_ready") else "wait",
-        "selected_option_kind": side,
-        "strategies": [
-            {
-                "id": sid,
-                "name": f"BTCUSDT {side} BB 5m {DEFAULT_LEVERAGE}x",
-                "score": int(plan.get("entry_confirmation_score") or 60),
-                "fit": "good" if plan.get("entry_ready") else "wait",
-                "option_kind": side,
-            }
-        ],
-        "output_summary": plan.get("note") or f"{SYMBOL} {side} perp · 5m BB mean reversion",
+        "selected_id": "pending",
+        "selected_name": "Not configured",
+        "selected_score": 0,
+        "selected_fit": "wait",
+        "selected_option_kind": direction.upper() if direction else "AUTO",
+        "strategies": [],
+        "output_summary": STRATEGY_PENDING_REASON,
     }
 
 
@@ -186,10 +217,6 @@ def get_checklist_analyze(
     reward_percentage: Optional[float] = None,
     quantity_btc: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """
-    Parity endpoint with Nifty/Commodity: return live checklist + highlight one step.
-    (Crypto MVP runs auto_execute checklist; step analysis is informational.)
-    """
     data = get_checklist_live(
         direction=direction,
         risk_percentage=risk_percentage,
@@ -229,7 +256,6 @@ def preview_trade(
         for idx in REQUIRED_MARKED_STEPS:
             if idx < len(completed_steps) and not completed_steps[idx]:
                 can_place = False
-    can_execute = bool(live_data.get("can_execute"))
     from services.watch_execute import resolve_can_execute
 
     can_execute = resolve_can_execute(live_data, plan)
@@ -278,6 +304,10 @@ def place_trade(
         result["errors"].append("Set confirm=true to place orders")
         return result
 
+    if not is_strategy_configured():
+        result["errors"].append(STRATEGY_PENDING_REASON)
+        return result
+
     plan = trade_plan_snapshot or preview.get("trade_plan")
     if not plan:
         result["errors"].append("No trade plan")
@@ -300,6 +330,10 @@ def place_trade(
 
     if qty <= 0:
         result["errors"].append("Position size is zero — insufficient USDT for min BTCUSDT lot at current leverage")
+        return result
+
+    if sl_px <= 0:
+        result["errors"].append("Stop loss not configured")
         return result
 
     try:
@@ -376,16 +410,17 @@ def place_trade(
             if sl.get("ok"):
                 result["sl_order_id"] = sl.get("order_id")
                 result["messages"].append(f"SL STOP_MARKET @ ${sl_px:,.2f}")
-            tp = place_limit_order(
-                symbol=SYMBOL,
-                side=exit_side,
-                quantity=qty,
-                price=tp_px,
-                reduce_only=True,
-            )
-            if tp.get("ok"):
-                result["tp_order_id"] = tp.get("order_id")
-                result["messages"].append(f"TP LIMIT @ ${tp_px:,.2f}")
+            if tp_px > 0:
+                tp = place_limit_order(
+                    symbol=SYMBOL,
+                    side=exit_side,
+                    quantity=qty,
+                    price=tp_px,
+                    reduce_only=True,
+                )
+                if tp.get("ok"):
+                    result["tp_order_id"] = tp.get("order_id")
+                    result["messages"].append(f"TP LIMIT @ ${tp_px:,.2f}")
         else:
             result["exits_deferred"] = True
             result["messages"].append("SL/TP will attach after entry fills (watch)")

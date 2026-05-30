@@ -14,13 +14,11 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.crypto_indicator_plan import (
-    _bb_entry_analysis,
-    _bb_exit_levels,
-    _resolve_side,
+    STRATEGY_PENDING_REASON,
     bb_reentry_reset_zone,
+    is_strategy_configured,
     passes_min_rr,
     passes_min_tp_reward,
-    side_aligns_with_daily_candle,
 )
 from services.crypto_ta import (
     bb_bandwidth_pct,
@@ -189,6 +187,12 @@ def _check_exit(open_pos: Dict[str, Any], bar: Dict[str, float]) -> tuple[Option
 
 
 async def run_backtest(hours: float = 24.0) -> Dict[str, Any]:
+    from services.crypto_indicator_plan import (
+        _bb_entry_analysis,
+        _bb_exit_levels,
+        _resolve_side,
+        side_aligns_with_daily_candle,
+    )
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=hours)
     klines = await fetch_historical_klines("BTCUSDT", "5m", start, end)
@@ -386,6 +390,18 @@ async def run_backtest(hours: float = 24.0) -> Dict[str, Any]:
 
 
 def main() -> None:
+    if not is_strategy_configured():
+        print(
+            json.dumps(
+                {
+                    "error": STRATEGY_PENDING_REASON,
+                    "total_trades": 0,
+                    "orders": [],
+                },
+                indent=2,
+            )
+        )
+        return
     hours = float(sys.argv[1]) if len(sys.argv) > 1 else 24.0
     result = asyncio.run(run_backtest(hours=hours))
     print(json.dumps(result, indent=2))

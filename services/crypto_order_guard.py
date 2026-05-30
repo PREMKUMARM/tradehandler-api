@@ -19,7 +19,11 @@ def min_entry_confirmation_score() -> int:
 
 
 def entry_quality_for_autonomous(plan: Dict[str, Any]) -> Tuple[bool, str]:
-    """Strict BB entry gate — each autonomous order must pass fresh confirmation."""
+    """Autonomous entry gate — requires configured strategy and confirmed entry."""
+    from services.crypto_indicator_plan import STRATEGY_PENDING_REASON, is_strategy_configured
+
+    if not is_strategy_configured():
+        return False, STRATEGY_PENDING_REASON
     if not plan:
         return False, "No trade plan"
     if plan.get("entry_ready") is not True:
@@ -102,14 +106,13 @@ def has_binance_position(symbol: str) -> Tuple[bool, str]:
 def format_pre_place_analysis(plan: Dict[str, Any]) -> str:
     side = str(plan.get("side") or "—")
     score = int(plan.get("entry_confirmation_score") or 0)
-    zone = plan.get("bb_zone") or "—"
     style = plan.get("entry_style") or "—"
     entry = float(plan.get("entry_limit_price") or 0)
     sl = float(plan.get("stop_loss_premium") or 0)
     tp = float(plan.get("target_premium") or 0)
     qty = float(plan.get("quantity") or 0)
     return (
-        f"{side} score={score} · BB {zone} ({style}) · "
+        f"{side} score={score} · style {style} · "
         f"LIMIT ${entry:,.2f} · SL ${sl:,.2f} · TP ${tp:,.2f} · qty {qty} BTC"
     )
 

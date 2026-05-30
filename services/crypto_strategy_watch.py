@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from agent.ws_manager import broadcast_agent_update
 from services import crypto_trade_service
 from services.crypto_config import CRYPTO_WATCH_MAX_TRADES_PER_DAY, DEFAULT_LEVERAGE, SYMBOL
-from services.crypto_indicator_plan import bb_reentry_reset_zone, refresh_exits_at_fill, refresh_plan_at_execution
+from services.crypto_indicator_plan import is_strategy_configured, refresh_exits_at_fill, refresh_plan_at_execution
 from services.crypto_order_guard import autonomous_place_allowed, format_pre_place_analysis
 from services.push.push_service import push_service
 from services.watch_readiness import build_readiness_payload
@@ -124,7 +124,7 @@ class CryptoStrategyWatch:
             if self._last_plan and isinstance(self._last_plan, dict):
                 stale = dict(self._last_plan)
                 stale["entry_ready"] = False
-                stale["entry_block_reason"] = "Signal consumed — wait for new 5m setup"
+                stale["entry_block_reason"] = "Signal consumed — wait for next setup"
                 self._last_plan = stale
         self._persist()
 
@@ -153,7 +153,7 @@ class CryptoStrategyWatch:
         venue = "paper ledger" if paper_mode else "Binance (live)"
         self._push(
             "mode_changed",
-            f"Switched to {venue} — stale signals cleared; wait for fresh 5m reversal",
+            f"Switched to {venue} — watch reset; strategy not configured yet",
             tradingsymbol=SYMBOL,
         )
         log_info(f"[CryptoWatch] Trading mode → {'paper' if paper_mode else 'live'} (signals reset)")
@@ -286,11 +286,6 @@ class CryptoStrategyWatch:
                 return
             if self._pending_entry_order_id:
                 return
-            if self._placed_count_today >= self._max_trades_per_day():
-                return
-
-            if live and not bb_reentry_reset_zone(live):
-                return
 
             if self._last_entry_ready is False and entry_ready:
                 self._reentry_armed = True
@@ -326,16 +321,13 @@ class CryptoStrategyWatch:
             if not self._reentry_armed:
                 cd = int(self._reentry_cooldown_sec())
                 if not self._entry_cleared_since_last_trade:
-                    return False, "Prior signal still active — wait for entry_ready to clear, then fresh setup"
-                if live and not bb_reentry_reset_zone(live):
-                    return (
-                        False,
-                        "BB cycle reset — wait for price to return toward middle band",
-                    )
+                    return False, "Prior signal still active — wait for entry_ready to clear"
                 return (
                     False,
-                    f"Re-entry cooldown — wait {cd}s after last trade or until setup resets",
+                    f"Re-entry cooldown — wait {cd}s after last trade",
                 )
+        if not is_strategy_configured():
+            return False, "Strategy not configured — autonomous entry disabled"
         return True, ""
 
     def _should_disarm_watch(self) -> bool:
@@ -714,7 +706,7 @@ class CryptoStrategyWatch:
                     elif not signal_fresh:
                         self._push(
                             "auto_skipped",
-                            "Same 5m signal already traded — wait for new reversal bar",
+                            "Same signal already traded — wait for new setup",
                             tradingsymbol=SYMBOL,
                         )
                     elif not guard_ok and guard_msg:
