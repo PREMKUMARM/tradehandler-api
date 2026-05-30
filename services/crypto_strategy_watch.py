@@ -16,16 +16,20 @@ from zoneinfo import ZoneInfo
 from agent.ws_manager import broadcast_agent_update
 from services import crypto_trade_service
 from services.crypto_config import CRYPTO_WATCH_MAX_TRADES_PER_DAY, DEFAULT_LEVERAGE, SYMBOL
-from services.crypto_indicator_plan import refresh_exits_at_fill, refresh_plan_at_execution
+from services.crypto_indicator_plan import bb_reentry_reset_zone, refresh_exits_at_fill, refresh_plan_at_execution
 from services.crypto_order_guard import autonomous_place_allowed, format_pre_place_analysis
 from services.push.push_service import push_service
 from services.watch_readiness import build_readiness_payload
+from services.crypto_trail import compute_crypto_trail_sl, get_crypto_trail_config, sl_changed_enough
 from utils.binance_order_utils import (
+    cancel_algo_order,
     cancel_order,
     get_order_avg_fill_price,
     get_order_status,
+    get_symbol_price,
     place_limit_order,
     place_stop_market,
+    signed_request,
 )
 from utils.logger import log_error, log_info, log_warning
 
@@ -84,7 +88,75 @@ class CryptoStrategyWatch:
         self._last_checklist_ready = False
         self._last_entry_ready = False
         self._last_paper_mode = True
+        self._trail_pos: Optional[Dict[str, Any]] = None
+        self._entry_cleared_since_last_trade = True
+        self._last_consumed_signal_key: Optional[str] = None
         self._load()
+
+    @staticmethod
+    def _plan_signal_key(plan: Dict[str, Any]) -> Optional[str]:
+        """Unique key for the current 5m reversal signal — prevents re-firing the same bar."""
+        ind = plan.get("indicators") if isinstance(plan.get("indicators"), dict) else {}
+        side = str(plan.get("side") or "")
+        style = str(plan.get("entry_style") or "")
+        bar = ind.get("last_5m_bar")
+        if isinstance(bar, dict):
+            return (
+                f"{side}:{style}:"
+                f"{float(bar.get('open', 0)):.2f}:"
+                f"{float(bar.get('close', 0)):.2f}"
+            )
+        spot = float(ind.get("signal_spot") or ind.get("btc_spot") or 0)
+        if spot > 0 and side:
+            return f"{side}:{style}:{spot:.2f}"
+        return None
+
+    def _consume_trade_signal(self, plan: Optional[Dict[str, Any]] = None) -> None:
+        """Mark current strategy signal as used — require setup to clear before next entry."""
+        with _lock:
+            self._last_entry_ready = False
+            self._reentry_armed = False
+            self._entry_cleared_since_last_trade = False
+            if plan:
+                key = self._plan_signal_key(plan)
+                if key:
+                    self._last_consumed_signal_key = key
+            if self._last_plan and isinstance(self._last_plan, dict):
+                stale = dict(self._last_plan)
+                stale["entry_ready"] = False
+                stale["entry_block_reason"] = "Signal consumed — wait for new 5m setup"
+                self._last_plan = stale
+        self._persist()
+
+    def reset_placement_counters(self) -> None:
+        """Clear daily placement slots (paper fund reset / mode toggle). Watch stays armed."""
+        with _lock:
+            self._placed_count_today = 0
+            self._placed_today = False
+            self._clear_pending_entry()
+            self._reentry_armed = False
+            self._last_autonomous_placed_at = None
+            self._last_entry_ready = False
+            self._last_checklist_ready = False
+            self._last_plan = None
+            self._last_strategy_analysis = {}
+            self._entry_cleared_since_last_trade = False
+            self._last_consumed_signal_key = None
+        self._persist()
+        log_info("[CryptoWatch] Placement counters reset")
+
+    def on_trading_mode_changed(self, paper_mode: bool) -> None:
+        """Paper↔live toggle: drop stale signals so live does not fire on old entry_ready."""
+        with _lock:
+            self._last_paper_mode = bool(paper_mode)
+        self.reset_placement_counters()
+        venue = "paper ledger" if paper_mode else "Binance (live)"
+        self._push(
+            "mode_changed",
+            f"Switched to {venue} — stale signals cleared; wait for fresh 5m reversal",
+            tradingsymbol=SYMBOL,
+        )
+        log_info(f"[CryptoWatch] Trading mode → {'paper' if paper_mode else 'live'} (signals reset)")
 
     def _load(self) -> None:
         if not _STATE_PATH.exists():
@@ -104,6 +176,8 @@ class CryptoStrategyWatch:
                 except ValueError:
                     self._session_date = None
             self._reentry_armed = bool(data.get("reentry_armed", True))
+            tp = data.get("trail_pos")
+            self._trail_pos = tp if isinstance(tp, dict) else None
             lap = data.get("last_autonomous_placed_at")
             if lap:
                 try:
@@ -142,6 +216,7 @@ class CryptoStrategyWatch:
                 else None
             ),
             "pending_entry_order_id": self._pending_entry_order_id,
+            "trail_pos": self._trail_pos,
             "config": asdict(self._cfg),
             "events": [e.to_dict() for e in list(self._events)],
         }
@@ -199,15 +274,22 @@ class CryptoStrategyWatch:
         except Exception:
             return 90.0
 
-    def _maybe_rearm_reentry(self, entry_ready: bool) -> None:
+    def _maybe_rearm_reentry(self, entry_ready: bool, live: Optional[Dict[str, Any]] = None) -> None:
         with _lock:
+            if not entry_ready:
+                self._entry_cleared_since_last_trade = True
             if self._reentry_armed:
                 return
             if not entry_ready:
                 return
+            if not self._entry_cleared_since_last_trade:
+                return
             if self._pending_entry_order_id:
                 return
             if self._placed_count_today >= self._max_trades_per_day():
+                return
+
+            if live and not bb_reentry_reset_zone(live):
                 return
 
             if self._last_entry_ready is False and entry_ready:
@@ -215,15 +297,46 @@ class CryptoStrategyWatch:
                 return
 
             if self._last_autonomous_placed_at is None:
-                if self._placed_count_today == 0:
+                if self._placed_count_today == 0 and self._entry_cleared_since_last_trade:
                     self._reentry_armed = True
                 return
 
             age = (
                 datetime.now(IST) - self._last_autonomous_placed_at.astimezone(IST)
             ).total_seconds()
-            if age >= self._reentry_cooldown_sec():
+            if age >= self._reentry_cooldown_sec() and self._entry_cleared_since_last_trade:
                 self._reentry_armed = True
+
+    def _signal_already_consumed(self, plan: Dict[str, Any]) -> bool:
+        key = self._plan_signal_key(plan)
+        if not key:
+            return False
+        with _lock:
+            return key == self._last_consumed_signal_key
+
+    def _autonomous_entry_allowed(
+        self, entry_ready: bool, live: Optional[Dict[str, Any]] = None
+    ) -> tuple[bool, str]:
+        self._maybe_rearm_reentry(entry_ready, live)
+        if not entry_ready:
+            with _lock:
+                self._reentry_armed = True
+            return False, "Entry not confirmed (entry_ready=false)"
+        with _lock:
+            if not self._reentry_armed:
+                cd = int(self._reentry_cooldown_sec())
+                if not self._entry_cleared_since_last_trade:
+                    return False, "Prior signal still active — wait for entry_ready to clear, then fresh setup"
+                if live and not bb_reentry_reset_zone(live):
+                    return (
+                        False,
+                        "BB cycle reset — wait for price to return toward middle band",
+                    )
+                return (
+                    False,
+                    f"Re-entry cooldown — wait {cd}s after last trade or until setup resets",
+                )
+        return True, ""
 
     def _should_disarm_watch(self) -> bool:
         max_t = self._max_trades_per_day()
@@ -232,21 +345,6 @@ class CryptoStrategyWatch:
         if self._cfg.disarm_after_place and max_t <= 1:
             return self._placed_count_today >= 1
         return False
-
-    def _autonomous_entry_allowed(self, entry_ready: bool) -> tuple[bool, str]:
-        self._maybe_rearm_reentry(entry_ready)
-        if not entry_ready:
-            with _lock:
-                self._reentry_armed = True
-            return False, "Entry not confirmed (entry_ready=false)"
-        with _lock:
-            if not self._reentry_armed:
-                cd = int(self._reentry_cooldown_sec())
-                return (
-                    False,
-                    f"Re-entry cooldown — wait {cd}s after last trade or until setup resets",
-                )
-        return True, ""
 
     @staticmethod
     def _kill_switch() -> bool:
@@ -277,7 +375,10 @@ class CryptoStrategyWatch:
                 disarm_after_place=disarm_after_place,
             )
             self._armed = True
-            self._reentry_armed = True
+            self._reentry_armed = False
+            self._last_entry_ready = True
+            self._entry_cleared_since_last_trade = False
+            self._last_consumed_signal_key = None
         self._push(
             "armed",
             f"Crypto watch armed · {SYMBOL} {DEFAULT_LEVERAGE}x · up to {self._max_trades_per_day()}/day",
@@ -379,6 +480,7 @@ class CryptoStrategyWatch:
             disarm = self._should_disarm_watch()
             self._reentry_armed = False
         self._clear_pending_entry()
+        self._consume_trade_signal(plan)
         if not plan:
             return
         fill_px = await asyncio.to_thread(get_order_avg_fill_price, SYMBOL, str(entry_oid or ""))
@@ -390,6 +492,7 @@ class CryptoStrategyWatch:
         qty = float(plan.get("quantity") or 0.001)
         sl_px = float(plan.get("stop_loss_premium") or 0)
         tp_px = float(plan.get("target_premium") or 0)
+        trail_on = get_crypto_trail_config().enabled or bool(plan.get("trail_enabled"))
         sl = await asyncio.to_thread(
             place_stop_market,
             symbol=SYMBOL,
@@ -398,7 +501,7 @@ class CryptoStrategyWatch:
             stop_price=sl_px,
         )
         tp = None
-        if tp_px > 0:
+        if tp_px > 0 and not trail_on:
             tp = await asyncio.to_thread(
                 place_limit_order,
                 symbol=SYMBOL,
@@ -409,7 +512,22 @@ class CryptoStrategyWatch:
             )
         sl_ok = sl.get("ok")
         tp_ok = bool(tp and tp.get("ok"))
+        if sl_ok and trail_on:
+            with _lock:
+                self._trail_pos = {
+                    "side": side,
+                    "entry": fill_px,
+                    "qty": qty,
+                    "initial_sl": sl_px,
+                    "sl": sl_px,
+                    "min_tp": tp_px,
+                    "peak": fill_px,
+                    "trail_active": False,
+                    "sl_algo_id": sl.get("algo_id") or sl.get("order_id"),
+                }
         msg = f"Entry filled @ ${fill_px:,.2f} — SL @ ${sl_px:,.0f}"
+        if trail_on:
+            msg += f" · trail ON (min TP ${tp_px:,.0f} @ R:R ≥ {plan.get('min_rr', 1.5)})"
         if sl_ok:
             msg += f" algo {sl.get('order_id')}"
         else:
@@ -423,19 +541,96 @@ class CryptoStrategyWatch:
         if disarm:
             with _lock:
                 self._armed = False
-        kind = "auto_gtt_placed" if sl_ok and (tp_px <= 0 or tp_ok) else "auto_gtt_failed"
-        if sl_ok and not tp_ok and tp_px > 0:
+        kind = "auto_gtt_placed" if sl_ok and (trail_on or tp_px <= 0 or tp_ok) else "auto_gtt_failed"
+        if sl_ok and not tp_ok and tp_px > 0 and not trail_on:
             kind = "auto_gtt_partial"
         self._push(kind, msg, tradingsymbol=SYMBOL)
+
+    async def _maybe_trail_open_position(self) -> None:
+        with _lock:
+            pos = copy.deepcopy(self._trail_pos) if self._trail_pos else None
+        if not pos:
+            return
+        try:
+            rows = await asyncio.to_thread(signed_request, "GET", "/fapi/v2/positionRisk", {"symbol": SYMBOL})
+            amt = 0.0
+            if isinstance(rows, list):
+                for row in rows:
+                    if str(row.get("symbol") or "").upper() == SYMBOL:
+                        amt = abs(float(row.get("positionAmt") or 0))
+            if amt < 1e-6:
+                with _lock:
+                    self._trail_pos = None
+                self._consume_trade_signal()
+                self._push("trail_closed", "Position flat — trail monitor stopped", tradingsymbol=SYMBOL)
+                return
+        except Exception as exc:
+            log_warning(f"[CryptoWatch] trail position check: {exc}")
+            return
+
+        try:
+            spot = await asyncio.to_thread(get_symbol_price, SYMBOL)
+        except Exception as exc:
+            log_warning(f"[CryptoWatch] trail price: {exc}")
+            return
+
+        cfg = get_crypto_trail_config()
+        new_sl, new_peak, activated, note = compute_crypto_trail_sl(
+            side=str(pos["side"]),
+            entry=float(pos["entry"]),
+            initial_sl=float(pos["initial_sl"]),
+            min_tp=float(pos.get("min_tp") or 0),
+            peak=float(pos.get("peak") or pos["entry"]),
+            ltp=spot,
+            current_sl=float(pos["sl"]),
+            trail_active=bool(pos.get("trail_active")),
+            symbol=SYMBOL,
+            cfg=cfg,
+        )
+        if not sl_changed_enough(float(pos["sl"]), new_sl):
+            return
+
+        old_algo = str(pos.get("sl_algo_id") or "")
+        if old_algo:
+            await asyncio.to_thread(cancel_algo_order, SYMBOL, old_algo)
+        exit_side = "SELL" if str(pos["side"]).upper() == "LONG" else "BUY"
+        sl_res = await asyncio.to_thread(
+            place_stop_market,
+            symbol=SYMBOL,
+            side=exit_side,
+            quantity=float(pos["qty"]),
+            stop_price=new_sl,
+        )
+        if not sl_res.get("ok"):
+            self._push("trail_failed", sl_res.get("error") or "SL update failed", tradingsymbol=SYMBOL)
+            return
+
+        with _lock:
+            if self._trail_pos:
+                self._trail_pos["sl"] = new_sl
+                self._trail_pos["peak"] = new_peak
+                self._trail_pos["trail_active"] = activated or self._trail_pos.get("trail_active")
+                self._trail_pos["sl_algo_id"] = sl_res.get("algo_id") or sl_res.get("order_id")
+        if note:
+            self._push("trail_update", note, tradingsymbol=SYMBOL)
 
     async def _run_loop(self) -> None:
         while True:
             with _lock:
-                if not self._armed:
+                armed = self._armed
+                has_trail = self._trail_pos is not None
+                if not armed and not has_trail:
                     break
                 cfg = self._cfg
                 self._reset_day_if_needed()
             try:
+                await self._maybe_trail_open_position()
+                if not armed:
+                    await asyncio.sleep(float(os.getenv("CRYPTO_WATCH_POLL_SEC", "8") or 8))
+                    continue
+                if self._trail_pos:
+                    await asyncio.sleep(float(os.getenv("CRYPTO_WATCH_POLL_SEC", "8") or 8))
+                    continue
                 if self._pending_entry_order_id:
                     pid = str(self._pending_entry_order_id)
                     if pid.upper().startswith("PAPER-"):
@@ -451,7 +646,9 @@ class CryptoStrategyWatch:
                                 if self._placed_count_today > 0:
                                     self._placed_count_today -= 1
                                 self._placed_today = self._placed_count_today > 0
-                                self._reentry_armed = True
+                                self._reentry_armed = False
+                                self._last_consumed_signal_key = None
+                                self._entry_cleared_since_last_trade = True
                             self._clear_pending_entry()
                             self._push("auto_cancelled", f"Entry {st.lower()}")
                         else:
@@ -489,17 +686,22 @@ class CryptoStrategyWatch:
                     placed_today=at_limit,
                     segment="crypto",
                 )
-                reentry_ok, reentry_msg = self._autonomous_entry_allowed(entry_ready)
+                reentry_ok, reentry_msg = self._autonomous_entry_allowed(
+                    entry_ready, plan.get("indicators") if isinstance(plan.get("indicators"), dict) else None
+                )
+                signal_fresh = not self._signal_already_consumed(plan)
                 ready = bool(preview.get("checklist_ready"))
                 should_place = (
                     cfg.mode == "autonomous"
                     and cfg.auto_place_on_signal
                     and not self._pending_entry_order_id
+                    and not self._trail_pos
                     and not at_limit
                     and not self._kill_switch()
                     and can_execute
                     and ready
                     and entry_ready
+                    and signal_fresh
                     and guard_ok
                     and reentry_ok
                 )
@@ -509,6 +711,12 @@ class CryptoStrategyWatch:
                     pending = self._pending_entry_order_id
                     if pending:
                         pass  # waiting_for_fill logged once in pending poll branch
+                    elif not signal_fresh:
+                        self._push(
+                            "auto_skipped",
+                            "Same 5m signal already traded — wait for new reversal bar",
+                            tradingsymbol=SYMBOL,
+                        )
                     elif not guard_ok and guard_msg:
                         self._push("auto_skipped", guard_msg, tradingsymbol=SYMBOL)
                     elif not reentry_ok and reentry_msg:
@@ -574,6 +782,7 @@ class CryptoStrategyWatch:
                         placed=True,
                         tradingsymbol=SYMBOL,
                     )
+                    self._consume_trade_signal(plan)
                 else:
                     err = "; ".join(result.get("errors") or ["skipped"])
                     self._push("auto_skipped", err, tradingsymbol=SYMBOL)
@@ -595,6 +804,14 @@ def disarm_watch() -> Dict[str, Any]:
 
 def nuclear_reset_watch() -> Dict[str, Any]:
     return _watch.nuclear_reset()
+
+
+def reset_crypto_watch_placement_counters() -> None:
+    _watch.reset_placement_counters()
+
+
+def on_crypto_trading_mode_changed(paper_mode: bool) -> None:
+    _watch.on_trading_mode_changed(paper_mode)
 
 
 def get_watch_status() -> Dict[str, Any]:

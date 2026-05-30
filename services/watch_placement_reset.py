@@ -15,6 +15,10 @@ def reset_watch_placement_for_segment(segment: str) -> None:
         from services.commodity_strategy_watch import reset_commodity_watch_placement_counters
 
         reset_commodity_watch_placement_counters()
+    elif seg == "crypto":
+        from services.crypto_strategy_watch import reset_crypto_watch_placement_counters
+
+        reset_crypto_watch_placement_counters()
 
 
 def on_segment_paper_mode_changed(segment: str, was_paper: bool, is_paper: bool) -> None:
@@ -33,6 +37,13 @@ def on_segment_paper_mode_changed(segment: str, was_paper: bool, is_paper: bool)
             reset_watch_placement_counters()
             log_info(
                 f"[V2Watch] Nifty50 {'paper' if is_paper else 'live'} — placement counters reset"
+            )
+        elif seg == "crypto":
+            from services.crypto_strategy_watch import on_crypto_trading_mode_changed
+
+            on_crypto_trading_mode_changed(is_paper)
+            log_info(
+                f"[CryptoWatch] {'paper' if is_paper else 'live'} — signals and counters reset"
             )
         # Paper fills must not consume the live daily trade-count cap (MAX_TRADES_PER_DAY).
         if was_paper and not is_paper:

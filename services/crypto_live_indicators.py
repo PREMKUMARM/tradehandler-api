@@ -43,7 +43,7 @@ def _ema(values: List[float], period: int) -> Optional[float]:
 
 
 def recalculate_from_ticker() -> Dict[str, Any]:
-    """OR / PDH / PDL / EMA9 / VWAP-style context for BTCUSDT."""
+    """OR / PDH / PDL / EMA9 / VWAP / BB / RSI / ADX / ATR for BTCUSDT."""
     sym = SYMBOL
     k5 = _fetch_klines_sync(sym, "5m", 120)
     k1d = _fetch_klines_sync(sym, "1d", 3)
@@ -68,8 +68,38 @@ def recalculate_from_ticker() -> Dict[str, Any]:
     ema9 = _ema(closes, 9) or spot
 
     from services.kite_live_indicators import compute_bollinger_bands
+    from services.crypto_ta import (
+        bb_bandwidth_pct,
+        compute_adx,
+        compute_atr,
+        compute_atr_series,
+        compute_rsi,
+        middle_band_slope,
+    )
 
     bb_mid, bb_upper, bb_lower = compute_bollinger_bands(closes, period=20)
+    rsi14 = compute_rsi(closes, period=14)
+    adx14 = compute_adx(k5, period=14)
+    atr14 = compute_atr(k5, period=14)
+    atr_series = compute_atr_series(k5, period=14)
+    atr_sma20 = None
+    if atr_series:
+        recent = [a for a in atr_series[-20:] if a is not None]
+        if recent:
+            atr_sma20 = sum(recent) / len(recent)
+    bb_bw = (
+        bb_bandwidth_pct(float(bb_upper), float(bb_lower), float(bb_mid))
+        if bb_mid and bb_upper and bb_lower
+        else None
+    )
+    mid_slope = middle_band_slope(closes, period=20, lookback=3)
+    atr_ratio = (atr14 / atr_sma20) if atr14 and atr_sma20 and atr_sma20 > 0 else None
+    vols = [b["volume"] for b in k5]
+    vol_avg20 = sum(vols[-20:]) / min(20, len(vols)) if vols else None
+
+    prev_bar = k5[-3] if len(k5) >= 3 else k5[-2]
+    last_bar = k5[-2] if len(k5) >= 2 else k5[-1]
+    signal_spot = float(last_bar["close"])
 
     # Session VWAP on 5m
     cum_pv = 0.0
@@ -85,6 +115,7 @@ def recalculate_from_ticker() -> Dict[str, Any]:
         "connected": True,
         "symbol": sym,
         "btc_spot": round(spot, 2),
+        "signal_spot": round(signal_spot, 2),
         "nifty_spot": round(spot, 2),
         "prev_close": round(prev_close, 2),
         "or_high": round(or_high, 2),
@@ -99,6 +130,16 @@ def recalculate_from_ticker() -> Dict[str, Any]:
         "bb_middle": round(bb_mid, 2) if bb_mid is not None else None,
         "bb_upper": round(bb_upper, 2) if bb_upper is not None else None,
         "bb_lower": round(bb_lower, 2) if bb_lower is not None else None,
+        "bb_bandwidth_pct": round(bb_bw, 3) if bb_bw is not None else None,
+        "rsi14": round(rsi14, 2) if rsi14 is not None else None,
+        "adx14": round(adx14, 2) if adx14 is not None else None,
+        "atr14": round(atr14, 2) if atr14 is not None else None,
+        "atr_sma20": round(atr_sma20, 2) if atr_sma20 is not None else None,
+        "atr_ratio": round(atr_ratio, 3) if atr_ratio is not None else None,
+        "bb_middle_slope": round(mid_slope, 2) if mid_slope is not None else None,
+        "volume_avg20": round(vol_avg20, 4) if vol_avg20 is not None else None,
+        "prev_5m_bar": prev_bar,
+        "last_5m_bar": last_bar,
         "last_5m_close": round(closes[-2], 2) if len(closes) >= 2 else round(spot, 2),
         "data_source": "binance_futures",
         "indicator_sources": {
