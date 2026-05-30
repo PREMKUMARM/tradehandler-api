@@ -9,8 +9,8 @@ from services.crypto_config import (
     DEFAULT_REWARD_RATIO,
     DEFAULT_RISK_PCT,
     EXCHANGE,
-    MAX_NOTIONAL_PCT_OF_USDT,
     SYMBOL,
+    compute_crypto_quantity,
 )
 from services.crypto_live_indicators import recalculate_from_ticker
 from services.kite_live_indicators import bollinger_zone
@@ -127,20 +127,23 @@ def build_trade_plan(
     if quantity_btc is None:
         from services.paper_trading import is_paper_mode_for_segment
 
-        if is_paper_mode_for_segment("crypto"):
+        paper = is_paper_mode_for_segment("crypto")
+        if paper:
             from services.paper_funds import get_available_balance
 
-            usdt = get_available_balance("crypto")
+            usdt = float(get_available_balance("crypto") or 0)
             messages.append(f"Paper fund: ${usdt:,.2f} USDT available")
         else:
             try:
                 usdt = float(get_usdt_balance() or 0)
             except Exception:
                 usdt = 0.0
-            messages.append(f"Sizing: {MAX_NOTIONAL_PCT_OF_USDT:.0f}% of live USDT @ {DEFAULT_LEVERAGE}x")
-        budget = usdt * (MAX_NOTIONAL_PCT_OF_USDT / 100.0) * DEFAULT_LEVERAGE
-        sized_qty = (budget / spot) if (spot > 0 and budget > 0) else DEFAULT_QUANTITY_BTC
-        qty = round_quantity(SYMBOL, float(sized_qty))
+        qty, size_msgs = compute_crypto_quantity(usdt, spot, paper=paper, symbol=SYMBOL)
+        messages.extend(size_msgs)
+        if qty <= 0 and not paper:
+            block = block or (size_msgs[-1] if size_msgs else "Insufficient margin for min lot")
+            entry_ready = False
+            score = min(int(score or 0), 38)
     else:
         qty = round_quantity(SYMBOL, float(quantity_btc or DEFAULT_QUANTITY_BTC))
     notional = qty * spot

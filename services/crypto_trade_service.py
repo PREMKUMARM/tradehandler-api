@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from services.crypto_config import (
     DEFAULT_LEVERAGE,
+    MIN_LIVE_USDT_BALANCE,
     SYMBOL,
     allow_offhours_crypto_place,
     is_crypto_session_open,
@@ -44,8 +45,9 @@ def _step_statuses_from_live(
     side = plan.get("side") or "LONG"
     spot = float(live.get("btc_spot") or 0)
     out: List[Dict[str, Any]] = []
+    min_bal = MIN_LIVE_USDT_BALANCE if not paper_mode else 0.0
     checks = [
-        balance > 10 or (paper_mode and bool(live.get("connected"))),
+        balance >= min_bal or (paper_mode and bool(live.get("connected"))),
         is_crypto_session_open(),
         side in ("LONG", "SHORT"),
         spot > 0 and live.get("or_high"),
