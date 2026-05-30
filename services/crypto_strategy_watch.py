@@ -15,7 +15,9 @@ from zoneinfo import ZoneInfo
 
 from agent.ws_manager import broadcast_agent_update
 from services import crypto_trade_service
-from services.crypto_config import DEFAULT_LEVERAGE, SYMBOL
+from services.crypto_config import CRYPTO_WATCH_MAX_TRADES_PER_DAY, DEFAULT_LEVERAGE, SYMBOL
+from services.crypto_indicator_plan import refresh_plan_at_execution
+from services.crypto_order_guard import autonomous_place_allowed, format_pre_place_analysis
 from services.push.push_service import push_service
 from services.watch_readiness import build_readiness_payload
 from utils.binance_order_utils import cancel_order, get_order_status, place_limit_order, place_stop_market
@@ -25,6 +27,10 @@ IST = ZoneInfo("Asia/Kolkata")
 _MAX_EVENTS = 40
 _STATE_PATH = Path(os.getenv("CRYPTO_WATCH_STATE_FILE", "data/crypto_strategy_watch.json"))
 _lock = RLock()
+
+
+def _today() -> date:
+    return datetime.now(IST).date()
 
 
 @dataclass
@@ -46,7 +52,7 @@ class WatchConfig:
     mode: str = "autonomous"
     auto_place_on_signal: bool = True
     auto_execute_checklist: bool = True
-    disarm_after_place: bool = True
+    disarm_after_place: bool = False
 
 
 class CryptoStrategyWatch:
@@ -61,8 +67,13 @@ class CryptoStrategyWatch:
         self._pending_entry_order_id: Optional[str] = None
         self._pending_trade_plan: Optional[Dict[str, Any]] = None
         self._placed_today = False
+        self._placed_count_today = 0
+        self._session_date: Optional[date] = None
+        self._reentry_armed = True
+        self._last_autonomous_placed_at: Optional[datetime] = None
         self._last_eval_at: Optional[datetime] = None
         self._last_plan: Optional[Dict[str, Any]] = None
+        self._last_strategy_analysis: Dict[str, Any] = {}
         self._last_checklist_ready = False
         self._last_entry_ready = False
         self._last_paper_mode = True
@@ -75,7 +86,27 @@ class CryptoStrategyWatch:
             data = json.loads(_STATE_PATH.read_text(encoding="utf-8"))
             self._armed = bool(data.get("armed"))
             self._pending_entry_order_id = data.get("pending_entry_order_id")
-            self._placed_today = bool(data.get("placed_today"))
+            self._placed_count_today = int(data.get("placed_count_today") or 0)
+            if self._placed_count_today == 0 and data.get("placed_today"):
+                self._placed_count_today = 1
+            self._placed_today = self._placed_count_today > 0
+            sd = data.get("session_date")
+            if sd:
+                try:
+                    self._session_date = date.fromisoformat(str(sd))
+                except ValueError:
+                    self._session_date = None
+            self._reentry_armed = bool(data.get("reentry_armed", True))
+            lap = data.get("last_autonomous_placed_at")
+            if lap:
+                try:
+                    self._last_autonomous_placed_at = datetime.fromisoformat(str(lap))
+                    if self._last_autonomous_placed_at.tzinfo is None:
+                        self._last_autonomous_placed_at = self._last_autonomous_placed_at.replace(
+                            tzinfo=IST
+                        )
+                except ValueError:
+                    self._last_autonomous_placed_at = None
             cfg = data.get("config") or {}
             self._cfg = WatchConfig(
                 direction=str(cfg.get("direction") or "AUTO"),
@@ -83,7 +114,7 @@ class CryptoStrategyWatch:
                 mode=str(cfg.get("mode") or "autonomous"),
                 auto_place_on_signal=bool(cfg.get("auto_place_on_signal", True)),
                 auto_execute_checklist=bool(cfg.get("auto_execute_checklist", True)),
-                disarm_after_place=bool(cfg.get("disarm_after_place", True)),
+                disarm_after_place=bool(cfg.get("disarm_after_place", False)),
             )
             for ev in (data.get("events") or [])[:_MAX_EVENTS]:
                 if isinstance(ev, dict) and ev.get("at") and ev.get("kind"):
@@ -94,7 +125,15 @@ class CryptoStrategyWatch:
     def _persist(self) -> None:
         data = {
             "armed": self._armed,
-            "placed_today": self._placed_today,
+            "placed_today": bool(self._placed_count_today > 0),
+            "placed_count_today": int(self._placed_count_today),
+            "session_date": (self._session_date or _today()).isoformat(),
+            "reentry_armed": self._reentry_armed,
+            "last_autonomous_placed_at": (
+                self._last_autonomous_placed_at.isoformat()
+                if self._last_autonomous_placed_at
+                else None
+            ),
             "pending_entry_order_id": self._pending_entry_order_id,
             "config": asdict(self._cfg),
             "events": [e.to_dict() for e in list(self._events)],
@@ -105,6 +144,85 @@ class CryptoStrategyWatch:
     def _push(self, kind: str, message: str, **kw: Any) -> None:
         self._events.appendleft(WatchEvent(at=datetime.now(IST).isoformat(), kind=kind, message=message[:240], **kw))
         self._persist()
+
+    def _reset_day_if_needed(self) -> None:
+        today = _today()
+        if self._session_date != today:
+            self._session_date = today
+            self._placed_today = False
+            self._placed_count_today = 0
+            self._pending_entry_order_id = None
+            self._pending_trade_plan = None
+            self._reentry_armed = True
+            self._last_autonomous_placed_at = None
+            self._last_entry_ready = False
+
+    def _max_trades_per_day(self) -> int:
+        if self._last_paper_mode:
+            try:
+                raw = os.getenv("PAPER_AUTO_MAX_TRADES_PER_DAY", str(CRYPTO_WATCH_MAX_TRADES_PER_DAY)).strip()
+                return max(1, min(100, int(raw or CRYPTO_WATCH_MAX_TRADES_PER_DAY)))
+            except Exception:
+                return CRYPTO_WATCH_MAX_TRADES_PER_DAY
+        return CRYPTO_WATCH_MAX_TRADES_PER_DAY
+
+    def _reentry_cooldown_sec(self) -> float:
+        try:
+            return max(
+                30.0,
+                min(900.0, float(os.getenv("CRYPTO_WATCH_REENTRY_COOLDOWN_SEC", "90") or 90)),
+            )
+        except Exception:
+            return 90.0
+
+    def _maybe_rearm_reentry(self, entry_ready: bool) -> None:
+        with _lock:
+            if self._reentry_armed:
+                return
+            if not entry_ready:
+                return
+            if self._pending_entry_order_id:
+                return
+            if self._placed_count_today >= self._max_trades_per_day():
+                return
+
+            if self._last_entry_ready is False and entry_ready:
+                self._reentry_armed = True
+                return
+
+            if self._last_autonomous_placed_at is None:
+                if self._placed_count_today == 0:
+                    self._reentry_armed = True
+                return
+
+            age = (
+                datetime.now(IST) - self._last_autonomous_placed_at.astimezone(IST)
+            ).total_seconds()
+            if age >= self._reentry_cooldown_sec():
+                self._reentry_armed = True
+
+    def _should_disarm_watch(self) -> bool:
+        max_t = self._max_trades_per_day()
+        if self._placed_count_today >= max_t:
+            return True
+        if self._cfg.disarm_after_place and max_t <= 1:
+            return self._placed_count_today >= 1
+        return False
+
+    def _autonomous_entry_allowed(self, entry_ready: bool) -> tuple[bool, str]:
+        self._maybe_rearm_reentry(entry_ready)
+        if not entry_ready:
+            with _lock:
+                self._reentry_armed = True
+            return False, "Entry not confirmed (entry_ready=false)"
+        with _lock:
+            if not self._reentry_armed:
+                cd = int(self._reentry_cooldown_sec())
+                return (
+                    False,
+                    f"Re-entry cooldown — wait {cd}s after last trade or until setup resets",
+                )
+        return True, ""
 
     @staticmethod
     def _kill_switch() -> bool:
@@ -123,7 +241,7 @@ class CryptoStrategyWatch:
         mode: str = "autonomous",
         auto_place_on_signal: bool = True,
         auto_execute_checklist: bool = True,
-        disarm_after_place: bool = True,
+        disarm_after_place: bool = False,
     ) -> Dict[str, Any]:
         with _lock:
             self._cfg = WatchConfig(
@@ -135,7 +253,11 @@ class CryptoStrategyWatch:
                 disarm_after_place=disarm_after_place,
             )
             self._armed = True
-        self._push("armed", f"Crypto watch armed · {SYMBOL} {DEFAULT_LEVERAGE}x")
+            self._reentry_armed = True
+        self._push(
+            "armed",
+            f"Crypto watch armed · {SYMBOL} {DEFAULT_LEVERAGE}x · up to {self._max_trades_per_day()}/day",
+        )
         self._ensure_task()
         return self.status()
 
@@ -151,6 +273,9 @@ class CryptoStrategyWatch:
             self._pending_entry_order_id = None
             self._pending_trade_plan = None
             self._placed_today = False
+            self._placed_count_today = 0
+            self._reentry_armed = True
+            self._last_autonomous_placed_at = None
             self._events.clear()
         if _STATE_PATH.exists():
             _STATE_PATH.unlink(missing_ok=True)
@@ -161,6 +286,8 @@ class CryptoStrategyWatch:
         with _lock:
             cfg = self._cfg
             plan = self._last_plan or {}
+            placed_count = self._placed_count_today
+            max_trades = self._max_trades_per_day()
         extras = build_readiness_payload(
             armed=self._armed,
             autonomous_mode=cfg.mode == "autonomous",
@@ -191,7 +318,11 @@ class CryptoStrategyWatch:
             "leverage": DEFAULT_LEVERAGE,
             "symbol": SYMBOL,
             "kill_switch_active": self._kill_switch(),
-            "placed_today": self._placed_today,
+            "placed_today": placed_count > 0,
+            "placed_count_today": placed_count,
+            "max_trades_per_day": max_trades,
+            "reentry_armed": self._reentry_armed,
+            "strategy_analysis": self._last_strategy_analysis,
             "tradingsymbol": SYMBOL,
             "btc_spot": btc_spot or None,
             "nifty_spot": btc_spot or None,
@@ -223,7 +354,8 @@ class CryptoStrategyWatch:
             plan = copy.deepcopy(self._pending_trade_plan) if self._pending_trade_plan else None
             self._pending_entry_order_id = None
             self._pending_trade_plan = None
-            disarm = self._cfg.disarm_after_place
+            disarm = self._should_disarm_watch()
+            self._reentry_armed = False
         if not plan:
             return
         side = str(plan.get("side") or "LONG").upper()
@@ -275,6 +407,7 @@ class CryptoStrategyWatch:
                 if not self._armed:
                     break
                 cfg = self._cfg
+                self._reset_day_if_needed()
             try:
                 if self._pending_entry_order_id:
                     pid = str(self._pending_entry_order_id)
@@ -282,6 +415,7 @@ class CryptoStrategyWatch:
                         with _lock:
                             self._pending_entry_order_id = None
                             self._pending_trade_plan = None
+                            self._reentry_armed = False
                     else:
                         st = await asyncio.to_thread(get_order_status, SYMBOL, pid)
                         if st == "FILLED":
@@ -290,6 +424,10 @@ class CryptoStrategyWatch:
                             with _lock:
                                 self._pending_entry_order_id = None
                                 self._pending_trade_plan = None
+                                if self._placed_count_today > 0:
+                                    self._placed_count_today -= 1
+                                self._placed_today = self._placed_count_today > 0
+                                self._reentry_armed = True
                             self._push("auto_cancelled", f"Entry {st.lower()}")
 
                 preview = await asyncio.to_thread(
@@ -302,44 +440,55 @@ class CryptoStrategyWatch:
                     cfg.auto_execute_checklist,
                 )
                 plan = preview.get("trade_plan") or {}
+                strategy_analysis = preview.get("strategy_analysis") or {}
                 with _lock:
                     self._last_plan = plan
+                    self._last_strategy_analysis = (
+                        strategy_analysis if isinstance(strategy_analysis, dict) else {}
+                    )
                     self._last_checklist_ready = bool(preview.get("checklist_ready"))
+                    prev_entry = self._last_entry_ready
                     self._last_entry_ready = bool(plan.get("entry_ready"))
                     self._last_paper_mode = bool(preview.get("paper_trading_mode"))
                     self._last_eval_at = datetime.now(IST)
+                    entry_ready = self._last_entry_ready
 
-                paper = bool(preview.get("paper_trading_mode"))
-                ready = bool(preview.get("checklist_ready"))
-                entry_ok = bool(plan.get("entry_ready"))
                 from services.watch_execute import resolve_can_execute
 
                 can_execute = resolve_can_execute(preview, plan)
-                guard_ok = True
-                guard_msg = ""
-                if paper and can_execute:
-                    from services.paper_order_guard import paper_autonomous_place_allowed
-
-                    guard_ok, guard_msg = paper_autonomous_place_allowed(
-                        plan,
-                        placed_today=self._placed_today,
-                        segment="crypto",
-                    )
+                at_limit = self._placed_count_today >= self._max_trades_per_day()
+                guard_ok, guard_msg = autonomous_place_allowed(
+                    plan,
+                    placed_today=at_limit,
+                    segment="crypto",
+                )
+                reentry_ok, reentry_msg = self._autonomous_entry_allowed(entry_ready)
+                ready = bool(preview.get("checklist_ready"))
                 should_place = (
                     cfg.mode == "autonomous"
                     and cfg.auto_place_on_signal
                     and not self._pending_entry_order_id
-                    and (paper or not self._placed_today)
+                    and not at_limit
                     and not self._kill_switch()
                     and can_execute
                     and ready
-                    and entry_ok
+                    and entry_ready
                     and guard_ok
+                    and reentry_ok
                 )
                 if should_place:
                     await self._try_place(preview, plan)
-                elif can_execute and ready and entry_ok and not guard_ok and guard_msg:
-                    self._push("auto_skipped", guard_msg, tradingsymbol=SYMBOL)
+                elif can_execute and ready and entry_ready:
+                    if not guard_ok and guard_msg:
+                        self._push("auto_skipped", guard_msg, tradingsymbol=SYMBOL)
+                    elif not reentry_ok and reentry_msg:
+                        self._push("auto_skipped", reentry_msg, tradingsymbol=SYMBOL)
+                    elif at_limit:
+                        self._push(
+                            "auto_skipped",
+                            f"Daily cap reached ({self._placed_count_today}/{self._max_trades_per_day()})",
+                            tradingsymbol=SYMBOL,
+                        )
             except Exception as exc:
                 log_error(f"[CryptoWatch] loop: {exc}")
                 self._push("eval_error", str(exc)[:200])
@@ -350,8 +499,16 @@ class CryptoStrategyWatch:
             with _lock:
                 if self._placing or self._pending_entry_order_id:
                     return
+                if self._placed_count_today >= self._max_trades_per_day():
+                    return
                 self._placing = True
             try:
+                plan = await asyncio.to_thread(refresh_plan_at_execution, copy.deepcopy(plan))
+                self._push(
+                    "pre_place_analysis",
+                    format_pre_place_analysis(plan),
+                    tradingsymbol=SYMBOL,
+                )
                 result = await asyncio.to_thread(
                     crypto_trade_service.place_trade,
                     None,
@@ -368,17 +525,22 @@ class CryptoStrategyWatch:
                     oid = str(result["entry_order_id"])
                     paper_fill = bool(result.get("entry_paper"))
                     with _lock:
+                        self._placed_count_today += 1
+                        self._placed_today = True
+                        self._reentry_armed = False
+                        self._last_autonomous_placed_at = datetime.now(IST)
                         if paper_fill:
                             self._pending_entry_order_id = None
                             self._pending_trade_plan = None
                         else:
                             self._pending_entry_order_id = oid
                             self._pending_trade_plan = copy.deepcopy(plan)
-                            self._placed_today = True
                     venue = "paper" if paper_fill else "Binance"
+                    n = self._placed_count_today
+                    max_t = self._max_trades_per_day()
                     self._push(
                         "auto_placed",
-                        f"Entry {oid} on {venue}",
+                        f"Entry {oid} on {venue} ({n}/{max_t} today)",
                         placed=True,
                         tradingsymbol=SYMBOL,
                     )

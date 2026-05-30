@@ -241,6 +241,7 @@ def preview_trade(
             "risk_amount": plan.get("risk_inr"),
             "reward_amount": plan.get("reward_inr"),
         },
+        "strategy_analysis": get_strategy_analysis(direction),
     }
 
 

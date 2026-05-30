@@ -19,11 +19,16 @@ DEFAULT_REWARD_RATIO = float(os.getenv("CRYPTO_REWARD_RATIO", "2.0") or 2.0)
 MAX_NOTIONAL_PCT_OF_USDT = float(os.getenv("CRYPTO_MAX_NOTIONAL_PCT", "10") or 10)
 MAX_NOTIONAL_PCT_OF_USDT = max(0.0, min(100.0, MAX_NOTIONAL_PCT_OF_USDT))
 
-# Live only — % of available USDT to commit as margin (100 = use all, e.g. $10 @ 5x → $50 notional).
+# Live only — % of available USDT to commit as margin (100 = use all, e.g. $10 @ 50x → $500 notional).
 LIVE_MARGIN_USE_PCT = float(os.getenv("CRYPTO_MARGIN_USE_PCT", "100") or 100)
 LIVE_MARGIN_USE_PCT = max(1.0, min(100.0, LIVE_MARGIN_USE_PCT))
 
 MIN_LIVE_USDT_BALANCE = float(os.getenv("CRYPTO_MIN_LIVE_USDT", "10") or 10)
+
+# Autonomous watch — max entries per IST calendar day (paper + live).
+CRYPTO_WATCH_MAX_TRADES_PER_DAY = max(
+    1, min(100, int(os.getenv("CRYPTO_WATCH_MAX_TRADES_PER_DAY", "20") or 20))
+)
 
 
 def is_crypto_session_open() -> bool:
@@ -62,7 +67,7 @@ def compute_crypto_quantity(
 ) -> tuple[float, list[str]]:
     """
     Size BTC qty from USDT balance and leverage.
-    Live: notional = (available × LIVE_MARGIN_USE_PCT) × leverage (e.g. $10 @ 5x → $50).
+    Live: notional = (available × LIVE_MARGIN_USE_PCT) × leverage (e.g. $10 @ 50x → $500).
     """
     from utils.binance_order_utils import round_quantity
 
