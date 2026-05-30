@@ -66,6 +66,7 @@ class CryptoStrategyWatch:
         self._placing = False
         self._pending_entry_order_id: Optional[str] = None
         self._pending_trade_plan: Optional[Dict[str, Any]] = None
+        self._waiting_fill_logged_for: Optional[str] = None
         self._placed_today = False
         self._placed_count_today = 0
         self._session_date: Optional[date] = None
@@ -145,14 +146,31 @@ class CryptoStrategyWatch:
         self._events.appendleft(WatchEvent(at=datetime.now(IST).isoformat(), kind=kind, message=message[:240], **kw))
         self._persist()
 
+    def _clear_pending_entry(self) -> None:
+        with _lock:
+            self._pending_entry_order_id = None
+            self._pending_trade_plan = None
+            self._waiting_fill_logged_for = None
+
+    def _maybe_log_waiting_for_fill(self, order_id: str) -> None:
+        oid = str(order_id)
+        with _lock:
+            if self._waiting_fill_logged_for == oid:
+                return
+            self._waiting_fill_logged_for = oid
+        self._push(
+            "waiting_for_fill",
+            f"Entry {oid} pending on Binance — waiting for fill",
+            tradingsymbol=SYMBOL,
+        )
+
     def _reset_day_if_needed(self) -> None:
         today = _today()
         if self._session_date != today:
             self._session_date = today
             self._placed_today = False
             self._placed_count_today = 0
-            self._pending_entry_order_id = None
-            self._pending_trade_plan = None
+            self._clear_pending_entry()
             self._reentry_armed = True
             self._last_autonomous_placed_at = None
             self._last_entry_ready = False
@@ -270,8 +288,7 @@ class CryptoStrategyWatch:
     def nuclear_reset(self) -> Dict[str, Any]:
         with _lock:
             self._armed = False
-            self._pending_entry_order_id = None
-            self._pending_trade_plan = None
+            self._clear_pending_entry()
             self._placed_today = False
             self._placed_count_today = 0
             self._reentry_armed = True
@@ -352,10 +369,9 @@ class CryptoStrategyWatch:
     async def _on_entry_filled(self) -> None:
         with _lock:
             plan = copy.deepcopy(self._pending_trade_plan) if self._pending_trade_plan else None
-            self._pending_entry_order_id = None
-            self._pending_trade_plan = None
             disarm = self._should_disarm_watch()
             self._reentry_armed = False
+        self._clear_pending_entry()
         if not plan:
             return
         side = str(plan.get("side") or "LONG").upper()
@@ -413,22 +429,22 @@ class CryptoStrategyWatch:
                     pid = str(self._pending_entry_order_id)
                     if pid.upper().startswith("PAPER-"):
                         with _lock:
-                            self._pending_entry_order_id = None
-                            self._pending_trade_plan = None
                             self._reentry_armed = False
+                        self._clear_pending_entry()
                     else:
                         st = await asyncio.to_thread(get_order_status, SYMBOL, pid)
                         if st == "FILLED":
                             await self._on_entry_filled()
                         elif st in ("CANCELED", "REJECTED", "EXPIRED"):
                             with _lock:
-                                self._pending_entry_order_id = None
-                                self._pending_trade_plan = None
                                 if self._placed_count_today > 0:
                                     self._placed_count_today -= 1
                                 self._placed_today = self._placed_count_today > 0
                                 self._reentry_armed = True
+                            self._clear_pending_entry()
                             self._push("auto_cancelled", f"Entry {st.lower()}")
+                        else:
+                            self._maybe_log_waiting_for_fill(pid)
 
                 preview = await asyncio.to_thread(
                     crypto_trade_service.preview_trade,
@@ -479,7 +495,10 @@ class CryptoStrategyWatch:
                 if should_place:
                     await self._try_place(preview, plan)
                 elif can_execute and ready and entry_ready:
-                    if not guard_ok and guard_msg:
+                    pending = self._pending_entry_order_id
+                    if pending:
+                        pass  # waiting_for_fill logged once in pending poll branch
+                    elif not guard_ok and guard_msg:
                         self._push("auto_skipped", guard_msg, tradingsymbol=SYMBOL)
                     elif not reentry_ok and reentry_msg:
                         self._push("auto_skipped", reentry_msg, tradingsymbol=SYMBOL)
