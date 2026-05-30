@@ -248,16 +248,26 @@ class CryptoStrategyWatch:
                 price=tp_px,
                 reduce_only=True,
             )
-        msg = (
-            f"Entry filled — SL @ ${sl_px:,.0f}"
-            + (f" id {sl.get('order_id')}" if sl.get("ok") else "")
-            + (f" · TP @ ${tp_px:,.0f}" if tp_px > 0 else "")
-            + (f" id {tp.get('order_id')}" if tp and tp.get("ok") else "")
-        )
+        sl_ok = sl.get("ok")
+        tp_ok = bool(tp and tp.get("ok"))
+        msg = f"Entry filled — SL @ ${sl_px:,.0f}"
+        if sl_ok:
+            msg += f" algo {sl.get('order_id')}"
+        else:
+            msg += f" FAILED ({sl.get('error') or 'unknown'})"
+        if tp_px > 0:
+            msg += f" · TP @ ${tp_px:,.0f}"
+            if tp_ok:
+                msg += f" id {tp.get('order_id')}"
+            else:
+                msg += " FAILED"
         if disarm:
             with _lock:
                 self._armed = False
-        self._push("auto_gtt_placed" if sl.get("ok") else "auto_gtt_failed", msg, tradingsymbol=SYMBOL)
+        kind = "auto_gtt_placed" if sl_ok and (tp_px <= 0 or tp_ok) else "auto_gtt_failed"
+        if sl_ok and not tp_ok and tp_px > 0:
+            kind = "auto_gtt_partial"
+        self._push(kind, msg, tradingsymbol=SYMBOL)
 
     async def _run_loop(self) -> None:
         while True:

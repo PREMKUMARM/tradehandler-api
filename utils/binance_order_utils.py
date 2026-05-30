@@ -177,6 +177,82 @@ def place_limit_order(
         return {"ok": False, "error": str(exc)}
 
 
+def _fmt_param(val: float) -> str:
+    """Binance DECIMAL params as plain strings (no scientific notation)."""
+    s = f"{val:.8f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
+def place_algo_order(
+    *,
+    symbol: str,
+    side: str,
+    order_type: str,
+    quantity: Optional[float] = None,
+    trigger_price: Optional[float] = None,
+    price: Optional[float] = None,
+    reduce_only: bool = False,
+    close_position: bool = False,
+    working_type: str = "CONTRACT_PRICE",
+) -> Dict[str, Any]:
+    """Place conditional algo order (STOP_MARKET, TAKE_PROFIT_MARKET, etc.)."""
+    sym = symbol.upper()
+    ot = order_type.upper()
+    params: Dict[str, Any] = {
+        "algoType": "CONDITIONAL",
+        "symbol": sym,
+        "side": side.upper(),
+        "type": ot,
+        "workingType": working_type,
+    }
+    if close_position:
+        params["closePosition"] = "true"
+    else:
+        if quantity is not None:
+            params["quantity"] = _fmt_param(round_quantity(sym, quantity))
+        if reduce_only:
+            params["reduceOnly"] = "true"
+    if trigger_price is not None:
+        params["triggerPrice"] = _fmt_param(round_price(sym, trigger_price))
+    if price is not None:
+        params["price"] = _fmt_param(round_price(sym, price))
+    try:
+        order = signed_request("POST", "/fapi/v1/algoOrder", params)
+        oid = str(order.get("algoId") or order.get("clientAlgoId") or "")
+        log_info(
+            f"[Binance] ALGO {ot} {side} {sym} qty={params.get('quantity')} "
+            f"trigger={params.get('triggerPrice')} algoId={oid}"
+        )
+        return {"ok": True, "order_id": oid, "algo_id": oid, "order": order}
+    except Exception as exc:
+        log_error(f"[Binance] place_algo_order {ot} failed: {exc}")
+        return {"ok": False, "error": str(exc)}
+
+
+def get_open_algo_orders(symbol: str) -> list:
+    try:
+        data = signed_request("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol.upper()})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return list(data.get("orders") or data.get("data") or [])
+    except Exception as exc:
+        log_warning(f"[Binance] openAlgoOrders failed: {exc}")
+    return []
+
+
+def cancel_algo_order(symbol: str, algo_id: str) -> Dict[str, Any]:
+    try:
+        signed_request(
+            "DELETE",
+            "/fapi/v1/algoOrder",
+            {"symbol": symbol.upper(), "algoId": int(algo_id)},
+        )
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def place_stop_market(
     *,
     symbol: str,
@@ -185,21 +261,34 @@ def place_stop_market(
     stop_price: float,
     reduce_only: bool = True,
 ) -> Dict[str, Any]:
-    sym = symbol.upper()
-    params = {
-        "symbol": sym,
-        "side": side.upper(),
-        "type": "STOP_MARKET",
-        "stopPrice": round_price(sym, stop_price),
-        "quantity": round_quantity(sym, quantity),
-        "reduceOnly": "true" if reduce_only else "false",
-    }
-    try:
-        order = signed_request("POST", "/fapi/v1/order", params)
-        return {"ok": True, "order_id": str(order.get("orderId") or ""), "order": order}
-    except Exception as exc:
-        log_warning(f"[Binance] stop_market failed: {exc}")
-        return {"ok": False, "error": str(exc)}
+    """Stop-loss via Binance Algo Order API (required since 2025-12 for STOP_MARKET)."""
+    return place_algo_order(
+        symbol=symbol,
+        side=side,
+        order_type="STOP_MARKET",
+        quantity=quantity,
+        trigger_price=stop_price,
+        reduce_only=reduce_only,
+    )
+
+
+def place_take_profit_market(
+    *,
+    symbol: str,
+    side: str,
+    quantity: float,
+    trigger_price: float,
+    reduce_only: bool = True,
+) -> Dict[str, Any]:
+    """Take-profit market exit via Algo Order API."""
+    return place_algo_order(
+        symbol=symbol,
+        side=side,
+        order_type="TAKE_PROFIT_MARKET",
+        quantity=quantity,
+        trigger_price=trigger_price,
+        reduce_only=reduce_only,
+    )
 
 
 def cancel_order(symbol: str, order_id: str) -> Dict[str, Any]:

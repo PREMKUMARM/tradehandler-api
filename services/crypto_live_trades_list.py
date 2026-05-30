@@ -18,11 +18,27 @@ def _ms_to_iso(ms: Any) -> Optional[str]:
 
 def _exit_levels_from_open_orders(
     open_orders: List[Dict[str, Any]],
+    algo_orders: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Optional[float], Optional[float], Optional[str], Optional[str]]:
     sl_px: Optional[float] = None
     tp_px: Optional[float] = None
     sl_id: Optional[str] = None
     tp_id: Optional[str] = None
+
+    for o in algo_orders or []:
+        ot = str(o.get("orderType") or o.get("type") or "").upper()
+        oid = str(o.get("algoId") or o.get("clientAlgoId") or "")
+        try:
+            trig = float(o.get("triggerPrice") or 0) or None
+        except (TypeError, ValueError):
+            trig = None
+        if ot in ("STOP", "STOP_MARKET", "STOP_LOSS", "STOP_LOSS_LIMIT"):
+            sl_px = trig
+            sl_id = oid or None
+        elif ot in ("TAKE_PROFIT", "TAKE_PROFIT_MARKET"):
+            tp_px = trig
+            tp_id = oid or None
+
     for o in open_orders or []:
         ot = str(o.get("type") or "").upper()
         oid = str(o.get("orderId") or "")
@@ -75,6 +91,9 @@ def list_binance_crypto_trades(limit: int = 50) -> Dict[str, Any]:
     try:
         positions = signed_request("GET", "/fapi/v2/positionRisk", {"symbol": sym})
         open_orders = signed_request("GET", "/fapi/v1/openOrders", {"symbol": sym})
+        from utils.binance_order_utils import get_open_algo_orders
+
+        algo_orders = get_open_algo_orders(sym)
         all_orders = signed_request("GET", "/fapi/v1/allOrders", {"symbol": sym, "limit": 50})
         ltp = float(get_symbol_price(sym) or 0)
     except Exception as exc:
@@ -85,7 +104,8 @@ def list_binance_crypto_trades(limit: int = 50) -> Dict[str, Any]:
         }
 
     sl_px, tp_px, sl_id, tp_id = _exit_levels_from_open_orders(
-        open_orders if isinstance(open_orders, list) else []
+        open_orders if isinstance(open_orders, list) else [],
+        algo_orders if isinstance(algo_orders, list) else [],
     )
     orders_list = all_orders if isinstance(all_orders, list) else []
 
