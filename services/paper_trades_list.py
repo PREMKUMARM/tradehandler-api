@@ -108,10 +108,11 @@ def list_paper_trades(
                         pass
         qty = row.get("quantity")
         if qty is None and payload.get("quantity") is not None:
-            try:
-                qty = int(payload["quantity"])
-            except (TypeError, ValueError):
-                qty = payload.get("quantity")
+            from services.paper_funds import _quantity_from_payload
+
+            qty = _quantity_from_payload(payload)
+            if qty <= 0:
+                qty = None
 
         exit_reason = row.get("exit_reason")
         status = "closed" if exit_reason else "open"

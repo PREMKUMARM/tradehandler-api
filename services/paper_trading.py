@@ -175,13 +175,10 @@ def enrich_paper_orders_with_quotes(
         row["ltp"] = ltp
 
         qty_raw = p.get("quantity")
-        qty_i: Optional[int] = None
-        if qty_raw is not None:
-            try:
-                qty_i = int(qty_raw)
-            except (TypeError, ValueError):
-                pass
-        row["quantity"] = qty_i
+        from services.paper_funds import _quantity_from_payload
+
+        qty_f = _quantity_from_payload(p) if qty_raw is not None else 0.0
+        row["quantity"] = qty_f if qty_f > 0 else None
 
         tt = str(p.get("transaction_type") or "").upper() or None
         row["transaction_type"] = tt
@@ -192,7 +189,7 @@ def enrich_paper_orders_with_quotes(
         if p.get("paper_exit_leg"):
             row["unrealized_pnl"] = None
             row["realized_pnl"] = None
-        elif row.get("exit_reason") and row.get("exit_price") is not None and entry is not None and qty_i and tt in (
+        elif row.get("exit_reason") and row.get("exit_price") is not None and entry is not None and qty_f > 0 and tt in (
             "BUY",
             "SELL",
         ):
@@ -200,15 +197,15 @@ def enrich_paper_orders_with_quotes(
 
             ep = float(row["exit_price"])
             row["realized_pnl"] = _premium_pnl(
-                float(entry), ep, qty_i, p, buy=(tt == "BUY")
+                float(entry), ep, qty_f, p, buy=(tt == "BUY")
             )
             row["unrealized_pnl"] = None
-        elif ltp is not None and entry is not None and qty_i and tt in ("BUY", "SELL"):
+        elif ltp is not None and entry is not None and qty_f > 0 and tt in ("BUY", "SELL"):
             from services.paper_funds import _premium_pnl
 
             row["realized_pnl"] = None
             row["unrealized_pnl"] = _premium_pnl(
-                float(entry), float(ltp), qty_i, p, buy=(tt == "BUY")
+                float(entry), float(ltp), qty_f, p, buy=(tt == "BUY")
             )
         else:
             row["unrealized_pnl"] = None
