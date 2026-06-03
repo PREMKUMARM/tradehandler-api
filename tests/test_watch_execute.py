@@ -363,15 +363,20 @@ class TestCommodityDeferredGtt:
         from services.commodity_strategy_watch import CommodityStrategyWatch
 
         watch = CommodityStrategyWatch()
-        watch._pending_entry_order_id = "E1"
-        watch._pending_symbol = "CRUDEOILM26JUN8600PE"
-        watch._pending_trade_plan = {
+        plan = {
             "tradingsymbol": "CRUDEOILM26JUN8600PE",
             "entry_limit_price": 476.1,
             "stop_loss_premium": 460.0,
             "target_premium": 500.0,
             "num_lots": 1,
         }
+        watch._register_pending(
+            entry_id="E1",
+            sym="CRUDEOILM26JUN8600PE",
+            trade_plan=plan,
+            gtt_trigger_id=None,
+            gtt_deferred=True,
+        )
         with patch.object(watch, "_order_fill_price", return_value=476.1):
             with patch(
                 "services.commodity_strategy_watch.commodity_trade_service.place_gtt_for_plan",
@@ -386,10 +391,9 @@ class TestCommodityDeferredGtt:
                 with patch.object(watch, "_persist"):
                     import asyncio
 
-                    asyncio.run(watch._on_entry_filled())
+                    asyncio.run(watch._on_entry_filled("E1"))
 
+        assert not watch._pending_entries
         assert watch._pending_entry_order_id is None
-        assert watch._pending_trade_plan is None
-        assert watch._pending_gtt_trigger_id == "G321"
         assert watch._events[0].kind == "auto_gtt_placed"
         assert "G321" in watch._events[0].message

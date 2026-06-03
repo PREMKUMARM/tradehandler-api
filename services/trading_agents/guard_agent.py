@@ -113,6 +113,40 @@ def has_pending_exchange_order(
         return True, f"Could not verify open orders — blocked: {exc}"
 
 
+def has_any_exchange_position(
+    *,
+    exchange: str,
+    log_prefix: str,
+) -> Tuple[bool, str]:
+    """True if any open long position exists on the exchange (segment-wide gate)."""
+    ex = (exchange or "").strip().upper()
+    try:
+        from utils.kite_utils import get_kite_instance
+
+        kite = get_kite_instance()
+        positions = kite.positions() or {}
+        held: List[str] = []
+        for bucket in ("net", "day"):
+            for p in positions.get(bucket) or []:
+                if str(p.get("exchange") or "").upper() != ex:
+                    continue
+                qty = int(p.get("quantity") or 0)
+                if qty > 0:
+                    sym = str(p.get("tradingsymbol") or "").upper()
+                    if sym and sym not in held:
+                        held.append(sym)
+        if held:
+            label = held[0] if len(held) == 1 else f"{held[0]} +{len(held) - 1} more"
+            return (
+                True,
+                f"Open {ex} position on {label} — exit before new commodity entry",
+            )
+        return False, ""
+    except Exception as exc:
+        log_warning(f"[{log_prefix}] positions check failed: {exc}")
+        return True, f"Could not verify positions — blocked: {exc}"
+
+
 def has_exchange_position(
     tradingsymbol: str,
     *,
@@ -172,6 +206,12 @@ def autonomous_place_allowed(
     ok, msg = entry_quality_for_autonomous(plan, config=config)
     if not ok:
         return False, msg
+    if config.exchange == "MCX":
+        any_pos, any_msg = has_any_exchange_position(
+            exchange=config.exchange, log_prefix=config.log_prefix
+        )
+        if any_pos:
+            return False, any_msg
     pending, pend_msg = has_pending_exchange_order(
         sym, exchange=config.exchange, log_prefix=config.log_prefix
     )
@@ -183,6 +223,30 @@ def autonomous_place_allowed(
     if pos:
         return False, pos_msg
     return True, "OK"
+
+
+def _commodity_cutoff_check() -> Tuple[bool, str]:
+    try:
+        from services.commodity_config import (
+            commodity_trading_cutoff_label,
+            is_commodity_new_trading_allowed,
+        )
+
+        if not is_commodity_new_trading_allowed():
+            return False, (
+                f"Commodity trading closed for the day "
+                f"(cutoff {commodity_trading_cutoff_label()} IST)"
+            )
+    except Exception:
+        pass
+    return True, "OK"
+
+
+def _commodity_pre_check() -> Tuple[bool, str]:
+    ok, msg = _commodity_cutoff_check()
+    if not ok:
+        return ok, msg
+    return has_any_exchange_position(exchange="MCX", log_prefix="CommodityGuard")
 
 
 NIFTY_GUARD = GuardAgentConfig(
@@ -201,22 +265,5 @@ COMMODITY_GUARD = GuardAgentConfig(
     max_spread_env="COMMODITY_AUTO_MAX_SPREAD_PCT",
     log_prefix="CommodityGuard",
     placed_today_message="Max autonomous commodity trades per day reached",
-    pre_check=lambda: _commodity_cutoff_check(),
+    pre_check=_commodity_pre_check,
 )
-
-
-def _commodity_cutoff_check() -> Tuple[bool, str]:
-    try:
-        from services.commodity_config import (
-            commodity_trading_cutoff_label,
-            is_commodity_new_trading_allowed,
-        )
-
-        if not is_commodity_new_trading_allowed():
-            return False, (
-                f"Commodity trading closed for the day "
-                f"(cutoff {commodity_trading_cutoff_label()} IST)"
-            )
-    except Exception:
-        pass
-    return True, "OK"

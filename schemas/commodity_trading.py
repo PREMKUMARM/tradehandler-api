@@ -124,8 +124,8 @@ class CommodityWatchArmRequest(BaseModel):
     )
     disarm_after_place: bool = Field(
         default=False,
-        description="When true with max 1 trade/day: disarm after that trade. "
-        "With max>1, watch stays armed until daily cap (COMMODITY_WATCH_MAX_TRADES_PER_DAY).",
+        description="When true: disarm watch after the first autonomous entry of the day "
+        "(no second strike). Daily cap still uses COMMODITY_WATCH_MAX_TRADES_PER_DAY.",
     )
     auto_execute_checklist: bool = Field(
         default=True,
