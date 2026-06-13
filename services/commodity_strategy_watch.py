@@ -40,7 +40,7 @@ from services.watch_pending_invalidation import (
 from services.push.push_service import push_service
 from utils.logger import log_error, log_info, log_warning
 
-from services.commodity_config import IST, commodity_trading_cutoff_label, is_commodity_new_trading_allowed
+from services.commodity_config import IST, commodity_trading_cutoff_label, is_commodity_new_trading_allowed, is_past_commodity_trading_cutoff
 from services.commodity_watch_pending import (
     cache_trade_plan,
     get_pending_entry,
@@ -1283,9 +1283,14 @@ class CommodityStrategyWatch:
                 if eod.get("date") and not eod.get("skipped"):
                     break
 
-                from services.commodity_config import is_commodity_new_trading_allowed
+                from services.paper_trading import is_paper_mode_for_segment
 
-                if not is_commodity_new_trading_allowed():
+                paper_active = is_paper_mode_for_segment("commodity")
+                with _lock:
+                    if paper_active:
+                        self._last_paper_mode = True
+
+                if is_past_commodity_trading_cutoff() and not paper_active:
                     with _lock:
                         pending_ids = list(self._pending_entries.keys())
                     for oid in pending_ids:
@@ -1296,28 +1301,30 @@ class CommodityStrategyWatch:
                             ),
                             entry_order_id=oid,
                         )
-                    with _lock:
-                        if self._armed and not pending_needing_gtt(self._pending_entries):
-                            self._armed = False
-                        self._persist()
+                    # EOD flatten disarms via commodity_eod_shutdown; idle until next session.
+                    await asyncio.sleep(_poll_interval())
+                    continue
+
+                if not is_commodity_new_trading_allowed() and not paper_active:
+                    # Weekend or before MCX open — stay armed and wait for the session window.
                     await asyncio.sleep(_poll_interval())
                     continue
 
                 session_open = commodity_trade_service.is_mcx_session_open()
 
-                if session_open or self._last_paper_mode:
+                if session_open or paper_active or self._last_paper_mode:
                     fire_signal, try_autonomous, preview, plan, can_place = await asyncio.to_thread(
                         self._evaluate_sync
                     )
 
                 if self._pending_entries or self._pending_entry_order_id:
                     await self._tick_all_pending_entries(
-                        plan, session_open=session_open or self._last_paper_mode
+                        plan, session_open=session_open or paper_active or self._last_paper_mode
                     )
                 if session_open:
                     await self._reconcile_orphan_mcx_gtt()
 
-                if session_open or self._last_paper_mode:
+                if session_open or paper_active or self._last_paper_mode:
                     if fire_signal and preview is not None:
                         await self._on_signal_ready(preview, plan, can_place, try_autonomous)
                     elif try_autonomous and preview is not None:
