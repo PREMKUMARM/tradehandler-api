@@ -60,11 +60,12 @@ async def validate_trade(request: Request, validation_request: TradeValidationRe
         # Validate risk: should be <= max risk % of capital
         risk_within_limit = current_risk_amount <= max_risk_amount
         
-        # Validate reward: should be >= (Risk × Reward Ratio)
+        # Validate reward: informational only — entry uses 1:1 target; trail extends upside
+        from services.premium_exit_policy import entry_validation_skips_reward
+
         reward_meets_requirement = current_reward_amount >= min_required_reward
-        
-        # Overall validation: both conditions must be met
-        is_good_trade = risk_within_limit and reward_meets_requirement
+        skip_reward = entry_validation_skips_reward()
+        is_good_trade = risk_within_limit and (reward_meets_requirement or skip_reward)
         
         # Prepare validation details
         validation_details = {

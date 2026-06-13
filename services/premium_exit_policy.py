@@ -18,6 +18,21 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool = True) -> bool:
+    v = os.getenv(name, "1" if default else "0").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def entry_initial_rr() -> float:
+    """Initial GTT target R-multiple (1:1 default). Upside handled by momentum trail."""
+    return max(1.0, min(5.0, _env_float("ENTRY_INITIAL_RR", 1.0)))
+
+
+def entry_validation_skips_reward() -> bool:
+    """When true, entry validation only checks risk cap — not reward ratio."""
+    return _env_bool("ENTRY_VALIDATION_SKIP_REWARD", True)
+
+
 def enforce_min_premium_exits(
     entry: float,
     sl: float,
@@ -39,8 +54,8 @@ def enforce_min_premium_exits(
     tp = float(tp)
     risk_pct = max(0.1, float(risk_pct or 1.0))
     reward_pct = max(0.1, float(reward_pct or 2.0))
-    rr = float(min_rr) if min_rr is not None else (reward_pct / risk_pct)
-    rr = max(1.5, min(5.0, rr))
+    rr = float(min_rr) if min_rr is not None else entry_initial_rr()
+    rr = max(1.0, min(5.0, rr))
 
     min_risk_inr = max(
         entry * risk_pct / 100.0,

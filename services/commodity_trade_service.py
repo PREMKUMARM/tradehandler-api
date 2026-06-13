@@ -421,10 +421,14 @@ def _validate_trade_plan(
     risk_amt = (entry - sl) * units
     reward_amt = (tgt - entry) * units
     max_risk = capital * risk_pct / 100.0
+    from services.premium_exit_policy import entry_initial_rr, entry_validation_skips_reward
+
     ratio = reward_pct / risk_pct if risk_pct > 0 else 2.0
-    min_reward = risk_amt * ratio
+    initial_rr = entry_initial_rr()
+    min_reward = risk_amt * initial_rr
     risk_ok = risk_amt <= max_risk
     reward_ok = reward_amt >= min_reward
+    skip_reward_gate = entry_validation_skips_reward()
     premium_cost = entry * units
     # Qty/risk validation uses sizing capital (paper balance or live virtual fund).
     sizing_cap = float(capital) if capital > 0 else 0.0
@@ -440,9 +444,7 @@ def _validate_trade_plan(
     # MCX: minimum size is one lot; book risk % may be smaller than unavoidable lot premium risk.
     mcx_min_lot = units >= int(plan.get("lot_size") or 100)
     risk_acceptable = risk_ok or (mcx_min_lot and afford_ok)
-    is_good = afford_ok and risk_acceptable and (
-        reward_ok or reward_amt >= risk_amt * 1.25
-    )
+    is_good = afford_ok and risk_acceptable and (reward_ok or skip_reward_gate)
     failure_reasons: List[str] = []
     if not afford_ok:
         failure_reasons.append(
@@ -452,7 +454,7 @@ def _validate_trade_plan(
         failure_reasons.append(
             f"Risk ₹{risk_amt:,.0f} exceeds {risk_pct}% of capital (max ₹{max_risk:,.0f})"
         )
-    if not reward_ok and reward_amt < risk_amt * 1.25:
+    if not reward_ok and not skip_reward_gate:
         failure_reasons.append("Reward does not meet risk/reward policy")
     summary = (
         "Validation OK"
@@ -472,6 +474,9 @@ def _validate_trade_plan(
         "sizing_capital_inr": round(sizing_cap, 2),
         "kite_margin_inr": round(kite_margin_inr, 2) if kite_margin_inr is not None else None,
         "kite_affordable": kite_affordable,
+        "reward_risk_ratio_required": round(initial_rr, 2),
+        "strategy_reward_ratio": round(ratio, 2),
+        "trail_extends_reward": skip_reward_gate,
         "failure_reasons": failure_reasons,
         "summary": summary,
     }

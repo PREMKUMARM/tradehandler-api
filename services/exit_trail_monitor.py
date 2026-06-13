@@ -99,6 +99,9 @@ class ExitTrailMonitor:
             sl = float(t.get("stop_loss") or 0)
             tp = float(t.get("target") or 0)
             activation_target = float(t.get("initial_target") or tp or 0)
+            risk_unit = max(0.05, activation_target - entry) if activation_target > entry else max(
+                0.05, entry - sl
+            )
             peak = float(t.get("peak_ltp") or entry)
             trail_active = bool(t.get("trail_active"))
 
@@ -144,6 +147,8 @@ class ExitTrailMonitor:
                 current_tp=tp,
                 trail_active=trail_active or ltp >= activation_target,
                 cfg=cfg,
+                initial_risk_unit=risk_unit,
+                initial_target=activation_target,
             )
 
             if not activated:

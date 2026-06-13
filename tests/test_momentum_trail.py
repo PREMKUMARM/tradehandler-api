@@ -70,6 +70,31 @@ def test_trailed_sl_stays_below_ltp_on_pullback():
         current_tp=420.85,
         trail_active=True,
         cfg=cfg,
+        initial_risk_unit=12.3,
+        initial_target=420.85,
     )
     assert active is True
     assert sl < 416.0
+
+
+def test_stepped_trail_moves_sl_to_entry_and_next_r_target():
+    cfg = get_momentum_trail_config()
+    entry = 100.0
+    sl = 90.0
+    R = 10.0
+    first_tp = entry + R
+    sl_out, tp_out, _, active, note = compute_trailed_levels(
+        entry=entry,
+        peak=first_tp,
+        ltp=first_tp,
+        current_sl=sl,
+        current_tp=first_tp,
+        trail_active=False,
+        cfg=cfg,
+        initial_risk_unit=R,
+        initial_target=first_tp,
+    )
+    assert active is True
+    assert sl_out >= entry
+    assert tp_out == entry + 2 * R
+    assert "1:1" in note

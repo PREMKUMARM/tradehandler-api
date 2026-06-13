@@ -397,20 +397,28 @@ def _validate_trade_plan(plan: Dict[str, Any], capital: float, risk_pct: float, 
     risk_amt = (entry - sl) * qty
     reward_amt = (tgt - entry) * qty
     max_risk = capital * risk_pct / 100.0
+    from services.premium_exit_policy import entry_initial_rr, entry_validation_skips_reward
+
     ratio = reward_pct / risk_pct if risk_pct > 0 else 2.0
-    min_reward = risk_amt * ratio
+    initial_rr = entry_initial_rr()
+    min_reward = risk_amt * initial_rr
+    reward_ok = reward_amt >= min_reward
+    risk_ok = risk_amt <= max_risk
+    skip_reward_gate = entry_validation_skips_reward()
     validation = {
-        "is_good_trade": risk_amt <= max_risk and reward_amt >= min_reward,
+        "is_good_trade": risk_ok and (reward_ok or skip_reward_gate),
         "risk_amount": round(risk_amt, 2),
         "reward_amount": round(reward_amt, 2),
         "max_risk_amount": round(max_risk, 2),
         "min_required_reward": round(min_reward, 2),
-        "risk_within_limit": risk_amt <= max_risk,
-        "reward_meets_requirement": reward_amt >= min_reward,
+        "risk_within_limit": risk_ok,
+        "reward_meets_requirement": reward_ok,
         "risk_pct_used": round(risk_pct, 2),
         "reward_pct_used": round(reward_pct, 2),
         "capital_used": round(capital, 2),
-        "reward_risk_ratio_required": round(ratio, 2),
+        "reward_risk_ratio_required": round(initial_rr, 2),
+        "strategy_reward_ratio": round(ratio, 2),
+        "trail_extends_reward": skip_reward_gate,
     }
     validation["failure_reasons"] = _validation_failure_reasons(validation)
     validation["summary"] = (
@@ -446,7 +454,7 @@ def _validation_failure_reasons(validation: Dict[str, Any]) -> List[str]:
         reasons.append(
             "Fix: reduce lots in Settings, pick a cheaper strike, or tighten SL premium"
         )
-    if not validation.get("reward_meets_requirement"):
+    if not validation.get("reward_meets_requirement") and not validation.get("trail_extends_reward"):
         reasons.append(
             f"Target profit ₹{reward_amt:,.0f} is below required ₹{min_reward:,.0f} "
             f"({rr:g}× risk for {reward_pct:g}% reward / {risk_pct:g}% risk rule)"

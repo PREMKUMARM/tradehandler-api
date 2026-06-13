@@ -30,6 +30,7 @@ class MomentumTrailConfig:
     extend_gain_ratio: float
     lock_gain_ratio: float
     min_level_update: float
+    stepped_rr: bool
 
 
 def get_momentum_trail_config() -> MomentumTrailConfig:
@@ -39,6 +40,7 @@ def get_momentum_trail_config() -> MomentumTrailConfig:
         extend_gain_ratio=_env_float("MOMENTUM_TRAIL_EXTEND_GAIN_RATIO", 0.5),
         lock_gain_ratio=_env_float("MOMENTUM_TRAIL_LOCK_GAIN_RATIO", 0.35),
         min_level_update=_env_float("MOMENTUM_TRAIL_MIN_UPDATE", 0.10),
+        stepped_rr=_env_bool("STEPPED_RR_TRAIL", True),
     )
 
 
@@ -85,30 +87,65 @@ def compute_trailed_levels(
     current_tp: float,
     trail_active: bool,
     cfg: Optional[MomentumTrailConfig] = None,
+    initial_risk_unit: Optional[float] = None,
+    initial_target: Optional[float] = None,
 ) -> Tuple[float, float, float, bool, str]:
     """
     Returns (new_sl, new_tp, new_peak, activated, note).
     Only ratchets SL/TP upward for long premium exits.
+
+    Stepped mode (default): 1:1 initial target, then SL→entry and TP→next R step
+    when each reward level is reached (similar to trailing stop).
     """
     cfg = cfg or get_momentum_trail_config()
     peak = max(peak, ltp, entry)
-    gain = max(0.0, peak - entry)
 
-    activate = should_activate_trail(ltp, entry, current_tp, trail_active=trail_active)
+    R = float(initial_risk_unit or 0)
+    if R <= 0 and initial_target and initial_target > entry:
+        R = max(0.05, initial_target - entry)
+    if R <= 0 and current_tp > entry:
+        R = max(0.05, current_tp - entry)
+    if R <= 0 and current_sl < entry:
+        R = max(0.05, entry - current_sl)
+
+    first_target = entry + R if R > 0 else current_tp
+    activate = trail_active or should_activate_trail(
+        ltp, entry, first_target, trail_active=trail_active
+    )
     if not activate:
         return current_sl, current_tp, peak, False, ""
 
-    if not trail_active:
-        new_sl = round_to_tick(entry + cfg.breakeven_buffer)
-        extension = gain * cfg.extend_gain_ratio
-        new_tp = round_to_tick(max(current_tp, peak + extension))
-        note = f"Target reached @ {ltp:.2f} — SL→breakeven ₹{new_sl:.2f}, TP extended→₹{new_tp:.2f}"
+    if cfg.stepped_rr and R > 0:
+        step = max(1, int((peak - entry) / R))
+        if not trail_active:
+            new_sl = round_to_tick(entry + cfg.breakeven_buffer)
+            new_tp = round_to_tick(entry + (step + 1) * R)
+            note = (
+                f"1:1 target ₹{first_target:.2f} reached @ {ltp:.2f} — "
+                f"SL→entry ₹{new_sl:.2f}, next TP ₹{new_tp:.2f}"
+            )
+        else:
+            locked_step = max(0, step - 1)
+            new_sl = round_to_tick(
+                max(current_sl, entry + cfg.breakeven_buffer, entry + locked_step * R)
+            )
+            new_tp = round_to_tick(entry + (step + 1) * R)
+            note = (
+                f"Step {step}R peak ₹{peak:.2f} — SL ₹{new_sl:.2f}, next TP ₹{new_tp:.2f}"
+            )
     else:
-        locked_sl = peak - (gain * cfg.lock_gain_ratio)
-        new_sl = round_to_tick(max(current_sl, entry + cfg.breakeven_buffer, locked_sl))
-        extension = gain * cfg.extend_gain_ratio
-        new_tp = round_to_tick(max(current_tp, peak + extension))
-        note = f"Trail peak ₹{peak:.2f} — SL ₹{new_sl:.2f} TP ₹{new_tp:.2f}"
+        gain = max(0.0, peak - entry)
+        if not trail_active:
+            new_sl = round_to_tick(entry + cfg.breakeven_buffer)
+            extension = gain * cfg.extend_gain_ratio
+            new_tp = round_to_tick(max(current_tp, peak + extension))
+            note = f"Target reached @ {ltp:.2f} — SL→breakeven ₹{new_sl:.2f}, TP extended→₹{new_tp:.2f}"
+        else:
+            locked_sl = peak - (gain * cfg.lock_gain_ratio)
+            new_sl = round_to_tick(max(current_sl, entry + cfg.breakeven_buffer, locked_sl))
+            extension = gain * cfg.extend_gain_ratio
+            new_tp = round_to_tick(max(current_tp, peak + extension))
+            note = f"Trail peak ₹{peak:.2f} — SL ₹{new_sl:.2f} TP ₹{new_tp:.2f}"
 
     new_sl = min(new_sl, ltp - 0.05) if ltp > 0.05 else new_sl
     if ltp > 0 and new_sl >= ltp:

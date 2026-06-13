@@ -144,7 +144,7 @@ def resolve_long_buy_exit_levels(
         sl_prem = max(0.05, prem - spot_risk * delta)
         tgt_prem = prem + spot_reward * delta
         prem_risk = max(0.05, prem - sl_prem)
-        min_reward = prem_risk * max(1.5, float(reward_ratio or 2.0))
+        min_reward = prem_risk * max(1.0, float(reward_ratio or 1.0))
         if tgt_prem - prem < min_reward:
             tgt_prem = prem + min_reward
         sl_prem = round_to_tick(sl_prem)

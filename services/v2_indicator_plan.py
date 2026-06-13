@@ -177,11 +177,14 @@ def build_indicator_trade_plan(
         else:
             option_kind = "CE"
         rr = reward_pct / risk_pct if risk_pct > 0 else 2.0
+        from services.premium_exit_policy import entry_initial_rr
+
         risk_pts = max(spot * (risk_pct / 100.0) * 0.35, 15.0)
+        rr_entry = entry_initial_rr()
         if option_kind == "CE":
-            spot_sl, spot_tgt = spot - risk_pts, spot + risk_pts * rr
+            spot_sl, spot_tgt = spot - risk_pts, spot + risk_pts * rr_entry
         else:
-            spot_sl, spot_tgt = spot + risk_pts, spot - risk_pts * rr
+            spot_sl, spot_tgt = spot + risk_pts, spot - risk_pts * rr_entry
 
     sid = strategy_id or "bb_5m_mean_reversion"
     # Index structure only — BB for order prices comes from the selected contract chart.
@@ -247,7 +250,10 @@ def build_indicator_trade_plan(
             "need 20×5m bars (order SL/TP uses fallback until loaded)"
         )
 
-    rr_ratio = reward_pct / risk_pct if risk_pct > 0 else 1.5
+    from services.premium_exit_policy import entry_initial_rr
+
+    rr_ratio = entry_initial_rr()
+    strategy_rr = reward_pct / risk_pct if risk_pct > 0 else 2.0
     from services.option_contract_indicators import resolve_long_buy_exit_levels
 
     sl_prem, tgt_prem, spot_sl, spot_tgt, delta, exit_note = resolve_long_buy_exit_levels(
@@ -359,6 +365,7 @@ def build_indicator_trade_plan(
         "risk_inr": round(risk_inr, 2),
         "reward_inr": round(reward_inr, 2),
         "reward_ratio": round(rr, 2),
+        "strategy_reward_ratio": round(strategy_rr, 2),
         "estimated_premium": quote.get("ltp", 0) <= 0,
         "strategy_id": strategy_id,
         "strategy_name": strategy_name,
@@ -425,9 +432,9 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     )
     ind_meta = plan.get("indicators") or {}
     risk_pct = float(ind_meta.get("risk_pct") or 1.0)
-    rr_ratio = float(plan.get("reward_ratio") or 1.5)
-    if rr_ratio <= 0:
-        rr_ratio = 1.5
+    from services.premium_exit_policy import entry_initial_rr
+
+    rr_ratio = entry_initial_rr()
     from services.option_contract_indicators import resolve_long_buy_exit_levels
 
     sl_prem, tgt_prem, spot_sl, spot_tgt, delta, _ = resolve_long_buy_exit_levels(

@@ -34,6 +34,9 @@ def register_exit_trail(
     if stop_loss <= 0 or target <= 0 or entry_price <= 0:
         return
 
+    risk_unit = max(0.05, float(entry_price) - float(stop_loss))
+    initial_target = float(entry_price) + risk_unit
+
     seg = normalize_segment(segment or infer_segment_from_order(exchange, tradingsymbol))
     oid = (entry_order_id or paper_order_id or "").strip()
     if not oid:
@@ -72,7 +75,7 @@ def register_exit_trail(
             float(entry_price),
             float(stop_loss),
             float(target),
-            float(target),
+            float(initial_target),
             float(entry_price),
             1 if paper else 0,
             paper_order_id or oid,

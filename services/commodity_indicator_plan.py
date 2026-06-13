@@ -321,12 +321,15 @@ def build_indicator_trade_plan(
             option_kind = "CE" if spot >= ind["prev_close"] else "PE"
         else:
             option_kind = "CE"
-        rr = reward_pct / risk_pct if risk_pct > 0 else 2.0
+        from services.premium_exit_policy import entry_initial_rr
+
+        strategy_rr = reward_pct / risk_pct if risk_pct > 0 else 2.0
+        rr_entry = entry_initial_rr()
         risk_pts = max(spot * (risk_pct / 100.0) * 0.35, 15.0)
         if option_kind == "CE":
-            spot_sl, spot_tgt = spot - risk_pts, spot + risk_pts * rr
+            spot_sl, spot_tgt = spot - risk_pts, spot + risk_pts * rr_entry
         else:
-            spot_sl, spot_tgt = spot + risk_pts, spot - risk_pts * rr
+            spot_sl, spot_tgt = spot + risk_pts, spot - risk_pts * rr_entry
 
     intra = {
         "pdh": ind.get("pdh"),
@@ -341,7 +344,10 @@ def build_indicator_trade_plan(
     )
 
     # Prefer candle-structure exits (last closed 5m high/low) over heuristics.
-    rr_struct = reward_pct / risk_pct if risk_pct > 0 else 2.0
+    from services.premium_exit_policy import entry_initial_rr
+
+    rr_struct = entry_initial_rr()
+    strategy_rr = reward_pct / risk_pct if risk_pct > 0 else 2.0
     sl5, tgt5, candle_note = _spot_levels_from_last_5m(
         spot_entry=spot_entry,
         kind=option_kind,
@@ -386,7 +392,7 @@ def build_indicator_trade_plan(
     intra_bb = merge_option_bb_into_intra(intra, opt_bb, contract.tradingsymbol)
     intra_bb["contract_ltp"] = float(entry_prem)
     intra_bb["underlying_spot"] = spot_entry
-    rr_ratio = reward_pct / risk_pct if risk_pct > 0 else 1.5
+    rr_ratio = entry_initial_rr()
     sl_prem, tgt_prem, spot_sl, spot_tgt, delta, exit_note = resolve_long_buy_exit_levels(
         strategy_id=sid,
         entry_premium=float(entry_prem),
@@ -498,6 +504,7 @@ def build_indicator_trade_plan(
         "risk_inr": round(risk_inr, 2),
         "reward_inr": round(reward_inr, 2),
         "reward_ratio": round(rr, 2),
+        "strategy_reward_ratio": round(strategy_rr, 2),
         "estimated_premium": quote.get("ltp", 0) <= 0,
         "strategy_id": strategy_id,
         "strategy_name": strategy_name,
@@ -555,9 +562,9 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     )
     ind_meta = plan.get("indicators") or {}
     risk_pct = float(ind_meta.get("risk_pct") or 1.0)
-    rr_struct = float(plan.get("reward_ratio") or 2.0)
-    if rr_struct <= 0:
-        rr_struct = 2.0
+    from services.premium_exit_policy import entry_initial_rr
+
+    rr_struct = entry_initial_rr()
     sl5, tgt5, _ = _spot_levels_from_last_5m(
         spot_entry=spot_entry,
         kind=kind,
