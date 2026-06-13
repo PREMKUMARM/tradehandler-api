@@ -786,7 +786,9 @@ class CommodityStrategyWatch:
         plan: Dict[str, Any],
     ) -> None:
         """Rate-limited auto_skipped event + log when guard blocks placement."""
-        msg = (message or "Autonomous placement blocked").strip()[:240]
+        from services.watch_skip_utils import normalize_skip_message
+
+        msg = normalize_skip_message(message)
         sym = str(plan.get("tradingsymbol") or "")
         now = datetime.now(IST)
         should_emit = False
@@ -1455,14 +1457,9 @@ class CommodityStrategyWatch:
             elif autonomous_armed and checklist_ready and not aut_entry_ok:
                 self._record_autonomous_skip(aut_entry_msg, plan)
             elif autonomous_armed and checklist_ready and entry_ready and not can_execute:
-                skip_msg = "Waiting for margin/validation or session (can_execute=false)"
-                if not can_place:
-                    val = preview.get("validation") if isinstance(preview, dict) else None
-                    reasons = (val or {}).get("failure_reasons") if isinstance(val, dict) else None
-                    if reasons:
-                        skip_msg = "; ".join(str(r) for r in reasons[:2])
-                    else:
-                        skip_msg = "Waiting for margin/validation (can_place=false)"
+                from services.watch_skip_utils import validation_skip_message
+
+                skip_msg = validation_skip_message(preview, can_place=can_place)
                 self._record_autonomous_skip(skip_msg, plan)
 
         self._persist()

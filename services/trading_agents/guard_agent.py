@@ -35,7 +35,8 @@ def _env_float(name: str, default: float) -> float:
 
 
 def min_entry_confirmation_score(config: GuardAgentConfig) -> int:
-    return max(40, min(100, _env_int(config.min_score_env, 65)))
+    default = 55 if config.segment == "commodity" else 65
+    return max(40, min(100, _env_int(config.min_score_env, default)))
 
 
 def entry_quality_for_autonomous(

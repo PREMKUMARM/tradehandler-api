@@ -15,6 +15,25 @@ def is_paper_trading(preview: Optional[Dict[str, Any]] = None) -> bool:
         return False
 
 
+def _paper_plan_executable(preview: Dict[str, Any], plan: Dict[str, Any]) -> bool:
+    """Paper watch must still pass risk/reward validation and min premium guards."""
+    if plan.get("entry_ready") is not True:
+        return False
+    val = preview.get("validation")
+    if isinstance(val, dict) and val.get("is_good_trade") is False:
+        return False
+    try:
+        from services.paper_order_guard import paper_entry_levels_valid
+
+        entry = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
+        sl = float(plan.get("stop_loss_premium") or 0)
+        tp = float(plan.get("target_premium") or 0)
+        ok, _ = paper_entry_levels_valid(entry, sl, tp)
+        return ok
+    except Exception:
+        return True
+
+
 def resolve_can_execute(
     preview: Dict[str, Any],
     plan: Optional[Dict[str, Any]] = None,
@@ -24,7 +43,7 @@ def resolve_can_execute(
     """
     True when place_trade may run:
     - Live: preview.can_place (validation + session, paper excluded from can_place)
-    - Paper: all checklist steps complete with a trade plan
+    - Paper: checklist ready, entry confirmed, validation + premium levels OK
     - Off-hours test bypass when enabled
     """
     if not plan:
@@ -37,7 +56,7 @@ def resolve_can_execute(
     if bool(preview.get("can_place")):
         return entry_ready
     if is_paper_trading(preview) and checklist_ready:
-        return entry_ready
+        return _paper_plan_executable(preview, plan)
     if offhours_allowed:
-        return True
+        return entry_ready
     return False

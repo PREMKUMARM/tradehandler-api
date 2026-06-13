@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -30,6 +31,7 @@ class ExitTrailMonitor:
     def __init__(self) -> None:
         self.is_running = False
         self._task: Optional[asyncio.Task] = None
+        self._last_quote_fail_log_at: float = 0.0
 
     async def start(self) -> None:
         if self.is_running or not get_momentum_trail_config().enabled:
@@ -194,6 +196,13 @@ class ExitTrailMonitor:
                 lp = row.get("last_price")
                 out[k] = float(lp) if lp is not None else None
         except Exception as e:
+            err = str(e)
+            now = time.monotonic()
+            authish = "access_token" in err.lower() or "api_key" in err.lower()
+            if authish and (now - self._last_quote_fail_log_at) < 60.0:
+                return out
+            if authish:
+                self._last_quote_fail_log_at = now
             log_warning(f"[ExitTrailMonitor] quotes failed: {e}")
         return out
 

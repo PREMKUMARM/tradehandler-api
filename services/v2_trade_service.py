@@ -640,12 +640,14 @@ def get_checklist_analyze(
         }
     validation = live.get("validation")
     trade_plan = live.get("trade_plan")
+    from services.watch_skip_utils import dump_checklist_steps
+
     return {
         "connected": True,
         "message": kite_msg,
         "focus_step": step,
         "analyzed_steps": indices,
-        "step_statuses": live["step_statuses"],
+        "step_statuses": dump_checklist_steps(live["step_statuses"], ChecklistStepStatus),
         "checklist_ready": live["checklist_ready"],
         "missing_steps": live["missing_steps"],
         "trade_plan": trade_plan,
@@ -687,10 +689,12 @@ def get_checklist_live(
         }
     validation = live.get("validation")
     trade_plan = live.get("trade_plan")
+    from services.watch_skip_utils import dump_checklist_steps
+
     return {
         "connected": True,
         "message": kite_msg,
-        "step_statuses": live["step_statuses"],
+        "step_statuses": dump_checklist_steps(live["step_statuses"], ChecklistStepStatus),
         "checklist_ready": live["checklist_ready"],
         "missing_steps": live["missing_steps"],
         "trade_plan": trade_plan,

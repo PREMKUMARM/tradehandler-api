@@ -644,7 +644,9 @@ class V2StrategyWatch:
         message: str,
         plan: Dict[str, Any],
     ) -> None:
-        msg = (message or "Autonomous placement blocked").strip()[:240]
+        from services.watch_skip_utils import normalize_skip_message
+
+        msg = normalize_skip_message(message)
         sym = str(plan.get("tradingsymbol") or "")
         now = datetime.now(IST)
         should_emit = False
@@ -1093,7 +1095,13 @@ class V2StrategyWatch:
                     self._signal_fired_today = True
 
             autonomous_armed = self._should_autonomous_place(cfg)
-            if autonomous_armed and checklist_ready and can_execute and not self._placing:
+            if (
+                autonomous_armed
+                and checklist_ready
+                and can_execute
+                and entry_ready
+                and not self._placing
+            ):
                 from services.v2_order_guard import autonomous_place_allowed
 
                 allowed, guard_msg = autonomous_place_allowed(
@@ -1106,10 +1114,13 @@ class V2StrategyWatch:
                     try_autonomous = True
                 else:
                     self._record_autonomous_skip(guard_msg, plan)
-            elif autonomous_armed and checklist_ready and not can_execute:
-                skip_msg = "Waiting for margin/validation (can_execute=false)"
-                if not can_place:
-                    skip_msg = "Waiting for margin/validation (can_place=false)"
+            elif autonomous_armed and checklist_ready and not entry_ready:
+                reason = plan.get("entry_block_reason") or "Entry not confirmed (entry_ready=false)"
+                self._record_autonomous_skip(reason, plan)
+            elif autonomous_armed and checklist_ready and entry_ready and not can_execute:
+                from services.watch_skip_utils import validation_skip_message
+
+                skip_msg = validation_skip_message(preview, can_place=can_place)
                 self._record_autonomous_skip(skip_msg, plan)
 
         self._persist()

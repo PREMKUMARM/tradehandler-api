@@ -454,6 +454,11 @@ def _validate_trade_plan(
         )
     if not reward_ok and reward_amt < risk_amt * 1.25:
         failure_reasons.append("Reward does not meet risk/reward policy")
+    summary = (
+        "Validation OK"
+        if is_good
+        else " · ".join(failure_reasons) if failure_reasons else "Risk/reward validation failed"
+    )
     return {
         "is_good_trade": is_good,
         "risk_amount": round(risk_amt, 2),
@@ -468,6 +473,7 @@ def _validate_trade_plan(
         "kite_margin_inr": round(kite_margin_inr, 2) if kite_margin_inr is not None else None,
         "kite_affordable": kite_affordable,
         "failure_reasons": failure_reasons,
+        "summary": summary,
     }
 
 
@@ -691,12 +697,14 @@ def get_checklist_analyze(
         }
     validation = live.get("validation")
     trade_plan = live.get("trade_plan")
+    from services.watch_skip_utils import dump_checklist_steps
+
     return {
         "connected": True,
         "message": kite_msg,
         "focus_step": step,
         "analyzed_steps": indices,
-        "step_statuses": live["step_statuses"],
+        "step_statuses": dump_checklist_steps(live["step_statuses"], ChecklistStepStatus),
         "checklist_ready": live["checklist_ready"],
         "missing_steps": live["missing_steps"],
         "trade_plan": trade_plan,
@@ -744,10 +752,12 @@ def get_checklist_live(
         paper_mode = is_paper_mode_for_segment("commodity")
     except Exception:
         paper_mode = False
+    from services.watch_skip_utils import dump_checklist_steps
+
     out = {
         "connected": True,
         "message": kite_msg,
-        "step_statuses": live["step_statuses"],
+        "step_statuses": dump_checklist_steps(live["step_statuses"], ChecklistStepStatus),
         "checklist_ready": live["checklist_ready"],
         "missing_steps": live["missing_steps"],
         "trade_plan": trade_plan,
@@ -1014,9 +1024,13 @@ def place_trade(
         from services.paper_trading import is_paper_mode_for_segment
 
         if is_paper_mode_for_segment("commodity"):
-            from services.paper_order_guard import widen_paper_exits
+            from services.paper_order_guard import paper_entry_levels_valid, widen_paper_exits
 
             sl_prem, tgt_prem = widen_paper_exits(entry_limit, sl_prem, tgt_prem)
+            ok, msg = paper_entry_levels_valid(entry_limit, sl_prem, tgt_prem)
+            if not ok:
+                result["errors"].append(msg)
+                return result
     except Exception:
         pass
     plan["stop_loss_premium"] = sl_prem

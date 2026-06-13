@@ -298,7 +298,7 @@ def paper_entry_quality_for_autonomous(plan: Dict[str, Any]) -> Tuple[bool, str]
     block = plan.get("entry_block_reason")
     if block:
         return False, str(block)
-    min_score = max(30, min(100, _env_int("PAPER_AUTO_MIN_ENTRY_SCORE", 65)))
+    min_score = max(30, min(100, _env_int("PAPER_AUTO_MIN_ENTRY_SCORE", 58)))
     score = int(plan.get("entry_confirmation_score") or 0)
     if score < min_score:
         return False, (
