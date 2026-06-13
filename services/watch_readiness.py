@@ -109,6 +109,8 @@ def build_readiness_payload(
     pending_entry_order_id: Optional[str] = None,
     step_statuses: Optional[List[Any]] = None,
     segment: Optional[str] = None,
+    validation: Optional[Dict[str, Any]] = None,
+    missing_steps: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     plan = plan or {}
     score = int(entry_confirmation_score or plan.get("entry_confirmation_score") or 0)
@@ -150,6 +152,22 @@ def build_readiness_payload(
 
     seg = (segment or "nifty").strip().lower()
     is_crypto = seg in ("crypto", "binance", "btc")
+    from services.watch_skip_utils import execute_gate_detail
+
+    exec_preview = {
+        "checklist_ready": checklist_ready,
+        "can_place": can_place,
+        "market_open": market_open,
+        "paper_trading_mode": paper_trading_mode,
+        "validation": validation,
+        "missing_steps": missing_steps or [],
+    }
+    execute_detail = execute_gate_detail(
+        exec_preview,
+        can_execute=can_execute,
+        plan=plan,
+        segment=segment,
+    )
     broker_label = "Binance connected" if is_crypto else "Kite connected"
     broker_detail_ok = "Live quotes and checklist from Binance" if is_crypto else "Live quotes and checklist"
     broker_detail_fail = "Connect Binance API keys in .env" if is_crypto else "Connect Kite token"
@@ -213,7 +231,7 @@ def build_readiness_payload(
             id="execute",
             label="Margin & validation",
             ok=can_execute,
-            detail="Margin and validation OK" if can_execute else "Risk/margin or session block",
+            detail=execute_detail,
             action_hint="Check buying power and validation errors in preview",
         ),
         _gate(

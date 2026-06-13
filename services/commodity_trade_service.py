@@ -992,7 +992,9 @@ def place_trade(
         and bool(plan)
     )
     if not can_execute:
-        result["errors"].append("Cannot place — fix checklist or validation first")
+        from services.watch_skip_utils import can_execute_block_errors
+
+        result["errors"].extend(can_execute_block_errors(preview, plan, segment="commodity"))
         return result
 
     if trade_plan_snapshot:

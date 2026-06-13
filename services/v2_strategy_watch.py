@@ -205,6 +205,8 @@ class V2StrategyWatch:
         self._last_market_open = False
         self._last_paper_mode = False
         self._last_kite_connected = False
+        self._last_validation: Optional[Dict[str, Any]] = None
+        self._last_missing_steps: List[int] = []
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
@@ -866,6 +868,7 @@ class V2StrategyWatch:
                 "setup_phase": setup.get("setup_phase"),
                 "setup_detail": setup.get("setup_detail"),
                 "autonomous_block_reason": self._last_autonomous_block_reason,
+                "validation": self._last_validation,
                 "events": [e.to_dict() for e in list(self._events)],
             }
             extras = build_readiness_payload(
@@ -887,6 +890,8 @@ class V2StrategyWatch:
                 pending_entry_order_id=self._pending_entry_order_id,
                 step_statuses=self._last_step_statuses,
                 segment="nifty50",
+                validation=self._last_validation,
+                missing_steps=self._last_missing_steps,
             )
             return {**base, **extras}
 
@@ -1085,6 +1090,9 @@ class V2StrategyWatch:
             self._last_market_open = market_open
             self._last_paper_mode = bool(preview.get("paper_trading_mode"))
             self._last_kite_connected = kite_connected
+            val = preview.get("validation")
+            self._last_validation = val if isinstance(val, dict) else None
+            self._last_missing_steps = list(preview.get("missing_steps") or [])
             prev_chk = self._last_checklist_ready
             self._last_checklist_ready = checklist_ready
             self._last_entry_ready = entry_ready
@@ -1118,9 +1126,10 @@ class V2StrategyWatch:
                 reason = plan.get("entry_block_reason") or "Entry not confirmed (entry_ready=false)"
                 self._record_autonomous_skip(reason, plan)
             elif autonomous_armed and checklist_ready and entry_ready and not can_execute:
-                from services.watch_skip_utils import validation_skip_message
+                from services.watch_skip_utils import can_execute_block_errors
 
-                skip_msg = validation_skip_message(preview, can_place=can_place)
+                reasons = can_execute_block_errors(preview, plan, segment="nifty50")
+                skip_msg = "; ".join(reasons[:2])
                 self._record_autonomous_skip(skip_msg, plan)
 
         self._persist()
@@ -1359,8 +1368,15 @@ class V2StrategyWatch:
                         self._pending_symbol = sym
                     kind = "auto_placed"
                 else:
-                    msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"
+                    from services.watch_skip_utils import format_place_skip_message
+
+                    errors = result.get("errors") or ["unknown"]
+                    detail = "; ".join(str(e).strip() for e in errors if e and str(e).strip())[:200]
+                    msg = format_place_skip_message(errors)
                     kind = "auto_skipped"
+                    with _lock:
+                        self._last_autonomous_block_reason = detail or "unknown"
+                    log_info(f"[V2Watch] auto_skipped {sym} — {detail or 'unknown'}")
 
                 self._push_event(
                     WatchEvent(

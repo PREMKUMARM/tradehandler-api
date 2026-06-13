@@ -228,6 +228,8 @@ class CommodityStrategyWatch:
         self._last_market_open = False
         self._last_paper_mode = False
         self._last_kite_connected = False
+        self._last_validation: Optional[Dict[str, Any]] = None
+        self._last_missing_steps: List[int] = []
         # After exit/place, require cooldown or entry_ready edge before next autonomous entry.
         self._reentry_armed = True
         self._last_autonomous_placed_at: Optional[datetime] = None
@@ -1048,6 +1050,7 @@ class CommodityStrategyWatch:
                 "setup_phase": setup.get("setup_phase"),
                 "setup_detail": setup.get("setup_detail"),
                 "autonomous_block_reason": self._last_autonomous_block_reason,
+                "validation": self._last_validation,
                 "events": [e.to_dict() for e in list(self._events)],
             }
             extras = build_readiness_payload(
@@ -1069,6 +1072,8 @@ class CommodityStrategyWatch:
                 pending_entry_order_id=self._pending_entry_order_id,
                 step_statuses=self._last_step_statuses,
                 segment="commodity",
+                validation=self._last_validation,
+                missing_steps=self._last_missing_steps,
             )
             return {**base, **extras}
 
@@ -1425,6 +1430,9 @@ class CommodityStrategyWatch:
             self._last_market_open = market_open
             self._last_paper_mode = bool(preview.get("paper_trading_mode"))
             self._last_kite_connected = kite_connected
+            val = preview.get("validation")
+            self._last_validation = val if isinstance(val, dict) else None
+            self._last_missing_steps = list(preview.get("missing_steps") or [])
             prev_chk = self._last_checklist_ready
             self._last_checklist_ready = checklist_ready
             self._last_entry_ready = entry_ready
@@ -1457,9 +1465,10 @@ class CommodityStrategyWatch:
             elif autonomous_armed and checklist_ready and not aut_entry_ok:
                 self._record_autonomous_skip(aut_entry_msg, plan)
             elif autonomous_armed and checklist_ready and entry_ready and not can_execute:
-                from services.watch_skip_utils import validation_skip_message
+                from services.watch_skip_utils import can_execute_block_errors
 
-                skip_msg = validation_skip_message(preview, can_place=can_place)
+                reasons = can_execute_block_errors(preview, plan, segment="commodity")
+                skip_msg = "; ".join(reasons[:2])
                 self._record_autonomous_skip(skip_msg, plan)
 
         self._persist()
@@ -1691,8 +1700,15 @@ class CommodityStrategyWatch:
                             self._armed = False
                     kind = "auto_placed"
                 else:
-                    msg = f"Autonomous skipped: {'; '.join(result.get('errors') or ['unknown'])}"
+                    from services.watch_skip_utils import format_place_skip_message
+
+                    errors = result.get("errors") or ["unknown"]
+                    detail = "; ".join(str(e).strip() for e in errors if e and str(e).strip())[:200]
+                    msg = format_place_skip_message(errors)
                     kind = "auto_skipped"
+                    with _lock:
+                        self._last_autonomous_block_reason = detail or "unknown"
+                    log_info(f"[CommodityWatch] auto_skipped {sym} — {detail or 'unknown'}")
 
                 self._push_event(
                     WatchEvent(
