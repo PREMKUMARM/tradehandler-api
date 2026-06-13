@@ -73,3 +73,8 @@ def get_segment_balance(segment: str) -> Dict[str, Any]:
     if seg in ("crypto", "binance", "btc"):
         return get_crypto_balance_payload()
     return get_kite_balance_payload()
+
+
+def is_kite_broker_connected() -> bool:
+    """True when Kite token + margins API succeed (same signal as header balance)."""
+    return bool(get_kite_balance_payload().get("connected"))

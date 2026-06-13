@@ -1011,6 +1011,8 @@ class CommodityStrategyWatch:
             from services.watch_readiness import build_readiness_payload
 
             ind = plan.get("indicators") or {}
+            from services.segment_balance import is_kite_broker_connected
+
             base = {
                 "armed": self._armed,
                 "mode": cfg.mode,
@@ -1065,7 +1067,7 @@ class CommodityStrategyWatch:
                 kill_switch_active=self._kill_switch_active(),
                 market_open=bool(self._last_market_open),
                 paper_trading_mode=bool(self._last_paper_mode),
-                kite_connected=bool(self._last_kite_connected),
+                kite_connected=is_kite_broker_connected() or bool(self._last_kite_connected),
                 guard_message=self._last_autonomous_block_reason,
                 min_entry_score=min_score,
                 entry_confirmation_score=setup.get("entry_confirmation_score"),
@@ -1411,12 +1413,16 @@ class CommodityStrategyWatch:
                 step_rows.append(st.dict())
 
         ind = (plan or {}).get("indicators") or {}
-        kite_connected = (
-            ind.get("nifty_spot") is not None
-            or ind.get("crude_spot") is not None
-            or ind.get("spot") is not None
-            or ind.get("option_ltp") is not None
-        )
+        from services.segment_balance import is_kite_broker_connected
+
+        kite_connected = is_kite_broker_connected()
+        if not kite_connected:
+            kite_connected = (
+                ind.get("nifty_spot") is not None
+                or ind.get("crude_spot") is not None
+                or ind.get("spot") is not None
+                or ind.get("option_ltp") is not None
+            )
 
         with _lock:
             self._eval_count += 1

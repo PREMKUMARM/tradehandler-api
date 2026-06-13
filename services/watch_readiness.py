@@ -169,7 +169,11 @@ def build_readiness_payload(
         segment=segment,
     )
     broker_label = "Binance connected" if is_crypto else "Kite connected"
-    broker_detail_ok = "Live quotes and checklist from Binance" if is_crypto else "Live quotes and checklist"
+    broker_detail_ok = (
+        "Kite token valid · margin available"
+        if kite_connected and not is_crypto
+        else ("Live quotes and checklist from Binance" if is_crypto else "Live quotes and checklist")
+    )
     broker_detail_fail = "Connect Binance API keys in .env" if is_crypto else "Connect Kite token"
     broker_hint = "Settings → Binance API keys on server" if is_crypto else "Settings → connect Zerodha / refresh token"
     armed_detail = (
