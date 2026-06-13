@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from agent.config import get_agent_config
 from agent.tools.kite_tools import place_gtt_tool, place_order_tool
 from schemas.v2_trading import ChecklistStepStatus
+from services.checklist_step_utils import parse_checklist_steps
 from utils.margin_utils import parse_equity_margins
 from services.v2_strategy_analysis import analyze_fno_strategies
 from utils.kite_utils import get_kite_instance, get_access_token
@@ -162,10 +163,7 @@ def validate_checklist(
     )
 
     if live:
-        statuses = [
-            ChecklistStepStatus(**s) if isinstance(s, dict) else s
-            for s in live["step_statuses"]
-        ]
+        statuses = parse_checklist_steps(live["step_statuses"], ChecklistStepStatus)
         missing: List[int] = []
         if not auto_execute:
             for i in REQUIRED_MARKED_STEPS:
@@ -488,10 +486,7 @@ def preview_trade(
     )
 
     if auto_execute and live:
-        statuses = [
-            ChecklistStepStatus(**s) if isinstance(s, dict) else s
-            for s in live["step_statuses"]
-        ]
+        statuses = parse_checklist_steps(live["step_statuses"], ChecklistStepStatus)
         missing = live["missing_steps"]
         checklist_ready = live["checklist_ready"]
         trade_plan = live.get("trade_plan")
@@ -883,6 +878,19 @@ def place_trade(
     entry_limit = float(plan.get("entry_limit_price") or plan.get("entry_premium"))
     sl_prem = float(plan["stop_loss_premium"])
     tgt_prem = float(plan["target_premium"])
+
+    try:
+        from services.paper_trading import is_paper_mode_for_segment
+
+        if is_paper_mode_for_segment("nifty50"):
+            from services.paper_order_guard import paper_entry_levels_valid
+
+            ok, msg = paper_entry_levels_valid(entry_limit, sl_prem, tgt_prem)
+            if not ok:
+                result["errors"].append(msg)
+                return result
+    except Exception:
+        pass
 
     if not market_open and not skip_session:
         result["errors"].append(

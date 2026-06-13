@@ -226,6 +226,41 @@ def paper_place_cooldown_ok(segment: str) -> Tuple[bool, str]:
     return True, ""
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def min_paper_entry_premium() -> float:
+    """Reject paper entries below this premium (guards ₹0.05 quote-collapse loops)."""
+    return max(1.0, _env_float("PAPER_MIN_ENTRY_PREMIUM", 10.0))
+
+
+def paper_entry_levels_valid(
+    entry_premium: float,
+    sl_prem: float,
+    tgt_prem: float,
+) -> Tuple[bool, str]:
+    """Block degenerate paper entries where SL/entry collapse to tick noise."""
+    entry = float(entry_premium or 0)
+    sl = float(sl_prem or 0)
+    tp = float(tgt_prem or 0)
+    floor = min_paper_entry_premium()
+    if entry < floor:
+        return False, f"Paper entry ₹{entry:.2f} below minimum ₹{floor:.2f}"
+    min_sl_gap = max(0.5, entry * 0.02)
+    if sl >= entry - min_sl_gap:
+        return False, (
+            f"Paper SL ₹{sl:.2f} too close to entry ₹{entry:.2f} "
+            f"(min gap ₹{min_sl_gap:.2f})"
+        )
+    if tp <= entry + min_sl_gap:
+        return False, f"Paper target ₹{tp:.2f} too close to entry ₹{entry:.2f}"
+    return True, "OK"
+
+
 def widen_paper_exits(
     entry_premium: float,
     sl_prem: float,
@@ -237,14 +272,18 @@ def widen_paper_exits(
     entry = float(entry_premium)
     sl = float(sl_prem)
     tp = float(tgt_prem)
+    floor = min_paper_entry_premium()
+    if entry < floor:
+        return sl, tp
     pct = max(0.5, min(10.0, _env_float("PAPER_MIN_EXIT_GAP_PCT", 2.5))) / 100.0
     gap = max(0.25, entry * pct)
+    min_sl = max(floor * 0.1, entry * 0.02, 0.25)
     if sl >= entry - gap * 0.5:
-        sl = max(0.05, entry - gap)
+        sl = max(min_sl, entry - gap)
     if tp <= entry + gap * 0.5:
         tp = entry + gap
     if sl >= tp:
-        sl = max(0.05, entry - gap)
+        sl = max(min_sl, entry - gap)
         tp = entry + gap
     return round_to_tick(sl), round_to_tick(tp)
 
@@ -294,6 +333,13 @@ def paper_autonomous_place_allowed(
         ok, msg = paper_entry_quality_for_autonomous(plan)
         if not ok:
             return False, msg
+
+    entry = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
+    sl = float(plan.get("stop_loss_premium") or 0)
+    tp = float(plan.get("target_premium") or 0)
+    ok, msg = paper_entry_levels_valid(entry, sl, tp)
+    if not ok:
+        return False, msg
 
     if _env_bool("PAPER_AUTO_ONE_OPEN_PER_SEGMENT", True):
         n = count_open_paper_entries(seg)

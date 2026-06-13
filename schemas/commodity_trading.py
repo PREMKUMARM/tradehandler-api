@@ -1,6 +1,6 @@
 """V2 pre-buy wizard trade execution schemas."""
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CommodityTradePreviewRequest(BaseModel):
@@ -42,6 +42,13 @@ class ChecklistStepStatus(BaseModel):
     server_ok: bool
     message: str
     output: Optional[str] = None
+
+    @field_validator("completed", "server_ok", mode="before")
+    @classmethod
+    def _none_to_false(cls, value: Any) -> bool:
+        if value is None:
+            return False
+        return bool(value)
 
 
 class TradePlanOut(BaseModel):
