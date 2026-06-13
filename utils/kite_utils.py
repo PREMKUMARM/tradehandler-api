@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from kiteconnect import KiteConnect
 from core.exceptions import AuthenticationError, ValidationError, AlgoFeastException, BrokerAuthenticationError
-from utils.logger import log_info, log_error, log_warning, log_debug
+from utils.logger import log_info, log_error, log_warning, log_debug, log_warning_throttled
 
 # Global API key - get from AgentConfig (managed via UI) or environment
 def get_kite_api_key(user_id: str = "default"):
@@ -55,7 +55,11 @@ def _check_rate_limit(endpoint: str = "default"):
     if len(calls_last_second) >= _kite_rate_limits["max_calls_per_second"]:
         sleep_time = 1.0 - (current_time - calls_last_second[0])
         if sleep_time > 0:
-            log_warning(f"Rate limit reached for {endpoint}, sleeping {sleep_time:.2f}s")
+            log_warning_throttled(
+                f"kite_rate_limit.{endpoint}",
+                f"Rate limit reached for {endpoint}, sleeping {sleep_time:.2f}s",
+                interval_sec=30.0,
+            )
             time.sleep(sleep_time)
     
     # Check per-minute limit

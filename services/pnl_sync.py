@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from zoneinfo import ZoneInfo
 
-from utils.logger import log_warning
+from utils.logger import log_warning_throttled
 from utils.trade_limits import trade_limits
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -49,7 +49,11 @@ def sync_daily_pnl_from_kite(
         _last_sync_at = now
         return {"ok": True, "pnl_inr_today": total, "legs": len(net)}
     except Exception as exc:
-        log_warning(f"[PnlSync] failed: {exc}")
+        log_warning_throttled(
+            "pnl_sync.failed",
+            f"[PnlSync] failed: {exc}",
+            interval_sec=60.0,
+        )
         return {"ok": False, "error": str(exc)}
 
 

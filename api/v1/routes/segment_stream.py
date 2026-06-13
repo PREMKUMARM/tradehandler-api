@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from services.segment_balance import get_segment_balance
-from utils.logger import log_error, log_info, log_warning
+from utils.logger import log_debug, log_error, log_warning
 
 router = APIRouter(prefix="/ws", tags=["WebSocket"])
 
@@ -117,7 +117,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
 @router.websocket("/segment/{segment}")
 async def segment_stream(websocket: WebSocket, segment: str):
     await websocket.accept()
-    log_info(f"[WS] segment connected {segment}")
+    log_debug(f"[WS] segment connected {segment}")
     try:
         h = _segment_handlers(segment)
     except Exception as exc:
@@ -258,5 +258,5 @@ async def segment_stream(websocket: WebSocket, segment: str):
             log_error(f"[WS] segment loop error: {exc}")
             break
 
-    log_info(f"[WS] segment disconnected {segment}")
+    log_debug(f"[WS] segment disconnected {segment}")
 

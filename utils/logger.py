@@ -85,8 +85,8 @@ def setup_logging(log_level: str = "INFO"):
 
     # Reduce noisy third-party libraries (keeps app logs readable).
     quiet = {
-        "uvicorn": logging.INFO,
-        "uvicorn.error": logging.INFO,
+        "uvicorn": logging.WARNING,
+        "uvicorn.error": logging.WARNING,
         "uvicorn.access": logging.WARNING,
         "httpx": logging.WARNING,
         "httpcore": logging.WARNING,
@@ -205,3 +205,24 @@ def log_debug(message: str, request_id: Optional[str] = None, **kwargs):
     if kwargs:
         message = f"{message} | {kwargs}"
     logger.debug(message, extra=extra)
+
+
+_throttled_last: Dict[str, float] = {}
+
+
+def log_warning_throttled(
+    key: str,
+    message: str,
+    *,
+    interval_sec: float = 60.0,
+    request_id: Optional[str] = None,
+) -> None:
+    """Emit a warning at most once per key within interval_sec."""
+    import time
+
+    now = time.monotonic()
+    last = _throttled_last.get(key)
+    if last is not None and (now - last) < max(1.0, interval_sec):
+        return
+    _throttled_last[key] = now
+    log_warning(message, request_id=request_id)

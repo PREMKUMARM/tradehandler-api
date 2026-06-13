@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from utils.logger import log_error, log_info, log_warning
+from utils.logger import log_error, log_info, log_warning, log_warning_throttled
 
 
 def _parse_payload(raw: Any) -> Dict[str, Any]:
@@ -203,7 +203,11 @@ class PaperOrderMonitor:
                     if px > 0:
                         quotes[f"BINANCE:{sym}"] = {"last_price": px}
         except Exception as e:
-            log_warning(f"[PaperOrderMonitor] quotes failed: {e}")
+            log_warning_throttled(
+                "paper_order_monitor.quotes",
+                f"[PaperOrderMonitor] quotes failed: {e}",
+                interval_sec=60.0,
+            )
             return
 
         now = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()

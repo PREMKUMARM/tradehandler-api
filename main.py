@@ -77,10 +77,12 @@ app = FastAPI(
 from middleware import RequestIDMiddleware, LoggingMiddleware, ErrorHandlerMiddleware
 from middleware.rate_limit import RateLimitMiddleware
 
-app.add_middleware(RequestIDMiddleware)
-app.add_middleware(LoggingMiddleware)
-app.add_middleware(RateLimitMiddleware)  # Rate limiting before error handling
+# Starlette runs last-added middleware first on incoming requests.
+# RequestID must run before LoggingMiddleware so request_id is available.
 app.add_middleware(ErrorHandlerMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(LoggingMiddleware)
+app.add_middleware(RequestIDMiddleware)
 
 # Include API v1 routes
 from api.v1 import api_router

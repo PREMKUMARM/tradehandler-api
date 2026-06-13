@@ -38,14 +38,13 @@ from services.trail_ops import (
     resolve_trail_config,
 )
 from services.watch_reconcile import gtt_exists_on_broker
-from utils.logger import log_error, log_info, log_warning
+from utils.logger import log_error, log_info, log_warning_throttled
 
 
 class ExitTrailMonitor:
     def __init__(self) -> None:
         self.is_running = False
         self._task: Optional[asyncio.Task] = None
-        self._last_quote_fail_log_at: float = 0.0
 
     async def start(self) -> None:
         if self.is_running or not get_momentum_trail_config().enabled:
@@ -292,14 +291,11 @@ class ExitTrailMonitor:
                 lp = row.get("last_price")
                 out[k] = float(lp) if lp is not None else None
         except Exception as e:
-            err = str(e)
-            now = time.monotonic()
-            authish = "access_token" in err.lower() or "api_key" in err.lower()
-            if authish and (now - self._last_quote_fail_log_at) < 60.0:
-                return out
-            if authish:
-                self._last_quote_fail_log_at = now
-            log_warning(f"[ExitTrailMonitor] quotes failed: {e}")
+            log_warning_throttled(
+                "exit_trail_monitor.quotes",
+                f"[ExitTrailMonitor] quotes failed: {e}",
+                interval_sec=60.0,
+            )
         return out
 
     def _sync_live_gtt(

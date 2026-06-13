@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from zoneinfo import ZoneInfo
 
-from utils.logger import log_info, log_warning
+from utils.logger import log_info, log_warning, log_warning_throttled
 
 
 def _float_or_none(v: Any) -> Optional[float]:
@@ -139,7 +139,11 @@ def enrich_paper_orders_with_quotes(
                 quotes.update(kite.quote(part))
         except Exception as e:
             quote_error = str(e)
-            log_warning(f"[PaperOrders] Batch quote failed: {e}")
+            log_warning_throttled(
+                "paper_orders.batch_quote",
+                f"[PaperOrders] Batch quote failed: {e}",
+                interval_sec=60.0,
+            )
 
     if fetch_quotes and binance_syms:
         try:
