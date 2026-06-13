@@ -28,6 +28,12 @@ def parse_checklist_steps(raw_list: List[Any], model_cls: Type[T]) -> List[T]:
     return [parse_checklist_step(item, model_cls) for item in (raw_list or [])]
 
 
+def _step_field(st: Any, key: str, default: Any = None) -> Any:
+    if isinstance(st, dict):
+        return st.get(key, default)
+    return getattr(st, key, default)
+
+
 def apply_market_closed_gate(
     statuses: List[T],
     *,
@@ -45,8 +51,8 @@ def apply_market_closed_gate(
     gated = set(gated_indices)
     out: List[T] = []
     for st in statuses:
-        idx = getattr(st, "index", None)
-        if idx in gated and getattr(st, "server_ok", False):
+        idx = _step_field(st, "index")
+        if idx in gated and _step_field(st, "server_ok", False):
             if hasattr(st, "model_copy"):
                 out.append(
                     st.model_copy(
@@ -57,6 +63,12 @@ def apply_market_closed_gate(
                         }
                     )
                 )
+            elif isinstance(st, dict):
+                updated = dict(st)
+                updated["server_ok"] = False
+                updated["completed"] = False
+                updated["message"] = closed_message
+                out.append(updated)  # type: ignore[arg-type]
             else:
                 out.append(st)
         else:

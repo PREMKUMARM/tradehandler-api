@@ -158,9 +158,20 @@ def get_checklist_live(
     live = plan.get("indicators") or recalculate_from_ticker()
     if not plan and live.get("connected"):
         connected = True
+    market_open = is_crypto_session_open()
     steps = _step_statuses_from_live(plan, live, balance, paper_mode=paper_mode)
+
+    from services.checklist_step_utils import apply_market_closed_gate
+
+    steps = apply_market_closed_gate(
+        steps,
+        market_open=market_open,
+        allow_offhours=allow_offhours_crypto_place(),
+        gated_indices=list(range(2, len(STEP_TITLES))),
+        closed_message="Market closed — preview only until session",
+    )
     missing = [s["index"] for s in steps if not s["server_ok"]]
-    ready = len(missing) == 0
+    ready = len(missing) == 0 and (market_open or allow_offhours_crypto_place())
 
     if paper_mode:
         messages.append("Paper mode ON (Crypto) — simulated Binance fills in paper ledger")
@@ -187,7 +198,7 @@ def get_checklist_live(
         "trade_plan": plan or None,
         "can_place": ready and connected and bool(plan) and not paper_mode,
         "can_execute": can_execute,
-        "market_open": is_crypto_session_open(),
+        "market_open": market_open,
         "allow_test_place": allow_offhours_crypto_place(),
         "paper_trading_mode": paper_mode,
         "messages": messages,
