@@ -537,6 +537,20 @@ def run_realtime_checklist(
         statuses, missing = enforce_step_dependencies(statuses)
         missing = sorted(set(missing))
 
+    from services.checklist_step_utils import apply_market_closed_gate
+    from services.commodity_config import allow_offhours_commodity_place
+
+    statuses = apply_market_closed_gate(
+        statuses,
+        market_open=market_open,
+        allow_offhours=allow_offhours_commodity_place(),
+        gated_indices=list(range(2, len(STEP_TITLES))),
+        closed_message="Market closed — preview only until MCX session",
+    )
+    if statuses:
+        statuses, missing = enforce_step_dependencies(statuses)
+        missing = sorted(set(missing))
+
     if 0 in emit and 0 not in missing and ctx.margin <= 0:
         missing.append(0)
     if not ctx.trade_plan:
@@ -549,6 +563,7 @@ def run_realtime_checklist(
         len(missing) == 0
         and ctx.spot > 0
         and (bool(ctx.trade_plan) if needs_plan else True)
+        and (market_open or allow_offhours_commodity_place())
     )
 
     return {

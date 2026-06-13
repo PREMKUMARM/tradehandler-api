@@ -26,3 +26,39 @@ def parse_checklist_step(raw: Any, model_cls: Type[T]) -> T:
 
 def parse_checklist_steps(raw_list: List[Any], model_cls: Type[T]) -> List[T]:
     return [parse_checklist_step(item, model_cls) for item in (raw_list or [])]
+
+
+def apply_market_closed_gate(
+    statuses: List[T],
+    *,
+    market_open: bool,
+    allow_offhours: bool,
+    gated_indices: List[int],
+    closed_message: str = "Market closed — waits for session",
+) -> List[T]:
+    """
+    When the exchange session is closed, do not mark session-dependent steps as server_ok.
+    Keeps preview/connectivity steps (e.g. 0–1) intact.
+    """
+    if market_open or allow_offhours or not statuses:
+        return statuses
+    gated = set(gated_indices)
+    out: List[T] = []
+    for st in statuses:
+        idx = getattr(st, "index", None)
+        if idx in gated and getattr(st, "server_ok", False):
+            if hasattr(st, "model_copy"):
+                out.append(
+                    st.model_copy(
+                        update={
+                            "server_ok": False,
+                            "completed": False,
+                            "message": closed_message,
+                        }
+                    )
+                )
+            else:
+                out.append(st)
+        else:
+            out.append(st)
+    return out
