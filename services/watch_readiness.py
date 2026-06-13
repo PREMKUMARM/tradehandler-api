@@ -284,6 +284,10 @@ def build_readiness_payload(
     passed = sum(1 for s in steps if s.get("server_ok"))
     total = len(steps) if steps else 12
 
+    from services.trail_ops import get_exit_policy_summary
+
+    exit_policy = get_exit_policy_summary((plan or {}).get("strategy_id"))
+
     return {
         "readiness_gates": gates,
         "can_autonomous_place": can_auto_place,
@@ -291,6 +295,7 @@ def build_readiness_payload(
         "live_checklist_total": total,
         "step_live": steps,
         "trade_plan_preview": _trade_plan_preview(plan),
+        "exit_policy": exit_policy,
         "market_open": market_open,
         "paper_trading_mode": paper_trading_mode,
         "kite_connected": kite_connected,

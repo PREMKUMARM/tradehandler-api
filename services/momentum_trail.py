@@ -23,25 +23,81 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(frozen=True)
 class MomentumTrailConfig:
     enabled: bool
     breakeven_buffer: float
+    breakeven_pct: float
+    breakeven_r_fraction: float
     extend_gain_ratio: float
     lock_gain_ratio: float
     min_level_update: float
     stepped_rr: bool
+    partial_exit_enabled: bool
+    partial_exit_pct: float
+    activation_hold_sec: int
+    require_5m_close: bool
+    time_stop_enabled: bool
+    time_stop_minutes: int
+    time_stop_before_ist: str
+    time_stop_only_without_1r: bool
+    trail_stale_alert_min: int
+    gtt_fail_alert_threshold: int
 
 
 def get_momentum_trail_config() -> MomentumTrailConfig:
     return MomentumTrailConfig(
         enabled=_env_bool("MOMENTUM_TRAIL_ENABLED", True),
         breakeven_buffer=_env_float("MOMENTUM_TRAIL_BREAKEVEN_BUFFER", 0.05),
+        breakeven_pct=_env_float("MOMENTUM_TRAIL_BREAKEVEN_PCT", 0.004),
+        breakeven_r_fraction=_env_float("MOMENTUM_TRAIL_BREAKEVEN_R_FRACTION", 0.25),
         extend_gain_ratio=_env_float("MOMENTUM_TRAIL_EXTEND_GAIN_RATIO", 0.5),
         lock_gain_ratio=_env_float("MOMENTUM_TRAIL_LOCK_GAIN_RATIO", 0.35),
         min_level_update=_env_float("MOMENTUM_TRAIL_MIN_UPDATE", 0.10),
         stepped_rr=_env_bool("STEPPED_RR_TRAIL", True),
+        partial_exit_enabled=_env_bool("TRAIL_PARTIAL_EXIT_ENABLED", True),
+        partial_exit_pct=_env_float("TRAIL_PARTIAL_EXIT_PCT", 0.40),
+        activation_hold_sec=_env_int("TRAIL_ACTIVATION_HOLD_SEC", 30),
+        require_5m_close=_env_bool("TRAIL_REQUIRE_5M_CLOSE", False),
+        time_stop_enabled=_env_bool("TRAIL_TIME_STOP_ENABLED", True),
+        time_stop_minutes=_env_int("TRAIL_TIME_STOP_MINUTES", 90),
+        time_stop_before_ist=os.getenv("TRAIL_TIME_STOP_BEFORE_IST", "15:10").strip() or "15:10",
+        time_stop_only_without_1r=_env_bool("TRAIL_TIME_STOP_ONLY_WITHOUT_1R", True),
+        trail_stale_alert_min=_env_int("TRAIL_STALE_ALERT_MIN", 10),
+        gtt_fail_alert_threshold=_env_int("TRAIL_GTT_FAIL_ALERT_THRESHOLD", 2),
     )
+
+
+def get_regime_for_strategy(strategy_id: Optional[str]) -> str:
+    sid = (strategy_id or "").strip().lower()
+    if sid in {"bb_5m_mean_reversion"}:
+        return "mean_reversion"
+    if sid in {
+        "orb_15m_breakout",
+        "pdh_pdl_breakout",
+        "ema_pullback_continuation",
+        "long_atm_directional",
+        "green_bar_sentinel_2nd_oi",
+    }:
+        return "trend"
+    return "default"
+
+
+def breakeven_stop(entry: float, risk_unit: float, cfg: MomentumTrailConfig) -> float:
+    """SL after 1R: max(fixed tick, % of premium, fraction of R)."""
+    entry = float(entry or 0)
+    R = max(0.05, float(risk_unit or 0))
+    pct_buf = entry * max(0.0, cfg.breakeven_pct)
+    r_buf = R * max(0.0, cfg.breakeven_r_fraction)
+    buf = max(cfg.breakeven_buffer, pct_buf, r_buf)
+    return round_to_tick(entry + buf)
 
 
 def is_profitable_long(entry: float, ltp: float) -> bool:
@@ -92,10 +148,7 @@ def compute_trailed_levels(
 ) -> Tuple[float, float, float, bool, str]:
     """
     Returns (new_sl, new_tp, new_peak, activated, note).
-    Only ratchets SL/TP upward for long premium exits.
-
-    Stepped mode (default): 1:1 initial target, then SL→entry and TP→next R step
-    when each reward level is reached (similar to trailing stop).
+    Stepped mode: 1:1 initial target, SL→breakeven, TP→next R step.
     """
     cfg = cfg or get_momentum_trail_config()
     peak = max(peak, ltp, entry)
@@ -115,20 +168,21 @@ def compute_trailed_levels(
     if not activate:
         return current_sl, current_tp, peak, False, ""
 
+    be = breakeven_stop(entry, R, cfg)
+
     if cfg.stepped_rr and R > 0:
         step = max(1, int((peak - entry) / R))
         if not trail_active:
-            new_sl = round_to_tick(entry + cfg.breakeven_buffer)
+            new_sl = be
             new_tp = round_to_tick(entry + (step + 1) * R)
             note = (
                 f"1:1 target ₹{first_target:.2f} reached @ {ltp:.2f} — "
-                f"SL→entry ₹{new_sl:.2f}, next TP ₹{new_tp:.2f}"
+                f"SL→breakeven ₹{new_sl:.2f}, next TP ₹{new_tp:.2f}"
             )
         else:
             locked_step = max(0, step - 1)
-            new_sl = round_to_tick(
-                max(current_sl, entry + cfg.breakeven_buffer, entry + locked_step * R)
-            )
+            locked_sl = round_to_tick(entry + locked_step * R) if locked_step >= 1 else be
+            new_sl = round_to_tick(max(current_sl, be, locked_sl))
             new_tp = round_to_tick(entry + (step + 1) * R)
             note = (
                 f"Step {step}R peak ₹{peak:.2f} — SL ₹{new_sl:.2f}, next TP ₹{new_tp:.2f}"
@@ -136,13 +190,13 @@ def compute_trailed_levels(
     else:
         gain = max(0.0, peak - entry)
         if not trail_active:
-            new_sl = round_to_tick(entry + cfg.breakeven_buffer)
+            new_sl = be
             extension = gain * cfg.extend_gain_ratio
             new_tp = round_to_tick(max(current_tp, peak + extension))
             note = f"Target reached @ {ltp:.2f} — SL→breakeven ₹{new_sl:.2f}, TP extended→₹{new_tp:.2f}"
         else:
             locked_sl = peak - (gain * cfg.lock_gain_ratio)
-            new_sl = round_to_tick(max(current_sl, entry + cfg.breakeven_buffer, locked_sl))
+            new_sl = round_to_tick(max(current_sl, be, locked_sl))
             extension = gain * cfg.extend_gain_ratio
             new_tp = round_to_tick(max(current_tp, peak + extension))
             note = f"Trail peak ₹{peak:.2f} — SL ₹{new_sl:.2f} TP ₹{new_tp:.2f}"

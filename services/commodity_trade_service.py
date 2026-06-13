@@ -630,6 +630,9 @@ def _preview_trade_impl(
         trade_plan,
         offhours_allowed=allow_offhours_commodity_place(),
     )
+    from services.trail_ops import get_exit_policy_summary
+
+    exit_policy = get_exit_policy_summary(trade_plan.get("strategy_id") if trade_plan else None)
 
     prod = get_active_product()
     out = {
@@ -640,6 +643,7 @@ def _preview_trade_impl(
         "step_statuses": [s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in statuses],
         "trade_plan": trade_plan,
         "validation": validation,
+        "exit_policy": exit_policy,
         "messages": messages,
         "market_open": market_open,
         "allow_test_place": allow_offhours_commodity_place(),

@@ -49,6 +49,21 @@ def build_kite_order_preview(
     if kite_margin_inr is not None and not paper_mode:
         lines.append(f"Kite available margin (placement check): ₹{kite_margin_inr:,.0f}")
 
+    from services.premium_exit_policy import entry_validation_skips_reward
+
+    if entry_validation_skips_reward():
+        lines.append("Entry blocked only on risk cap — trail extends reward after 1R")
+    policy = None
+    try:
+        from services.trail_ops import get_exit_policy_summary
+
+        policy = get_exit_policy_summary(plan.get("strategy_id") if isinstance(plan, dict) else None)
+        for ln in (policy.get("summary_lines") or [])[:3]:
+            if ln not in lines:
+                lines.append(str(ln))
+    except Exception:
+        policy = None
+
     return {
         "mode": "paper" if paper_mode else "live",
         "exchange": exchange,
@@ -67,6 +82,8 @@ def build_kite_order_preview(
         "risk_inr": round(risk_inr, 2),
         "reward_inr": round(reward_inr, 2),
         "reward_ratio": plan.get("reward_ratio"),
+        "strategy_reward_ratio": plan.get("strategy_reward_ratio"),
+        "exit_policy": policy,
         "sizing_capital_inr": round(float(sizing_capital_inr), 2),
         "sizing_capital_source": sizing_capital_source,
         "kite_margin_inr": round(float(kite_margin_inr), 2) if kite_margin_inr else None,

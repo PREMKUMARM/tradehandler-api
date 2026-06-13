@@ -81,6 +81,33 @@ else
     echo "  ⚠️  Local .env file not found, skipping environment variable sync"
 fi
 
+_read_local_env() {
+    local key="$1"
+    if [ -f "$REPO_ROOT/$LOCAL_ENV_FILE" ]; then
+        grep "^${key}=" "$REPO_ROOT/$LOCAL_ENV_FILE" 2>/dev/null | tail -1 | cut -d '=' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    fi
+}
+
+ENTRY_INITIAL_RR_VAL="$(_read_local_env ENTRY_INITIAL_RR)"
+ENTRY_VALIDATION_SKIP_REWARD_VAL="$(_read_local_env ENTRY_VALIDATION_SKIP_REWARD)"
+STEPPED_RR_TRAIL_VAL="$(_read_local_env STEPPED_RR_TRAIL)"
+MOMENTUM_TRAIL_BREAKEVEN_PCT_VAL="$(_read_local_env MOMENTUM_TRAIL_BREAKEVEN_PCT)"
+MOMENTUM_TRAIL_BREAKEVEN_R_FRACTION_VAL="$(_read_local_env MOMENTUM_TRAIL_BREAKEVEN_R_FRACTION)"
+MOMENTUM_TRAIL_BREAKEVEN_BUFFER_VAL="$(_read_local_env MOMENTUM_TRAIL_BREAKEVEN_BUFFER)"
+TRAIL_PARTIAL_EXIT_ENABLED_VAL="$(_read_local_env TRAIL_PARTIAL_EXIT_ENABLED)"
+TRAIL_PARTIAL_EXIT_PCT_VAL="$(_read_local_env TRAIL_PARTIAL_EXIT_PCT)"
+TRAIL_ACTIVATION_HOLD_SEC_VAL="$(_read_local_env TRAIL_ACTIVATION_HOLD_SEC)"
+TRAIL_REQUIRE_5M_CLOSE_VAL="$(_read_local_env TRAIL_REQUIRE_5M_CLOSE)"
+TRAIL_TIME_STOP_ENABLED_VAL="$(_read_local_env TRAIL_TIME_STOP_ENABLED)"
+TRAIL_TIME_STOP_MINUTES_VAL="$(_read_local_env TRAIL_TIME_STOP_MINUTES)"
+TRAIL_TIME_STOP_BEFORE_IST_VAL="$(_read_local_env TRAIL_TIME_STOP_BEFORE_IST)"
+TRAIL_TIME_STOP_ONLY_WITHOUT_1R_VAL="$(_read_local_env TRAIL_TIME_STOP_ONLY_WITHOUT_1R)"
+TRAIL_STALE_ALERT_MIN_VAL="$(_read_local_env TRAIL_STALE_ALERT_MIN)"
+TRAIL_GTT_FAIL_ALERT_THRESHOLD_VAL="$(_read_local_env TRAIL_GTT_FAIL_ALERT_THRESHOLD)"
+MOMENTUM_TRAIL_POLL_SEC_VAL="$(_read_local_env MOMENTUM_TRAIL_POLL_SEC)"
+MOMENTUM_TRAIL_ENABLED_VAL="$(_read_local_env MOMENTUM_TRAIL_ENABLED)"
+COMMODITY_AUTO_MIN_ENTRY_SCORE_VAL="$(_read_local_env COMMODITY_AUTO_MIN_ENTRY_SCORE)"
+
 # Normalize FCM JSON path for EC2:
 # - If your local .env uses an absolute path, we still deploy the file into the API directory
 #   and write FCM_SERVICE_ACCOUNT_JSON as a repo-relative path (basename) on the server.
@@ -189,6 +216,27 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
     # FCM — upsert when local value is non-empty
     upsert_env_line "FCM_PROJECT_ID" "\$FCM_PROJECT_ID_VAL"
     upsert_env_line "FCM_SERVICE_ACCOUNT_JSON" "\$FCM_SERVICE_ACCOUNT_JSON_VAL"
+
+    # Trail / 1:1 entry policy (from local .env)
+    upsert_env_line "ENTRY_INITIAL_RR" '$ENTRY_INITIAL_RR_VAL'
+    upsert_env_line "ENTRY_VALIDATION_SKIP_REWARD" '$ENTRY_VALIDATION_SKIP_REWARD_VAL'
+    upsert_env_line "STEPPED_RR_TRAIL" '$STEPPED_RR_TRAIL_VAL'
+    upsert_env_line "MOMENTUM_TRAIL_BREAKEVEN_PCT" '$MOMENTUM_TRAIL_BREAKEVEN_PCT_VAL'
+    upsert_env_line "MOMENTUM_TRAIL_BREAKEVEN_R_FRACTION" '$MOMENTUM_TRAIL_BREAKEVEN_R_FRACTION_VAL'
+    upsert_env_line "MOMENTUM_TRAIL_BREAKEVEN_BUFFER" '$MOMENTUM_TRAIL_BREAKEVEN_BUFFER_VAL'
+    upsert_env_line "TRAIL_PARTIAL_EXIT_ENABLED" '$TRAIL_PARTIAL_EXIT_ENABLED_VAL'
+    upsert_env_line "TRAIL_PARTIAL_EXIT_PCT" '$TRAIL_PARTIAL_EXIT_PCT_VAL'
+    upsert_env_line "TRAIL_ACTIVATION_HOLD_SEC" '$TRAIL_ACTIVATION_HOLD_SEC_VAL'
+    upsert_env_line "TRAIL_REQUIRE_5M_CLOSE" '$TRAIL_REQUIRE_5M_CLOSE_VAL'
+    upsert_env_line "TRAIL_TIME_STOP_ENABLED" '$TRAIL_TIME_STOP_ENABLED_VAL'
+    upsert_env_line "TRAIL_TIME_STOP_MINUTES" '$TRAIL_TIME_STOP_MINUTES_VAL'
+    upsert_env_line "TRAIL_TIME_STOP_BEFORE_IST" '$TRAIL_TIME_STOP_BEFORE_IST_VAL'
+    upsert_env_line "TRAIL_TIME_STOP_ONLY_WITHOUT_1R" '$TRAIL_TIME_STOP_ONLY_WITHOUT_1R_VAL'
+    upsert_env_line "TRAIL_STALE_ALERT_MIN" '$TRAIL_STALE_ALERT_MIN_VAL'
+    upsert_env_line "TRAIL_GTT_FAIL_ALERT_THRESHOLD" '$TRAIL_GTT_FAIL_ALERT_THRESHOLD_VAL'
+    upsert_env_line "MOMENTUM_TRAIL_POLL_SEC" '$MOMENTUM_TRAIL_POLL_SEC_VAL'
+    upsert_env_line "MOMENTUM_TRAIL_ENABLED" '$MOMENTUM_TRAIL_ENABLED_VAL'
+    upsert_env_line "COMMODITY_AUTO_MIN_ENTRY_SCORE" '$COMMODITY_AUTO_MIN_ENTRY_SCORE_VAL'
 EOF
 
 # Copy Firebase service account JSON to EC2 (secret file; should NOT be in git)

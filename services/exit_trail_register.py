@@ -43,4 +43,5 @@ def register_from_trade_plan(
         target=tp,
         paper=paper,
         paper_order_id=entry_order_id if paper else None,
+        strategy_id=str(plan.get("strategy_id") or ""),
     )

@@ -480,6 +480,18 @@ class DatabaseConnection:
             cursor.execute("ALTER TABLE exit_trails ADD COLUMN initial_target REAL")
         except sqlite3.OperationalError:
             pass
+        for _col, _typ in (
+            ("strategy_id", "TEXT"),
+            ("target_touch_since", "TEXT"),
+            ("partial_exit_done", "INTEGER"),
+            ("initial_quantity", "INTEGER"),
+            ("gtt_sync_fail_count", "INTEGER"),
+            ("last_alert_at", "TEXT"),
+        ):
+            try:
+                cursor.execute(f"ALTER TABLE exit_trails ADD COLUMN {_col} {_typ}")
+            except sqlite3.OperationalError:
+                pass
 
         for _col, _typ in (
             ("stoploss", "REAL"),

@@ -12,7 +12,10 @@ from zoneinfo import ZoneInfo
 
 from services.exit_trail_store import (
     close_exit_trail,
+    increment_gtt_sync_fail,
     list_open_exit_trails,
+    mark_partial_exit_done,
+    set_target_touch_since,
     sync_paper_order_levels,
     update_exit_trail_gtt,
     update_exit_trail_levels,
@@ -22,6 +25,15 @@ from services.momentum_trail import (
     get_momentum_trail_config,
     gtt_triggers_for_levels,
     levels_changed_enough,
+)
+from services.trail_alert_service import alert_gtt_sync_failed, alert_stale_trail, alert_time_stop
+from services.trail_ops import (
+    activation_ready,
+    check_time_stop,
+    execute_live_partial_exit,
+    execute_paper_partial_exit,
+    partial_exit_qty,
+    resolve_trail_config,
 )
 from services.watch_reconcile import gtt_exists_on_broker
 from utils.logger import log_error, log_info, log_warning
@@ -62,8 +74,8 @@ class ExitTrailMonitor:
             await asyncio.sleep(interval)
 
     def _tick_sync(self) -> None:
-        cfg = get_momentum_trail_config()
-        if not cfg.enabled:
+        base_cfg = get_momentum_trail_config()
+        if not base_cfg.enabled:
             return
 
         trails = list_open_exit_trails()
@@ -95,15 +107,27 @@ class ExitTrailMonitor:
             if ltp is None:
                 continue
 
+            strategy_id = str(t.get("strategy_id") or "")
+            cfg = resolve_trail_config(strategy_id or None)
             entry = float(t.get("entry_price") or 0)
             sl = float(t.get("stop_loss") or 0)
             tp = float(t.get("target") or 0)
+            qty = int(t.get("quantity") or 1)
             activation_target = float(t.get("initial_target") or tp or 0)
             risk_unit = max(0.05, activation_target - entry) if activation_target > entry else max(
                 0.05, entry - sl
             )
             peak = float(t.get("peak_ltp") or entry)
             trail_active = bool(t.get("trail_active"))
+            sym = str(t.get("tradingsymbol") or "")
+
+            self._maybe_stale_alert(t, now_ist, cfg)
+
+            time_reason = check_time_stop(t, now=now_ist, trail_active=trail_active, cfg=cfg)
+            if time_reason:
+                alert_time_stop(sym, time_reason)
+                self._close_trail(t, ltp, "time_stop")
+                continue
 
             if not trail_active and min_hold > 0:
                 try:
@@ -127,17 +151,40 @@ class ExitTrailMonitor:
                 self._close_trail(t, ltp, "SL")
                 continue
 
-            if not trail_active:
-                from services.momentum_trail import should_activate_trail
+            if ltp >= activation_target and not trail_active and not t.get("target_touch_since"):
+                set_target_touch_since(tid, now_ist.isoformat())
+                t = {**t, "target_touch_since": now_ist.isoformat()}
 
-                if not should_activate_trail(
-                    ltp, entry, activation_target, trail_active=False
-                ):
-                    if ltp > peak:
-                        update_exit_trail_levels(
-                            tid, stop_loss=sl, target=tp, peak_ltp=ltp, trail_active=False
-                        )
-                    continue
+            ready, _ = activation_ready(
+                t,
+                ltp=ltp,
+                activation_target=activation_target,
+                now=now_ist,
+                cfg=cfg,
+            )
+            if not trail_active and ltp >= activation_target and not ready:
+                if ltp > peak:
+                    update_exit_trail_levels(
+                        tid, stop_loss=sl, target=tp, peak_ltp=ltp, trail_active=False
+                    )
+                continue
+
+            activating = ready and not trail_active
+            if activating and not bool(t.get("partial_exit_done")):
+                pq = partial_exit_qty(qty, cfg)
+                if pq > 0:
+                    ok = (
+                        execute_paper_partial_exit(t, pq, ltp)
+                        if bool(t.get("paper"))
+                        else execute_live_partial_exit(t, pq, ltp)
+                    )
+                    if ok:
+                        remaining = max(1, qty - pq)
+                        mark_partial_exit_done(tid, remaining)
+                        qty = remaining
+                        t = {**t, "quantity": remaining, "partial_exit_done": 1}
+                        if gtt_id and not bool(t.get("paper")):
+                            self._sync_live_gtt(t, gtt_id, sl, tp, ltp, qty_override=remaining)
 
             new_sl, new_tp, new_peak, activated, note = compute_trailed_levels(
                 entry=entry,
@@ -145,7 +192,7 @@ class ExitTrailMonitor:
                 ltp=ltp,
                 current_sl=sl,
                 current_tp=tp,
-                trail_active=trail_active or ltp >= activation_target,
+                trail_active=trail_active or ready,
                 cfg=cfg,
                 initial_risk_unit=risk_unit,
                 initial_target=activation_target,
@@ -168,6 +215,7 @@ class ExitTrailMonitor:
                 target=new_tp,
                 peak_ltp=new_peak,
                 trail_active=True,
+                quantity=qty,
             )
 
             if bool(t.get("paper")):
@@ -175,14 +223,38 @@ class ExitTrailMonitor:
                 if paper_oid:
                     sync_paper_order_levels(paper_oid, new_sl, new_tp)
             elif gtt_id:
-                ok = self._sync_live_gtt(t, gtt_id, new_sl, new_tp, ltp)
+                ok = self._sync_live_gtt(t, gtt_id, new_sl, new_tp, ltp, qty_override=qty)
                 if not ok:
+                    fails = increment_gtt_sync_fail(tid)
                     log_warning(
-                        f"[ExitTrailMonitor] could not sync GTT {gtt_id} for {t.get('tradingsymbol')}"
+                        f"[ExitTrailMonitor] could not sync GTT {gtt_id} for {sym} (fail #{fails})"
                     )
+                    if fails >= cfg.gtt_fail_alert_threshold:
+                        alert_gtt_sync_failed(sym, gtt_id, fails)
 
             if note:
-                log_info(f"[ExitTrailMonitor] {t.get('tradingsymbol')} {note}")
+                log_info(f"[ExitTrailMonitor] {sym} {note}")
+
+    def _maybe_stale_alert(
+        self, trail: Dict[str, Any], now: datetime, cfg: Any
+    ) -> None:
+        if cfg.trail_stale_alert_min <= 0:
+            return
+        updated = trail.get("updated_at") or trail.get("created_at")
+        if not updated:
+            return
+        try:
+            ts = datetime.fromisoformat(str(updated))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+            stale_min = (now.astimezone(ZoneInfo("Asia/Kolkata")) - ts.astimezone(ZoneInfo("Asia/Kolkata"))).total_seconds() / 60.0
+        except Exception:
+            return
+        if stale_min < cfg.trail_stale_alert_min:
+            return
+        sym = str(trail.get("tradingsymbol") or "")
+        if sym:
+            alert_stale_trail(sym, stale_min)
 
     def _fetch_quotes(self, keys: List[str]) -> Dict[str, Optional[float]]:
         out: Dict[str, Optional[float]] = {}
@@ -218,8 +290,9 @@ class ExitTrailMonitor:
         sl_prem: float,
         tp_prem: float,
         ltp: float,
+        qty_override: Optional[int] = None,
     ) -> bool:
-        if self._modify_live_gtt(trail, gtt_id, sl_prem, tp_prem, ltp):
+        if self._modify_live_gtt(trail, gtt_id, sl_prem, tp_prem, ltp, qty_override=qty_override):
             return True
         try:
             from utils.kite_utils import get_kite_instance
@@ -233,7 +306,7 @@ class ExitTrailMonitor:
                     return False
         except Exception:
             pass
-        return self._replace_live_gtt(trail, gtt_id, sl_prem, tp_prem, ltp)
+        return self._replace_live_gtt(trail, gtt_id, sl_prem, tp_prem, ltp, qty_override=qty_override)
 
     def _modify_live_gtt(
         self,
@@ -242,13 +315,14 @@ class ExitTrailMonitor:
         sl_prem: float,
         tp_prem: float,
         ltp: float,
+        qty_override: Optional[int] = None,
     ) -> bool:
         from agent.tools.kite_tools import modify_gtt_tool
 
         sym = str(trail.get("tradingsymbol") or "")
         ex = str(trail.get("exchange") or "NFO")
         product = str(trail.get("product") or "NRML")
-        qty = int(trail.get("quantity") or 1)
+        qty = int(qty_override if qty_override is not None else trail.get("quantity") or 1)
         sl_trigger, tp_trigger, last_price = gtt_triggers_for_levels(
             float(trail.get("entry_price") or ltp),
             sl_prem,
@@ -284,6 +358,7 @@ class ExitTrailMonitor:
         sl_prem: float,
         tp_prem: float,
         ltp: float,
+        qty_override: Optional[int] = None,
     ) -> bool:
         from agent.tools.kite_tools import delete_gtt_tool, place_gtt_tool
         from services.momentum_trail import gtt_triggers_for_levels
@@ -291,7 +366,7 @@ class ExitTrailMonitor:
         sym = str(trail.get("tradingsymbol") or "")
         ex = str(trail.get("exchange") or "NFO")
         product = str(trail.get("product") or "NRML")
-        qty = int(trail.get("quantity") or 1)
+        qty = int(qty_override if qty_override is not None else trail.get("quantity") or 1)
         entry = float(trail.get("entry_price") or ltp)
         sl_trigger, tp_trigger, last_price = gtt_triggers_for_levels(entry, sl_prem, tp_prem, ltp)
 
