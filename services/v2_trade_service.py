@@ -573,7 +573,10 @@ def preview_trade(
     )
     from services.trail_ops import get_exit_policy_summary
 
-    exit_policy = get_exit_policy_summary(trade_plan.get("strategy_id") if trade_plan else None)
+    exit_policy = get_exit_policy_summary(
+        trade_plan.get("strategy_id") if trade_plan else None,
+        quantity=int((trade_plan or {}).get("quantity") or 0) or None,
+    )
 
     return {
         "can_place": can_place and not paper_mode,

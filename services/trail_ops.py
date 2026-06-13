@@ -65,12 +65,22 @@ def resolve_trail_config(strategy_id: Optional[str] = None) -> MomentumTrailConf
     return cfg
 
 
-def get_exit_policy_summary(strategy_id: Optional[str] = None) -> Dict[str, Any]:
+def get_exit_policy_summary(
+    strategy_id: Optional[str] = None,
+    *,
+    quantity: Optional[int] = None,
+) -> Dict[str, Any]:
     from services.premium_exit_policy import entry_initial_rr, entry_validation_skips_reward
 
     cfg = resolve_trail_config(strategy_id)
     initial_rr = entry_initial_rr()
-    partial = f"{int(cfg.partial_exit_pct * 100)}%" if cfg.partial_exit_enabled else "off"
+    qty = int(quantity or 0)
+    if qty <= 1:
+        partial = "off (single lot → breakeven trail at 1R)"
+    elif cfg.partial_exit_enabled:
+        partial = f"{int(cfg.partial_exit_pct * 100)}%"
+    else:
+        partial = "off"
     lines = [
         f"Entry target {initial_rr:g}:1 · trail extends to 2R, 3R…",
         f"At 1R: book {partial}, SL→breakeven, TP→next R step",

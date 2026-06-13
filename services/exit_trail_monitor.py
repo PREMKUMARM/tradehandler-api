@@ -12,9 +12,11 @@ from zoneinfo import ZoneInfo
 
 from services.exit_trail_store import (
     close_exit_trail,
+    get_trail_last_alert_at,
     increment_gtt_sync_fail,
     list_open_exit_trails,
     mark_partial_exit_done,
+    mark_trail_alert_sent,
     set_target_touch_since,
     sync_paper_order_levels,
     update_exit_trail_gtt,
@@ -185,6 +187,10 @@ class ExitTrailMonitor:
                         t = {**t, "quantity": remaining, "partial_exit_done": 1}
                         if gtt_id and not bool(t.get("paper")):
                             self._sync_live_gtt(t, gtt_id, sl, tp, ltp, qty_override=remaining)
+                elif qty <= 1:
+                    log_info(
+                        f"[ExitTrailMonitor] {sym} single lot — breakeven trail at 1R (no partial exit)"
+                    )
 
             new_sl, new_tp, new_peak, activated, note = compute_trailed_levels(
                 entry=entry,
@@ -231,6 +237,7 @@ class ExitTrailMonitor:
                     )
                     if fails >= cfg.gtt_fail_alert_threshold:
                         alert_gtt_sync_failed(sym, gtt_id, fails)
+                        mark_trail_alert_sent(tid)
 
             if note:
                 log_info(f"[ExitTrailMonitor] {sym} {note}")
@@ -240,6 +247,17 @@ class ExitTrailMonitor:
     ) -> None:
         if cfg.trail_stale_alert_min <= 0:
             return
+        tid = int(trail.get("id") or 0)
+        last_alert = trail.get("last_alert_at") or get_trail_last_alert_at(tid)
+        if last_alert:
+            try:
+                la = datetime.fromisoformat(str(last_alert))
+                if la.tzinfo is None:
+                    la = la.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+                if (now.astimezone(ZoneInfo("Asia/Kolkata")) - la.astimezone(ZoneInfo("Asia/Kolkata"))).total_seconds() < 900:
+                    return
+            except Exception:
+                pass
         updated = trail.get("updated_at") or trail.get("created_at")
         if not updated:
             return
@@ -255,6 +273,7 @@ class ExitTrailMonitor:
         sym = str(trail.get("tradingsymbol") or "")
         if sym:
             alert_stale_trail(sym, stale_min)
+            mark_trail_alert_sent(tid)
 
     def _fetch_quotes(self, keys: List[str]) -> Dict[str, Optional[float]]:
         out: Dict[str, Optional[float]] = {}

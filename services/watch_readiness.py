@@ -286,7 +286,10 @@ def build_readiness_payload(
 
     from services.trail_ops import get_exit_policy_summary
 
-    exit_policy = get_exit_policy_summary((plan or {}).get("strategy_id"))
+    exit_policy = get_exit_policy_summary(
+        (plan or {}).get("strategy_id"),
+        quantity=int((plan or {}).get("quantity") or 0) or None,
+    )
 
     return {
         "readiness_gates": gates,

@@ -632,7 +632,10 @@ def _preview_trade_impl(
     )
     from services.trail_ops import get_exit_policy_summary
 
-    exit_policy = get_exit_policy_summary(trade_plan.get("strategy_id") if trade_plan else None)
+    exit_policy = get_exit_policy_summary(
+        trade_plan.get("strategy_id") if trade_plan else None,
+        quantity=int((trade_plan or {}).get("quantity") or 0) or None,
+    )
 
     prod = get_active_product()
     out = {

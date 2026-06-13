@@ -213,6 +213,28 @@ def increment_gtt_sync_fail(trail_id: int) -> int:
     return int(row[0] or 0) if row else 0
 
 
+def mark_trail_alert_sent(trail_id: int) -> None:
+    from database.connection import get_database
+
+    db = get_database()
+    conn = db.get_connection()
+    conn.execute(
+        "UPDATE exit_trails SET last_alert_at = ?, updated_at = ? WHERE id = ?",
+        (_now(), _now(), trail_id),
+    )
+    conn.commit()
+
+
+def get_trail_last_alert_at(trail_id: int) -> Optional[str]:
+    from database.connection import get_database
+
+    db = get_database()
+    conn = db.get_connection()
+    cur = conn.execute("SELECT last_alert_at FROM exit_trails WHERE id = ?", (trail_id,))
+    row = cur.fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
 def update_exit_trail_gtt(trail_id: int, gtt_trigger_id: str) -> None:
     from database.connection import get_database
 

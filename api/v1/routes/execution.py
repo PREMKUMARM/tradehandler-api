@@ -66,6 +66,26 @@ def get_live_trades(
     return list_live_trades(segment=segment, limit=limit, enrich=enrich)
 
 
+@router.get("/exit-trails")
+def get_exit_trails(
+    segment: str = Query(
+        None,
+        description="Filter: nifty50, commodity, crypto. Omit for all open trails.",
+    ),
+    tradingsymbol: str = Query(None, description="Filter by symbol (optional)."),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Open momentum exit trails — SL/TP, trail step, partial-exit state."""
+    from services.exit_trails_api import list_exit_trails_for_api
+
+    rows = list_exit_trails_for_api(
+        segment=segment,
+        tradingsymbol=tradingsymbol,
+        limit=limit,
+    )
+    return {"data": rows, "count": len(rows)}
+
+
 @router.get("/paper-trades")
 def get_paper_trades(
     segment: str = Query(

@@ -56,7 +56,12 @@ def test_time_stop_before_1r():
 
 
 def test_exit_policy_summary_has_trail_lines():
-    policy = get_exit_policy_summary("orb_15m_breakout")
+    policy = get_exit_policy_summary("orb_15m_breakout", quantity=10)
     assert policy.get("entry_rr") == 1.0
     assert policy.get("regime") == "trend"
     assert len(policy.get("summary_lines") or []) >= 2
+
+
+def test_exit_policy_summary_single_lot():
+    policy = get_exit_policy_summary("orb_15m_breakout", quantity=1)
+    assert "single lot" in policy["summary_lines"][1].lower()
