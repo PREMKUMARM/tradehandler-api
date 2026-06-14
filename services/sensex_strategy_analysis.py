@@ -15,6 +15,7 @@ from services.sensex_constants import (
     is_past_sensex_entry_cutoff,
     sensex_entry_cutoff_label,
     sensex_entry_cutoff_message,
+    sensex_entry_scan_start_minutes,
     sensex_is_gap_up_session,
 )
 from services.sensex_strike_selection import (
@@ -30,8 +31,8 @@ IST = ZoneInfo("Asia/Kolkata")
 STRATEGY_ID = "20rupees_strategy"
 STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
-    "Buy Sensex option when premium is ₹17–₹23. AUTO picks smart OI strike "
-    "(high OI, nearest to ATM within band). "
+    "Buy Sensex option when premium closes ₹17–₹23 on 5m (from 09:20 IST, not opening wick). "
+    "AUTO picks smart OI strike (high OI, nearest to ATM within band). "
     "Skips gap-up sessions (index open > prev close). "
     "Size to risk % (default 1% of capital), ₹10 SL, 1:1 target; trailing stop as per other segments. "
     "No new entries after 3:00 PM IST (last 30 minutes)."
@@ -283,6 +284,13 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
         )
         score = min(score, 20)
         pattern = "20rupees_gap_up_skip"
+    elif ctx.minutes > 0 and ctx.minutes < sensex_entry_scan_start_minutes():
+        scan = sensex_entry_scan_start_minutes()
+        warnings.append(
+            f"Before {scan // 60:02d}:{scan % 60:02d} IST — wait for 5m close in band (skip opening wick)"
+        )
+        score = min(score, 28)
+        pattern = "20rupees_open_bar_skip"
     elif is_past_sensex_entry_cutoff():
         warnings.append(sensex_entry_cutoff_message())
         score = min(score, 25)

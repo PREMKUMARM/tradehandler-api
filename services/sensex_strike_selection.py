@@ -250,11 +250,10 @@ def pick_smart_at_bar(
         for offset, series in (session.get(kind) or {}).items():
             if idx >= len(series.oi):
                 continue
-            bar_low = float(series.low[idx])
-            bar_high = float(series.high[idx])
-            if not _band_touched(bar_low, bar_high, band_low, band_high):
+            bar_close = float(series.close[idx])
+            if bar_close <= 0 or not _in_band(bar_close, band_low, band_high):
                 continue
-            ltp = float(series.close[idx]) if series.close[idx] > 0 else float(series.open[idx])
+            ltp = bar_close
             rows.append(
                 (
                     kind.upper(),

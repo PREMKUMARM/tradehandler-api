@@ -22,9 +22,11 @@ from services.dhan_data_client import (
 from services.momentum_trail import breakeven_stop, get_momentum_trail_config
 from services.sensex_constants import (
     sensex_entry_cutoff_minutes,
+    sensex_entry_scan_start_minutes,
     sensex_is_bad_option_bar,
     sensex_is_gap_up_session,
     sensex_max_lots_per_trade,
+    sensex_premium_in_band,
 )
 from services.sensex_indicator_plan import size_from_risk
 from services.sensex_strike_selection import pick_smart_at_bar, strike_source_label
@@ -173,6 +175,7 @@ def _estimate_entry(
     band_low: float,
     band_high: float,
 ) -> Optional[float]:
+    """Legacy wick-fill estimate (debug scripts only). Backtest uses bar close in band."""
     if not _band_touched(low, high, band_low, band_high):
         return None
     if _in_band(open_p, band_low, band_high):
@@ -182,6 +185,13 @@ def _estimate_entry(
     if open_p < band_low:
         return band_low
     return round((band_low + band_high) / 2.0, 2)
+
+
+def _entry_from_bar_close(close: float, band_low: float, band_high: float) -> Optional[float]:
+    """Entry at 5m close when premium closes inside the band (no wick-fill at band top)."""
+    if close <= 0 or not sensex_premium_in_band(close, band_low, band_high):
+        return None
+    return round(close, 2)
 
 
 
@@ -224,10 +234,14 @@ def _pick_entry_auto(
     if not ref:
         return None
 
+    scan_start = sensex_entry_scan_start_minutes()
     for idx in range(len(ref.timestamps)):
         ts = ref.timestamps[idx]
         dt = datetime.fromtimestamp(ts, tz=IST)
-        if dt.hour * 60 + dt.minute >= cutoff_minutes:
+        bar_minutes = dt.hour * 60 + dt.minute
+        if bar_minutes < scan_start:
+            continue
+        if bar_minutes >= cutoff_minutes:
             break
 
         picked = pick_smart_at_bar(
@@ -245,7 +259,7 @@ def _pick_entry_auto(
         if sensex_is_bad_option_bar(bar.open, bar.high, bar.close):
             continue
         source = strike_source_label(candidate.offset)
-        entry = _estimate_entry(bar.open, bar.high, bar.low, band_low, band_high)
+        entry = _entry_from_bar_close(bar.close, band_low, band_high)
         if entry is not None:
             return bar, source, series
 
@@ -266,10 +280,14 @@ def _pick_entry(
     if not ref or not ref.timestamps:
         return None
 
+    scan_start = sensex_entry_scan_start_minutes()
     for idx in range(len(ref.timestamps)):
         ts = ref.timestamps[idx]
         dt = datetime.fromtimestamp(ts, tz=IST)
-        if dt.hour * 60 + dt.minute >= cutoff_minutes:
+        bar_minutes = dt.hour * 60 + dt.minute
+        if bar_minutes < scan_start:
+            continue
+        if bar_minutes >= cutoff_minutes:
             break
 
         picked = pick_smart_at_bar(
@@ -287,7 +305,7 @@ def _pick_entry(
         if sensex_is_bad_option_bar(bar.open, bar.high, bar.close):
             continue
         source = strike_source_label(candidate.offset)
-        entry = _estimate_entry(bar.open, bar.high, bar.low, band_low, band_high)
+        entry = _entry_from_bar_close(bar.close, band_low, band_high)
         if entry is not None:
             return bar, source, series
 
@@ -418,7 +436,7 @@ def _run_day(
 
     bar, source, series = picked
     kind = series.kind
-    entry = _estimate_entry(bar.open, bar.high, bar.low, params.entry_band_low, params.entry_band_high)
+    entry = _entry_from_bar_close(bar.close, params.entry_band_low, params.entry_band_high)
     if entry is None:
         return None
 
@@ -578,8 +596,9 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
                     {
                         "expiry_date": expiry_date,
                         "reason": (
-                            f"premium never in ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} "
-                            f"entry range before {cutoff // 60:02d}:{cutoff % 60:02d} IST"
+                            f"no 5m close in ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} "
+                            f"from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
+                            f"to {cutoff // 60:02d}:{cutoff % 60:02d} IST"
                         ),
                     }
                 )
@@ -634,6 +653,8 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         f"₹{params.sl_inr:g} SL · min-target {tgt_label} (trail in ₹{params.sl_inr:g} steps after min-target) · "
         f"entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
         f"Skips gap-up sessions (open > prev close) and bad option ticks (open/high > 3× close). "
+        f"Entry from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
+        f"when 5m close is in band (no opening-bar wick fill). "
         f"Dhan 5m data on {len(sessions)} expiry session(s). "
         f"Entries before {cutoff // 60:02d}:{cutoff % 60:02d} IST."
     )

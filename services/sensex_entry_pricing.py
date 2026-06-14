@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from services.sensex_constants import (
     is_past_sensex_entry_cutoff,
     sensex_entry_cutoff_message,
+    sensex_entry_scan_start_minutes,
     sensex_is_bad_option_bar,
     sensex_is_gap_up_session,
 )
@@ -454,6 +455,16 @@ def _analyze_20rupees(
         notes.append(msg)
         return False, None, 0, notes, msg, "20rupees_gap_up_skip"
 
+    bar_minutes = int(intra.get("bar_minutes") or intra.get("ist_minutes") or 0)
+    scan_start = sensex_entry_scan_start_minutes()
+    if bar_minutes > 0 and bar_minutes < scan_start:
+        msg = (
+            f"Wait until {scan_start // 60:02d}:{scan_start % 60:02d} IST "
+            f"(skip opening 5m wick; need close in band)"
+        )
+        notes.append(msg)
+        return False, None, 0, notes, msg, "20rupees_open_bar_skip"
+
     bar_open = float(intra.get("bar_open") or quote.get("open") or 0)
     bar_high = float(intra.get("bar_high") or quote.get("high") or ltp or 0)
     if sensex_is_bad_option_bar(bar_open, bar_high, ltp):
@@ -477,8 +488,8 @@ def _analyze_20rupees(
         center = (PREMIUM_BAND_LOW + PREMIUM_BAND_HIGH) / 2.0
         score = max(75, min(95, int(92 - abs(ltp - center) * 4)))
         notes.append(
-            f"Premium in band — SL ₹{max(0.05, ltp - FIXED_SL_INR):.2f} · "
-            f"target ₹{ltp + FIXED_SL_INR:.2f} (1:1)"
+            f"Premium closed in band — entry at ₹{ltp:.2f} · "
+            f"SL ₹{max(0.05, ltp - FIXED_SL_INR):.2f} · target ₹{ltp + FIXED_SL_INR:.2f} (1:1)"
         )
         return True, round(ltp, 2), score, notes, None, "20rupees_in_band"
 

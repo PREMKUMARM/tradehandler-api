@@ -92,6 +92,15 @@ def sensex_is_bad_option_bar(open_p: float, high: float, close: float) -> bool:
     return open_p > 3.0 * close or high > 3.0 * close
 
 
+def sensex_entry_scan_start_minutes() -> int:
+    """First bar to scan for entry (default 09:20 — skip opening 5m wick lottery)."""
+    return SENSEX_SESSION_OPEN_MINUTES + _env_int("SENSEX_ENTRY_SCAN_START_OFFSET_MIN", 5)
+
+
+def sensex_premium_in_band(px: float, band_low: float = 17.0, band_high: float = 23.0) -> bool:
+    return band_low <= px <= band_high
+
+
 def resolve_sensex_bfo_product(plan: dict | None = None) -> str:
     """Product for V2 entry + GTT exit. Always NRML when exit is GTT_OCO."""
     if not plan:
