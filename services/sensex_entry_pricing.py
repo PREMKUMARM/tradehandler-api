@@ -10,7 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.sensex_constants import is_past_sensex_entry_cutoff, sensex_entry_cutoff_message
+from services.sensex_constants import (
+    is_past_sensex_entry_cutoff,
+    sensex_entry_cutoff_message,
+    sensex_is_bad_option_bar,
+    sensex_is_gap_up_session,
+)
 from services.sensex_strategy_analysis import (
     FIXED_SL_INR,
     PREMIUM_BAND_HIGH,
@@ -429,10 +434,12 @@ def _analyze_green_bar_sentinel(
 def _analyze_20rupees(
     quote: Dict[str, float],
     intra: Dict[str, Any],
+    prev_close: float = 0.0,
 ) -> Tuple[bool, Optional[float], int, List[str], Optional[str], str]:
     """Entry when contract premium is in ₹17–₹23 band (not after session entry cutoff)."""
-    _, _, ltp, _, _ = _book(quote)
+    bid, ask, ltp, _, _ = _book(quote)
     ltp = float(intra.get("contract_ltp") or intra.get("option_ltp") or ltp or 0)
+    day_open = float(intra.get("day_open") or 0)
     notes: List[str] = []
     band = f"₹{PREMIUM_BAND_LOW:.0f}–{PREMIUM_BAND_HIGH:.0f}"
 
@@ -440,6 +447,19 @@ def _analyze_20rupees(
         msg = sensex_entry_cutoff_message()
         notes.append(msg)
         return False, None, 0, notes, msg, "20rupees_cutoff"
+
+    if sensex_is_gap_up_session(day_open, prev_close):
+        gap_pct = (day_open - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
+        msg = f"Gap-up session (+{gap_pct:.2f}%) — skip entry"
+        notes.append(msg)
+        return False, None, 0, notes, msg, "20rupees_gap_up_skip"
+
+    bar_open = float(intra.get("bar_open") or quote.get("open") or 0)
+    bar_high = float(intra.get("bar_high") or quote.get("high") or ltp or 0)
+    if sensex_is_bad_option_bar(bar_open, bar_high, ltp):
+        msg = "Bad option tick (open/high > 3× LTP) — skip entry"
+        notes.append(msg)
+        return False, None, 0, notes, msg, "20rupees_bad_tick"
 
     if ltp <= 0:
         return (
@@ -550,7 +570,7 @@ def compute_strategy_entry(
     ref_ltp = ltp or mid or ask or bid
 
     if sid == TWENTY_RUPEES_ID:
-        ready, trigger, score, notes, block, tag = _analyze_20rupees(quote, intra)
+        ready, trigger, score, notes, block, tag = _analyze_20rupees(quote, intra, prev_close)
     elif sid == "bb_5m_mean_reversion":
         ready, trigger, score, notes, block, tag = _analyze_bb_5m(spot, kind, intra)
     else:

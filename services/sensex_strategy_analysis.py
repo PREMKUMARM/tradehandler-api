@@ -15,6 +15,7 @@ from services.sensex_constants import (
     is_past_sensex_entry_cutoff,
     sensex_entry_cutoff_label,
     sensex_entry_cutoff_message,
+    sensex_is_gap_up_session,
 )
 from services.sensex_strike_selection import (
     moneyness_label,
@@ -31,6 +32,7 @@ STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
     "Buy Sensex option when premium is ₹17–₹23. AUTO picks smart OI strike "
     "(high OI, nearest to ATM within band). "
+    "Skips gap-up sessions (index open > prev close). "
     "Size to risk % (default 1% of capital), ₹10 SL, 1:1 target; trailing stop as per other segments. "
     "No new entries after 3:00 PM IST (last 30 minutes)."
 )
@@ -272,7 +274,16 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
     if ctx.vix_ltp and 12 <= ctx.vix_ltp <= 28:
         score += 3
 
-    if is_past_sensex_entry_cutoff():
+    if sensex_is_gap_up_session(ctx.day_open, ctx.prev_close):
+        gap_pct = (
+            (ctx.day_open - ctx.prev_close) / ctx.prev_close * 100.0 if ctx.prev_close > 0 else 0.0
+        )
+        warnings.append(
+            f"Gap-up session (+{gap_pct:.2f}%) — skip entry (poor historical win rate on gap-up days)"
+        )
+        score = min(score, 20)
+        pattern = "20rupees_gap_up_skip"
+    elif is_past_sensex_entry_cutoff():
         warnings.append(sensex_entry_cutoff_message())
         score = min(score, 25)
         pattern = "20rupees_cutoff"

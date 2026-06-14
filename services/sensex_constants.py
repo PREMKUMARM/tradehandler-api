@@ -74,6 +74,24 @@ def sensex_max_lots_per_trade() -> int:
     return max(1, min(50, _env_int("SENSEX_MAX_LOTS", 50)))
 
 
+def sensex_gap_pct(day_open: float, prev_close: float) -> float:
+    if prev_close <= 0:
+        return 0.0
+    return (day_open - prev_close) / prev_close * 100.0
+
+
+def sensex_is_gap_up_session(day_open: float, prev_close: float) -> bool:
+    """Skip new 20rupees entries when index opens above prior close (poor win rate in backtest)."""
+    return prev_close > 0 and day_open > prev_close
+
+
+def sensex_is_bad_option_bar(open_p: float, high: float, close: float) -> bool:
+    """Reject corrupt option ticks where open/high spiked vs bar close."""
+    if close <= 0:
+        return False
+    return open_p > 3.0 * close or high > 3.0 * close
+
+
 def resolve_sensex_bfo_product(plan: dict | None = None) -> str:
     """Product for V2 entry + GTT exit. Always NRML when exit is GTT_OCO."""
     if not plan:

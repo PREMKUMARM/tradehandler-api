@@ -199,6 +199,8 @@ def build_indicator_trade_plan(
         "ema9": ind.get("ema9"),
         "day_high": ind.get("day_high"),
         "day_low": ind.get("day_low"),
+        "day_open": ind.get("day_open"),
+        "prev_close": ind.get("prev_close"),
         "indicator_sources": ind.get("indicator_sources") or {},
         "anchor_strike": anchor_strike,
         "nifty_spot": nifty_spot,

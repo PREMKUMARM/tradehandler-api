@@ -20,7 +20,12 @@ from services.dhan_data_client import (
     ts_to_ist_label,
 )
 from services.momentum_trail import breakeven_stop, get_momentum_trail_config
-from services.sensex_constants import sensex_entry_cutoff_minutes, sensex_max_lots_per_trade
+from services.sensex_constants import (
+    sensex_entry_cutoff_minutes,
+    sensex_is_bad_option_bar,
+    sensex_is_gap_up_session,
+    sensex_max_lots_per_trade,
+)
 from services.sensex_indicator_plan import size_from_risk
 from services.sensex_strike_selection import pick_smart_at_bar, strike_source_label
 from services.sensex_strategy_analysis import STRATEGY_NAME
@@ -237,6 +242,8 @@ def _pick_entry_auto(
             continue
         candidate, series = picked
         bar = _series_bar(series, idx)
+        if sensex_is_bad_option_bar(bar.open, bar.high, bar.close):
+            continue
         source = strike_source_label(candidate.offset)
         entry = _estimate_entry(bar.open, bar.high, bar.low, band_low, band_high)
         if entry is not None:
@@ -277,6 +284,8 @@ def _pick_entry(
             continue
         candidate, series = picked
         bar = _series_bar(series, idx)
+        if sensex_is_bad_option_bar(bar.open, bar.high, bar.close):
+            continue
         source = strike_source_label(candidate.offset)
         entry = _estimate_entry(bar.open, bar.high, bar.low, band_low, band_high)
         if entry is not None:
@@ -496,6 +505,15 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
                 skipped.append({"expiry_date": expiry_date, "reason": "no Dhan data"})
                 continue
 
+            if sensex_is_gap_up_session(index_open, prev_close):
+                skipped.append(
+                    {
+                        "expiry_date": expiry_date,
+                        "reason": "gap-up session skipped (index open > prev close)",
+                    }
+                )
+                continue
+
             tr = _run_day(expiry_date, index_open, prev_close, session, params, m)
             if tr:
                 sl_prem = round(tr.entry - params.sl_inr, 2)
@@ -588,6 +606,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         f"Starting capital ₹{start_capital:,.0f} · {params.risk_pct:g}% risk per trade · "
         f"₹{params.sl_inr:g} SL · min-target {tgt_label} (trail in ₹{params.sl_inr:g} steps after min-target) · "
         f"entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
+        f"Skips gap-up sessions (open > prev close) and bad option ticks (open/high > 3× close). "
         f"Dhan 5m data on {len(sessions)} expiry session(s). "
         f"Entries before {cutoff // 60:02d}:{cutoff % 60:02d} IST."
     )
