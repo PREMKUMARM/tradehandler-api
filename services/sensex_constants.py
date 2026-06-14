@@ -81,8 +81,20 @@ def sensex_gap_pct(day_open: float, prev_close: float) -> float:
 
 
 def sensex_is_gap_up_session(day_open: float, prev_close: float) -> bool:
-    """Skip new 20rupees entries when index opens above prior close (poor win rate in backtest)."""
+    """True when index opens above prior close."""
     return prev_close > 0 and day_open > prev_close
+
+
+def sensex_is_gap_down_session(day_open: float, prev_close: float) -> bool:
+    """True when index opens below prior close."""
+    return prev_close > 0 and day_open < prev_close
+
+
+def sensex_gap_direction_kind(day_open: float, prev_close: float) -> str:
+    """AUTO leg: gap-up/flat → CE, gap-down → PE."""
+    if prev_close > 0 and day_open < prev_close:
+        return "PE"
+    return "CE"
 
 
 def sensex_is_bad_option_bar(open_p: float, high: float, close: float) -> bool:

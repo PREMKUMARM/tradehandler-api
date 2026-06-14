@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from services.dhan_data_client import (
     DhanDataClient,
     OptionSeries,
+    build_fixed_strike_series,
     cache_path,
     load_cached_session,
     save_cached_session,
@@ -24,8 +25,8 @@ from services.sensex_constants import (
     sensex_entry_cutoff_minutes,
     sensex_entry_scan_start_minutes,
     sensex_default_min_target_inr,
+    sensex_gap_direction_kind,
     sensex_is_bad_option_bar,
-    sensex_is_gap_up_session,
     sensex_max_lots_per_trade,
     sensex_premium_in_band,
 )
@@ -228,43 +229,19 @@ def _pick_entry_auto(
     band_low: float,
     band_high: float,
     cutoff_minutes: int,
+    index_open: float = 0.0,
     prev_close: float = 0.0,
 ) -> Optional[Tuple[MinuteBar, str, OptionSeries]]:
-    """AUTO: smart OI + proximity strike when premium band is touched."""
-    ref = _ref_series(session)
-    if not ref:
-        return None
-
-    scan_start = sensex_entry_scan_start_minutes()
-    for idx in range(len(ref.timestamps)):
-        ts = ref.timestamps[idx]
-        dt = datetime.fromtimestamp(ts, tz=IST)
-        bar_minutes = dt.hour * 60 + dt.minute
-        if bar_minutes < scan_start:
-            continue
-        if bar_minutes >= cutoff_minutes:
-            break
-
-        picked = pick_smart_at_bar(
-            session,
-            idx,
-            kinds=("CE", "PE"),
-            band_low=band_low,
-            band_high=band_high,
-            prev_close=prev_close,
-        )
-        if not picked:
-            continue
-        candidate, series = picked
-        bar = _series_bar(series, idx)
-        if sensex_is_bad_option_bar(bar.open, bar.high, bar.close):
-            continue
-        source = strike_source_label(candidate.offset)
-        entry = _entry_from_bar_close(bar.close, band_low, band_high)
-        if entry is not None:
-            return bar, source, series
-
-    return None
+    """AUTO: gap direction (PE gap-down, CE gap-up/flat) + smart OI strike in band."""
+    kind = sensex_gap_direction_kind(index_open, prev_close)
+    return _pick_entry(
+        session,
+        kind,
+        band_low,
+        band_high,
+        cutoff_minutes,
+        prev_close=prev_close,
+    )
 
 
 def _pick_entry(
@@ -439,6 +416,7 @@ def _run_day(
             params.entry_band_low,
             params.entry_band_high,
             cutoff,
+            index_open=index_open,
             prev_close=prev_close,
         )
     else:
@@ -459,17 +437,38 @@ def _run_day(
     if entry is None:
         return None
 
+    entry_strike = int(bar.strike)
+    entry_ts = series.timestamps[bar.idx]
+    sim_series = series
+    sim_entry_idx = bar.idx
+    locked = build_fixed_strike_series(
+        session,
+        kind=kind,
+        strike=entry_strike,
+        session_date=expiry_date,
+    )
+    if locked and entry_ts in locked.timestamps:
+        sim_series = locked
+        sim_entry_idx = locked.timestamps.index(entry_ts)
+        locked_entry = _entry_from_bar_close(
+            locked.close[sim_entry_idx],
+            params.entry_band_low,
+            params.entry_band_high,
+        )
+        if locked_entry is not None:
+            entry = locked_entry
+
     exit_px, reason, exit_idx = _simulate_from_entry(
         entry,
-        series,
-        bar.idx,
+        sim_series,
+        sim_entry_idx,
         mode,
         params.sl_inr,
         params.min_target_low,
         params.min_target_high,
     )
     display_exit_idx = _resolve_exit_bar_index(
-        entry, series, bar.idx, exit_px, reason, exit_idx, params.sl_inr
+        entry, sim_series, sim_entry_idx, exit_px, reason, exit_idx, params.sl_inr
     )
     r_unit = max(0.05, float(params.sl_inr))
     pnl_per_unit = exit_px - entry
@@ -478,10 +477,10 @@ def _run_day(
     return TradeResult(
         expiry_date=expiry_date,
         direction=kind,
-        strike=bar.strike,
+        strike=entry_strike,
         kind=kind,
         strike_source=source,
-        symbol=f"SENSEX-{bar.strike}-{kind}",
+        symbol=f"SENSEX-{entry_strike}-{kind}",
         entry=entry,
         exit=exit_px,
         sl=round(entry - params.sl_inr, 2),
@@ -494,7 +493,7 @@ def _run_day(
         premium_high=bar.high,
         premium_low=bar.low,
         entry_datetime_ist=bar.ist_time,
-        exit_datetime_ist=ts_to_ist_label(series.timestamps[display_exit_idx]),
+        exit_datetime_ist=ts_to_ist_label(sim_series.timestamps[display_exit_idx]),
     )
 
 
@@ -567,15 +566,6 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
             session = data.get(expiry_date)
             if not session:
                 skipped.append({"expiry_date": expiry_date, "reason": "no Dhan data"})
-                continue
-
-            if sensex_is_gap_up_session(index_open, prev_close):
-                skipped.append(
-                    {
-                        "expiry_date": expiry_date,
-                        "reason": "gap-up session skipped (index open > prev close)",
-                    }
-                )
                 continue
 
             tr = _run_day(expiry_date, index_open, prev_close, session, params, m)
@@ -671,10 +661,12 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         f"Starting capital ₹{start_capital:,.0f} · {params.risk_pct:g}% risk per trade · "
         f"₹{params.sl_inr:g} SL · min-target {tgt_label} (trail in ₹{params.sl_inr:g} steps after min-target) · "
         f"entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
-        f"Skips gap-up sessions (open > prev close) and bad option ticks (open/high > 3× close). "
+        f"AUTO picks PE on gap-down and CE on gap-up/flat (index open vs prev close). "
+        f"Skips bad option ticks (open/high > 3× close). "
         f"Entry from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
         f"when 5m close is in band · trail at entry + ₹{params.min_target_low:g} (1R). "
         f"Exit simulation starts on the bar after entry (fill at close). "
+        f"Strike locked at entry — exits use fixed absolute strike OHLC, not drifting rolling offset. "
         f"Conservative defers trail SL on the activation bar; optimistic vs conservative only "
         f"differs when SL and 1R target both touch one bar. "
         f"Dhan 5m data on {len(sessions)} expiry session(s). "

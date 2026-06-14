@@ -148,6 +148,124 @@ class DhanDataClient:
     def profile(self) -> Dict[str, Any]:
         return self._request("GET", "/profile")
 
+    def intraday_chart(
+        self,
+        *,
+        security_id: str,
+        exchange_segment: str = "BSE_FNO",
+        instrument: str = "OPTIDX",
+        interval: str = DEFAULT_INTERVAL,
+        from_datetime: str,
+        to_datetime: str,
+        oi: bool = True,
+        expiry_code: int = 0,
+    ) -> Dict[str, Any]:
+        """Active-contract intraday OHLC via POST /charts/intraday."""
+        body = {
+            "securityId": str(security_id),
+            "exchangeSegment": exchange_segment,
+            "instrument": instrument,
+            "interval": str(interval),
+            "oi": bool(oi),
+            "expiryCode": int(expiry_code),
+            "fromDate": from_datetime,
+            "toDate": to_datetime,
+        }
+        resp = self._request("POST", "/charts/intraday", body)
+        if resp.get("errorCode") or resp.get("status") == "failed":
+            msg = resp.get("errorMessage") or resp.get("remarks") or resp.get("data")
+            raise RuntimeError(f"Dhan intraday failed ({security_id}): {msg}")
+        return resp
+
+    def rolling_option_raw(
+        self,
+        *,
+        session_date: str,
+        kind: str,
+        offset: str = "ATM",
+        security_id: str = SENSEX_SECURITY_ID,
+        interval: str = DEFAULT_INTERVAL,
+        expiry_code: int = 1,
+        expiry_flag: str = "WEEK",
+    ) -> Dict[str, Any]:
+        """Raw PE/CE leg dict from POST /charts/rollingoption (expired contracts)."""
+        next_day = (date.fromisoformat(session_date) + timedelta(days=1)).isoformat()
+        body = {
+            "exchangeSegment": "BSE_FNO",
+            "interval": str(interval),
+            "securityId": str(security_id),
+            "instrument": "OPTIDX",
+            "expiryFlag": expiry_flag,
+            "expiryCode": int(expiry_code),
+            "strike": offset,
+            "drvOptionType": "CALL" if kind.upper() == "CE" else "PUT",
+            "requiredData": ["open", "high", "low", "close", "oi", "spot", "strike", "volume"],
+            "fromDate": session_date,
+            "toDate": next_day,
+        }
+        resp = self._request("POST", "/charts/rollingoption", body)
+        if resp.get("errorCode") or resp.get("status") == "failed":
+            msg = resp.get("errorMessage") or resp.get("remarks") or resp.get("data")
+            raise RuntimeError(f"Dhan rollingoption failed ({offset} {kind} {session_date}): {msg}")
+        key = "ce" if kind.upper() == "CE" else "pe"
+        return resp.get("data", {}).get(key) or {}
+
+    def fetch_expired_fixed_strike_bars(
+        self,
+        *,
+        session_date: str,
+        strike: int,
+        kind: str = "PE",
+        interval: str = DEFAULT_INTERVAL,
+        expiry_code: int = 1,
+        max_offset: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Reconstruct fixed-strike expired option 5m bars from Dhan rollingoption.
+
+        Dhan stores expired options by ATM offset, not absolute strike. We scan
+        ATM±max_offset and keep the bar whenever rolling strike equals `strike`.
+        """
+        offsets = ["ATM"] + [f"ATM+{i}" for i in range(1, max_offset + 1)]
+        offsets += [f"ATM-{i}" for i in range(1, max_offset + 1)]
+        merged: Dict[int, Dict[str, Any]] = {}
+        target = int(strike)
+        session_day = date.fromisoformat(session_date)
+
+        for offset in offsets:
+            leg = self.rolling_option_raw(
+                session_date=session_date,
+                kind=kind,
+                offset=offset,
+                interval=interval,
+                expiry_code=expiry_code,
+            )
+            timestamps = leg.get("timestamp") or []
+            volumes = leg.get("volume") or [0] * len(timestamps)
+            for idx, ts in enumerate(timestamps):
+                bar_strike = int(round(float((leg.get("strike") or [0])[idx])))
+                if bar_strike != target:
+                    continue
+                dt = datetime.fromtimestamp(int(ts), tz=IST)
+                if dt.date() != session_day:
+                    continue
+                if int(ts) in merged:
+                    continue
+                merged[int(ts)] = {
+                    "datetime_ist": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    "timestamp": int(ts),
+                    "strike": target,
+                    "open": round(float(leg["open"][idx]), 2),
+                    "high": round(float(leg["high"][idx]), 2),
+                    "low": round(float(leg["low"][idx]), 2),
+                    "close": round(float(leg["close"][idx]), 2),
+                    "volume": int(volumes[idx] if idx < len(volumes) else 0),
+                    "oi": round(float(leg["oi"][idx]), 2),
+                    "spot": round(float(leg["spot"][idx]), 2),
+                    "rolling_offset": offset,
+                }
+        return [merged[ts] for ts in sorted(merged)]
+
     def rolling_option(
         self,
         *,
@@ -232,6 +350,71 @@ def save_cached_session(
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def build_fixed_strike_series(
+    session: Dict[str, Dict[str, OptionSeries]],
+    *,
+    kind: str,
+    strike: int,
+    session_date: Optional[str] = None,
+) -> Optional[OptionSeries]:
+    """
+    Merge cached rolling-offset series into one OHLC stream for an absolute strike.
+
+    Dhan expired data is stored per ATM offset; as spot moves the mapped absolute
+    strike changes bar-to-bar. After entry, lock to `strike` and take each 5m bar
+    from whichever offset slice reports that strike on that timestamp.
+    """
+    kind_key = kind.upper()
+    leg = session.get(kind_key) or {}
+    if not leg:
+        return None
+
+    target = int(strike)
+    session_day = date.fromisoformat(session_date) if session_date else None
+    merged: Dict[int, Dict[str, float]] = {}
+
+    for offset in STRIKE_OFFSETS:
+        series = leg.get(offset)
+        if not series or not series.timestamps:
+            continue
+        for idx, ts in enumerate(series.timestamps):
+            bar_strike = int(round(float(series.strike[idx])))
+            if bar_strike != target:
+                continue
+            if session_day is not None:
+                dt = datetime.fromtimestamp(int(ts), tz=IST)
+                if dt.date() != session_day:
+                    continue
+            ts_key = int(ts)
+            if ts_key in merged:
+                continue
+            merged[ts_key] = {
+                "open": float(series.open[idx]),
+                "high": float(series.high[idx]),
+                "low": float(series.low[idx]),
+                "close": float(series.close[idx]),
+                "oi": float(series.oi[idx]),
+                "spot": float(series.spot[idx]),
+            }
+
+    if not merged:
+        return None
+
+    timestamps = sorted(merged.keys())
+    return OptionSeries(
+        kind=kind_key,
+        offset=f"LOCK-{target}",
+        timestamps=timestamps,
+        open=[merged[ts]["open"] for ts in timestamps],
+        high=[merged[ts]["high"] for ts in timestamps],
+        low=[merged[ts]["low"] for ts in timestamps],
+        close=[merged[ts]["close"] for ts in timestamps],
+        oi=[merged[ts]["oi"] for ts in timestamps],
+        spot=[merged[ts]["spot"] for ts in timestamps],
+        strike=[float(target)] * len(timestamps),
+    )
 
 
 def ts_to_ist_label(ts: int) -> str:

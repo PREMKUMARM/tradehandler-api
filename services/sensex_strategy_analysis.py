@@ -16,7 +16,8 @@ from services.sensex_constants import (
     sensex_entry_cutoff_label,
     sensex_entry_cutoff_message,
     sensex_entry_scan_start_minutes,
-    sensex_is_gap_up_session,
+    sensex_gap_direction_kind,
+    sensex_gap_pct,
 )
 from services.sensex_strike_selection import (
     moneyness_label,
@@ -32,8 +33,8 @@ STRATEGY_ID = "20rupees_strategy"
 STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
     "Buy Sensex option when premium closes ₹17–₹23 on 5m (from 14:00 IST). "
-    "AUTO picks smart OI strike (high OI, nearest to ATM within band). "
-    "Skips gap-up sessions. ₹10 SL, 1:1 target; trail activates at entry + ₹10 (1R). "
+    "AUTO: PE on gap-down, CE on gap-up/flat (index open vs prev close); smart OI strike in band. "
+    "₹10 SL, 1:1 target; trail activates at entry + ₹10 (1R). "
     "No new entries after 3:00 PM IST."
 )
 
@@ -95,9 +96,7 @@ def _resolve_kind(ctx: MarketContext, bias: str) -> str:
         return bias
     if ctx.direction_pref in ("CE", "PE"):
         return ctx.direction_pref
-    if ctx.prev_close > 0:
-        return "CE" if ctx.nifty_ltp >= ctx.prev_close else "PE"
-    return "CE"
+    return sensex_gap_direction_kind(ctx.day_open or ctx.nifty_ltp, ctx.prev_close)
 
 
 def _in_premium_band(ltp: float) -> bool:
@@ -120,20 +119,23 @@ def _highest_oi_row(ranked: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 def _pick_auto_strike_from_chain(
     chain_oi: Dict[str, Any],
     spot: float,
+    *,
     prev_close: float = 0.0,
+    day_open: float = 0.0,
 ) -> Tuple[Optional[int], float, str, Optional[str], Optional[float], str]:
-    """AUTO: smart OI + proximity strike in premium band."""
+    """AUTO: gap direction leg + smart OI strike in premium band."""
+    kind = sensex_gap_direction_kind(day_open or spot, prev_close)
     picked = pick_smart_from_chain(
         chain_oi,
         spot,
-        kinds=("CE", "PE"),
+        kinds=(kind,),
         band_low=PREMIUM_BAND_LOW,
         band_high=PREMIUM_BAND_HIGH,
         prev_close=prev_close,
     )
     if not picked:
         atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
-        return atm, 0.0, "ATM", None, None, "CE"
+        return atm, 0.0, "ATM", None, None, kind
     atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
     money = moneyness_label(picked.strike, atm, picked.offset)
     return picked.strike, picked.ltp, money, picked.symbol, picked.oi, picked.kind
@@ -213,8 +215,13 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
 
     if ctx.direction_pref == "AUTO":
         strike, ltp, moneyness, sym, oi, kind = _pick_auto_strike_from_chain(
-            chain, spot, prev_close=ctx.prev_close
+            chain, spot, prev_close=ctx.prev_close, day_open=ctx.day_open
         )
+        gap_pct = sensex_gap_pct(ctx.day_open, ctx.prev_close)
+        if ctx.prev_close > 0:
+            reasons.append(
+                f"AUTO gap → {kind} (open vs prev close {gap_pct:+.2f}%)"
+            )
     else:
         kind = ctx.direction_pref
         strike, ltp, moneyness, sym, oi = _pick_strike_from_chain(
@@ -274,15 +281,6 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
     if ctx.vix_ltp and 12 <= ctx.vix_ltp <= 28:
         score += 3
 
-    if sensex_is_gap_up_session(ctx.day_open, ctx.prev_close):
-        gap_pct = (
-            (ctx.day_open - ctx.prev_close) / ctx.prev_close * 100.0 if ctx.prev_close > 0 else 0.0
-        )
-        warnings.append(
-            f"Gap-up session (+{gap_pct:.2f}%) — skip entry (poor historical win rate on gap-up days)"
-        )
-        score = min(score, 20)
-        pattern = "20rupees_gap_up_skip"
     elif ctx.minutes > 0 and ctx.minutes < sensex_entry_scan_start_minutes():
         scan = sensex_entry_scan_start_minutes()
         warnings.append(

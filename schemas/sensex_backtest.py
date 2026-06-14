@@ -26,7 +26,10 @@ class SensexBacktestRunRequest(BaseModel):
         le=500,
         description="Max target premium points (optional cap before trail)",
     )
-    direction: str = Field(default="AUTO", description="AUTO (highest OI strike), CE, or PE")
+    direction: str = Field(
+        default="AUTO",
+        description="AUTO (PE gap-down, CE gap-up/flat), CE, or PE",
+    )
     mode: str = Field(default="conservative", description="conservative, optimistic, or both")
     refresh_dhan: bool = Field(default=False, description="Re-fetch from Dhan even if cached")
 

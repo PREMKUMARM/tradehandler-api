@@ -15,7 +15,6 @@ from services.sensex_constants import (
     sensex_entry_cutoff_message,
     sensex_entry_scan_start_minutes,
     sensex_is_bad_option_bar,
-    sensex_is_gap_up_session,
 )
 from services.sensex_strategy_analysis import (
     FIXED_SL_INR,
@@ -448,12 +447,6 @@ def _analyze_20rupees(
         msg = sensex_entry_cutoff_message()
         notes.append(msg)
         return False, None, 0, notes, msg, "20rupees_cutoff"
-
-    if sensex_is_gap_up_session(day_open, prev_close):
-        gap_pct = (day_open - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
-        msg = f"Gap-up session (+{gap_pct:.2f}%) — skip entry"
-        notes.append(msg)
-        return False, None, 0, notes, msg, "20rupees_gap_up_skip"
 
     bar_minutes = int(intra.get("bar_minutes") or intra.get("ist_minutes") or 0)
     scan_start = sensex_entry_scan_start_minutes()
