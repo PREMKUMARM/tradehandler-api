@@ -23,7 +23,7 @@ IST = ZoneInfo("Asia/Kolkata")
 STRATEGY_ID = "20rupees_strategy"
 STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
-    "Buy ATM or highest-OI Sensex option when premium is ₹17–₹23. "
+    "Buy highest-OI Sensex option (AUTO) or forced CE/PE when premium is ₹17–₹23. "
     "Size to risk % (default 1% of capital), ₹10 SL, 1:1 target; trailing stop as per other segments. "
     "No new entries after 3:00 PM IST (last 30 minutes)."
 )
@@ -110,6 +110,59 @@ def _highest_oi_row(ranked: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return max(ranked, key=lambda row: float(row.get("oi") or 0))
 
 
+def _pick_auto_strike_from_chain(
+    chain_oi: Dict[str, Any],
+    spot: float,
+) -> Tuple[Optional[int], float, str, Optional[str], Optional[float], str]:
+    """
+    AUTO: pick the single highest-OI contract (CE or PE) whose premium is in band when possible.
+    Returns (strike, ltp, moneyness, symbol, oi, option_kind).
+    """
+    contract = chain_oi.get("max_oi_contract") or {}
+    candidates: List[Tuple[str, int, float, Optional[str], float]] = []
+
+    if contract.get("strike") and contract.get("kind"):
+        candidates.append(
+            (
+                str(contract["kind"]).upper(),
+                int(contract["strike"]),
+                float(contract.get("ltp") or 0),
+                contract.get("symbol"),
+                float(contract.get("oi") or 0),
+            )
+        )
+
+    for kind in ("CE", "PE"):
+        ranked = chain_oi.get("ranked_ce_oi") if kind == "CE" else chain_oi.get("ranked_pe_oi")
+        row = _highest_oi_row(list(ranked or []))
+        if row and int(row.get("strike") or 0) > 0:
+            candidates.append(
+                (
+                    kind,
+                    int(row["strike"]),
+                    float(row.get("ltp") or 0),
+                    row.get("symbol"),
+                    float(row.get("oi") or 0),
+                )
+            )
+
+    if not candidates:
+        atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
+        return atm, 0.0, "ATM", None, None, "CE"
+
+    deduped: Dict[Tuple[str, int], Tuple[str, int, float, Optional[str], float]] = {}
+    for c in candidates:
+        deduped[(c[0], c[1])] = c
+    pool = list(deduped.values())
+    in_band = [c for c in pool if _in_premium_band(c[2])]
+    kind, strike, ltp, sym, oi = max(in_band or pool, key=lambda row: row[4])
+    moneyness = "MAX_OI"
+    atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
+    if strike == atm:
+        moneyness = "ATM"
+    return strike, ltp, moneyness, sym, oi or None, kind
+
+
 def _pick_strike_from_chain(
     chain_oi: Dict[str, Any],
     kind: str,
@@ -176,7 +229,6 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
 
 
 def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> StrategyCandidate:
-    kind = _resolve_kind(ctx, "AUTO")
     chain = chain_oi or {}
     spot = ctx.nifty_ltp
     if spot <= 0:
@@ -186,23 +238,27 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
     warnings: List[str] = []
 
     if spot <= 0 and not chain:
-        warnings.append("Sensex spot unavailable — connect Kite ticker")
         return StrategyCandidate(
             id=STRATEGY_ID,
             name=STRATEGY_NAME,
             description=STRATEGY_DESC,
             score=15,
             fit=_fit_label(15),
-            option_kind=kind,
+            option_kind="CE",
             spot_entry=0,
             spot_stop_loss=0,
             spot_target=0,
             rr_ratio=rr,
             reasons=reasons,
-            warnings=warnings,
+            warnings=["Sensex spot unavailable — connect Kite ticker"],
         )
 
-    strike, ltp, moneyness, sym, oi = _pick_strike_from_chain(chain, kind, spot)
+    if ctx.direction_pref == "AUTO":
+        strike, ltp, moneyness, sym, oi, kind = _pick_auto_strike_from_chain(chain, spot)
+    else:
+        kind = ctx.direction_pref
+        strike, ltp, moneyness, sym, oi = _pick_strike_from_chain(chain, kind, spot)
+
     if strike is None or ltp <= 0:
         warnings.append("Option chain LTP unavailable — refresh after 9:20 AM")
         return StrategyCandidate(

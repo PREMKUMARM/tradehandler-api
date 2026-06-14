@@ -178,14 +178,6 @@ def _estimate_entry(
     return round((band_low + band_high) / 2.0, 2)
 
 
-def _resolve_kind(direction: str, index_open: float, prev_close: float) -> str:
-    d = (direction or "AUTO").upper()
-    if d in ("CE", "PE"):
-        return d
-    if prev_close > 0:
-        return "CE" if index_open >= prev_close else "PE"
-    return "CE"
-
 
 def _series_bar(series: OptionSeries, idx: int) -> MinuteBar:
     ts = series.timestamps[idx]
@@ -206,6 +198,69 @@ def _series_bar(series: OptionSeries, idx: int) -> MinuteBar:
     )
 
 
+def _ref_series(session: Dict[str, Dict[str, OptionSeries]]) -> Optional[OptionSeries]:
+    for kind in ("CE", "PE"):
+        ref = (session.get(kind) or {}).get("ATM")
+        if ref and ref.timestamps:
+            return ref
+    return None
+
+
+def _max_oi_at_bar(
+    session: Dict[str, Dict[str, OptionSeries]],
+    idx: int,
+    *,
+    kinds: Tuple[str, ...] = ("CE", "PE"),
+) -> Optional[Tuple[str, str, OptionSeries]]:
+    best_kind = None
+    best_offset = None
+    best_oi = -1.0
+    best_series: Optional[OptionSeries] = None
+    for kind in kinds:
+        for offset, series in (session.get(kind) or {}).items():
+            if idx >= len(series.oi):
+                continue
+            oi = float(series.oi[idx])
+            if oi > best_oi:
+                best_oi = oi
+                best_kind = kind
+                best_offset = offset
+                best_series = series
+    if best_series is None or best_kind is None or best_offset is None:
+        return None
+    return best_kind, best_offset, best_series
+
+
+def _pick_entry_auto(
+    session: Dict[str, Dict[str, OptionSeries]],
+    band_low: float,
+    band_high: float,
+    cutoff_minutes: int,
+) -> Optional[Tuple[MinuteBar, str, OptionSeries]]:
+    """AUTO: enter on the highest-OI strike (CE or PE) when premium is in band."""
+    ref = _ref_series(session)
+    if not ref:
+        return None
+
+    for idx in range(len(ref.timestamps)):
+        ts = ref.timestamps[idx]
+        dt = datetime.fromtimestamp(ts, tz=IST)
+        if dt.hour * 60 + dt.minute >= cutoff_minutes:
+            break
+
+        picked = _max_oi_at_bar(session, idx)
+        if not picked:
+            continue
+        _kind, offset, series = picked
+        bar = _series_bar(series, idx)
+        source = "ATM" if offset == "ATM" else "MAX_OI"
+        entry = _estimate_entry(bar.open, bar.high, bar.low, band_low, band_high)
+        if entry is not None:
+            return bar, source, series
+
+    return None
+
+
 def _pick_entry(
     session: Dict[str, Dict[str, OptionSeries]],
     kind: str,
@@ -213,6 +268,7 @@ def _pick_entry(
     band_high: float,
     cutoff_minutes: int,
 ) -> Optional[Tuple[MinuteBar, str, OptionSeries]]:
+    """CE/PE: enter on highest-OI strike within the chosen leg when premium is in band."""
     leg = session.get(kind) or {}
     ref = leg.get("ATM")
     if not ref or not ref.timestamps:
@@ -224,30 +280,15 @@ def _pick_entry(
         if dt.hour * 60 + dt.minute >= cutoff_minutes:
             break
 
-        atm_series = leg.get("ATM")
-        atm_bar = _series_bar(atm_series, idx) if atm_series else None
-
-        max_oi_offset = None
-        max_oi = -1.0
-        for offset, series in leg.items():
-            if idx >= len(series.oi):
-                continue
-            oi = series.oi[idx]
-            if oi > max_oi:
-                max_oi = oi
-                max_oi_offset = offset
-        max_oi_bar = _series_bar(leg[max_oi_offset], idx) if max_oi_offset else None
-
-        candidates: List[Tuple[str, MinuteBar, OptionSeries]] = []
-        if atm_bar:
-            candidates.append(("ATM", atm_bar, atm_series))
-        if max_oi_bar and max_oi_offset != "ATM":
-            candidates.append(("MAX_OI", max_oi_bar, leg[max_oi_offset]))
-
-        for source, bar, series in candidates:
-            entry = _estimate_entry(bar.open, bar.high, bar.low, band_low, band_high)
-            if entry is not None:
-                return bar, source, series
+        picked = _max_oi_at_bar(session, idx, kinds=(kind,))
+        if not picked:
+            continue
+        _k, offset, series = picked
+        bar = _series_bar(series, idx)
+        source = "ATM" if offset == "ATM" else "MAX_OI"
+        entry = _estimate_entry(bar.open, bar.high, bar.low, band_low, band_high)
+        if entry is not None:
+            return bar, source, series
 
     return None
 
@@ -328,19 +369,28 @@ def _run_day(
     params: BacktestParams,
     mode: str,
 ) -> Optional[TradeResult]:
-    kind = _resolve_kind(params.direction, index_open, prev_close)
     cutoff = sensex_entry_cutoff_minutes()
-    picked = _pick_entry(
-        session,
-        kind,
-        params.entry_band_low,
-        params.entry_band_high,
-        cutoff,
-    )
+    direction = (params.direction or "AUTO").upper()
+    if direction == "AUTO":
+        picked = _pick_entry_auto(
+            session,
+            params.entry_band_low,
+            params.entry_band_high,
+            cutoff,
+        )
+    else:
+        picked = _pick_entry(
+            session,
+            direction,
+            params.entry_band_low,
+            params.entry_band_high,
+            cutoff,
+        )
     if not picked:
         return None
 
     bar, source, series = picked
+    kind = series.kind
     entry = _estimate_entry(bar.open, bar.high, bar.low, params.entry_band_low, params.entry_band_high)
     if entry is None:
         return None

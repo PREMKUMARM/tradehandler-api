@@ -202,6 +202,7 @@ def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, 
     ce_oi = pe_oi = 0.0
     max_oi_strike = atm
     max_oi_val = 0.0
+    max_oi_contract: Dict[str, Any] = {}
     atm_ce = atm_pe = None
 
     for r in rows:
@@ -226,6 +227,13 @@ def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, 
         if oi > max_oi_val:
             max_oi_val = oi
             max_oi_strike = strike
+            max_oi_contract = {
+                "kind": kind,
+                "strike": strike,
+                "ltp": ltp,
+                "oi": oi,
+                "symbol": r.get("tradingsymbol"),
+            }
 
     pcr = (pe_oi / ce_oi) if ce_oi > 0 else 0.0
     exp_str = expiry if isinstance(expiry, str) else (
@@ -239,6 +247,7 @@ def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, 
         "ce_oi_total": int(ce_oi),
         "pe_oi_total": int(pe_oi),
         "max_pain_strike": max_oi_strike,
+        "max_oi_contract": max_oi_contract,
         "atm_ce": atm_ce,
         "atm_pe": atm_pe,
     }

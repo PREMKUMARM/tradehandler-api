@@ -249,7 +249,7 @@ def _validate_checklist_auto(
         elif i == 1:
             ok = dir_ok and (plan is not None or direction.upper() in ("CE", "PE"))
             if direction.upper() == "AUTO" and plan:
-                msg = f"Direction AUTO → {opt}"
+                msg = f"Direction AUTO → highest OI {opt}"
                 out = f"Sensex {plan.get('nifty_spot')} vs prior close → {opt}"
             elif direction.upper() in ("CE", "PE"):
                 msg = f"Direction: {direction.upper()}"
