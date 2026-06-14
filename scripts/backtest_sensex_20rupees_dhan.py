@@ -46,7 +46,6 @@ def _print_report(result: dict) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest Sensex 20rupees-strategy on Dhan 5m data")
     parser.add_argument("--direction", default="AUTO", choices=["AUTO", "CE", "PE"])
-    parser.add_argument("--mode", default="both", choices=["both", "conservative", "optimistic"])
     parser.add_argument("--capital", type=float, default=1_000_000.0)
     parser.add_argument("--risk-pct", type=float, default=1.0)
     parser.add_argument("--sl", type=float, default=10.0)
@@ -63,7 +62,6 @@ def main() -> None:
         min_target_low=mt,
         min_target_high=mt,
         direction=args.direction,
-        mode=args.mode,
         refresh_dhan=args.refresh,
     )
     result = run_sensex_dhan_backtest(params)

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.dhan_data_client import build_fixed_strike_series, load_cached_session
+from services.dhan_data_client import build_entry_offset_exit_series, load_cached_session
 from services.sensex_constants import sensex_atm_near_offsets, sensex_entry_cutoff_minutes
 from services.sensex_dhan_backtest import (
     CACHE_DIR,
@@ -96,7 +96,6 @@ def _iter_executed_contracts(params: BacktestParams) -> Iterator[ExecutedContrac
         wanted = set(params.expiry_dates)
         sessions = [r for r in sessions if r.get("expiry_date") in wanted]
 
-    mode = params.mode if params.mode in ("conservative", "optimistic") else "conservative"
     cutoff = sensex_entry_cutoff_minutes()
 
     for row in sessions:
@@ -130,7 +129,7 @@ def _iter_executed_contracts(params: BacktestParams) -> Iterator[ExecutedContrac
             continue
 
         entry_bar, strike_source, series = picked
-        trade = _run_day(expiry_date, index_open, prev_close, session, params, mode)
+        trade = _run_day(expiry_date, index_open, prev_close, session, params)
         if not trade:
             continue
 
@@ -138,23 +137,22 @@ def _iter_executed_contracts(params: BacktestParams) -> Iterator[ExecutedContrac
         entry_ts = series.timestamps[entry_bar.idx]
         export_series = series
         export_entry_idx = entry_bar.idx
-        locked = build_fixed_strike_series(
+        exit_bundle = build_entry_offset_exit_series(
             session,
             kind=trade.kind,
-            strike=entry_strike,
+            entry_offset=series.offset,
+            entry_ts=entry_ts,
+            entry_strike=entry_strike,
             session_date=expiry_date,
         )
-        if locked and entry_ts in locked.timestamps:
-            export_series = locked
-            export_entry_idx = locked.timestamps.index(entry_ts)
+        if exit_bundle:
+            export_series, export_entry_idx = exit_bundle
 
         _, reason, sim_exit_idx = _simulate_from_entry(
             trade.entry,
             export_series,
             export_entry_idx,
-            mode,
             params.sl_inr,
-            params.min_target_low,
             params.min_target_high,
         )
         display_exit_idx = _resolve_exit_bar_index(
@@ -274,11 +272,10 @@ def main() -> None:
         default=None,
         help="Also write a merged CSV (optional path; default: executed_trades_ohlc_all.csv)",
     )
-    parser.add_argument("--mode", default="conservative", choices=["conservative", "optimistic"])
     parser.add_argument("--direction", default="AUTO", choices=["AUTO", "CE", "PE"])
     args = parser.parse_args()
 
-    params = BacktestParams(mode=args.mode, direction=args.direction)
+    params = BacktestParams(direction=args.direction)
     files, bars = export_executed_ohlc(params, args.out_dir, combined_path=args.combined)
     if not files:
         print("No executed trades found.")

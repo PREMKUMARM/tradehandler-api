@@ -140,6 +140,39 @@ def sensex_atm_near_offsets() -> list[str]:
     return minus + ["ATM"] + plus
 
 
+def normalize_rolling_offset(offset: str) -> str:
+    """
+    Normalize Dhan rolling offset labels from query strings and UI.
+
+    URL query decoding turns ``ATM+2`` into ``ATM 2`` (``+`` → space).
+    """
+    import re
+
+    off = (offset or "ATM").strip().upper()
+    allowed = sensex_atm_near_offsets()
+    if off in allowed:
+        return off
+    compact = re.sub(r"\s+", "", off)
+    if compact in allowed:
+        return compact
+    m = re.match(r"^ATM(\d+)$", compact)
+    if m:
+        candidate = f"ATM+{m.group(1)}"
+        if candidate in allowed:
+            return candidate
+    m = re.match(r"^ATM\s+(\d+)$", off)
+    if m:
+        candidate = f"ATM+{m.group(1)}"
+        if candidate in allowed:
+            return candidate
+    m = re.match(r"^ATM\s+-(\d+)$", off)
+    if m:
+        candidate = f"ATM-{m.group(1)}"
+        if candidate in allowed:
+            return candidate
+    return off
+
+
 def sensex_atm_near_strike_points() -> int:
     """Absolute strike distance from ATM included in live chain monitoring."""
     return sensex_atm_near_steps() * 100

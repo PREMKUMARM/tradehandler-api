@@ -1,7 +1,7 @@
 """Browse cached Dhan 5m Sensex rolling-option OHLC by session date."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from zoneinfo import ZoneInfo
@@ -14,7 +14,11 @@ from services.dhan_data_client import (
     save_cached_session,
     ts_to_ist_label,
 )
-from services.sensex_constants import sensex_atm_near_offsets, sensex_entry_scan_start_minutes
+from services.sensex_constants import (
+    normalize_rolling_offset,
+    sensex_atm_near_offsets,
+    sensex_entry_scan_start_minutes,
+)
 from services.sensex_dhan_backtest import CACHE_DIR as BACKTEST_CACHE_DIR, list_available_sessions
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -134,7 +138,7 @@ def get_dhan_ohlc(
     refresh: bool = False,
 ) -> Dict[str, Any]:
     leg = (kind or "").upper()
-    off = (offset or "ATM").upper()
+    off = normalize_rolling_offset(offset)
     if leg not in ("CE", "PE"):
         raise ValueError("kind must be CE or PE")
     if off not in sensex_atm_near_offsets():
@@ -148,10 +152,14 @@ def get_dhan_ohlc(
     if not series or not series.timestamps:
         raise ValueError(f"No OHLC for {leg} {off} on {session_date}")
 
+    session_day = date.fromisoformat(session_date)
     ref_idx = _reference_bar_idx(series)
     strike = int(round(float(series.strike[ref_idx])))
     rows: List[Dict[str, Any]] = []
     for idx in range(len(series.timestamps)):
+        dt = datetime.fromtimestamp(series.timestamps[idx], tz=IST)
+        if dt.date() != session_day:
+            continue
         rows.append(
             {
                 "bar_index": idx,

@@ -116,7 +116,7 @@ def _alt_outcomes(session, bar_idx: int, entry: float, series: OptionSeries) -> 
     """What if we used close as entry instead of estimate?"""
     close_entry = round(series.close[bar_idx], 2)
     for label, px in [("estimated", entry), ("bar_close", close_entry), ("bar_open", round(series.open[bar_idx], 2))]:
-        ex, reason, _ = _simulate_from_entry(px, series, bar_idx, "conservative", SL, MIN_TGT, MIN_TGT)
+        ex, reason, _ = _simulate_from_entry(px, series, bar_idx, SL, SL)
         yield label, px, ex, reason
 
 
@@ -127,7 +127,7 @@ def analyze_day(row: Dict[str, str]) -> Dict[str, Any]:
         return {"expiry": expiry, "error": "no cache"}
 
     params = BacktestParams(direction="AUTO")
-    trade = _run_day(expiry, float(row["open"]), float(row["prev_close"]), session, params, "conservative")
+    trade = _run_day(expiry, float(row["open"]), float(row["prev_close"]), session, params)
     if not trade:
         return {"expiry": expiry, "error": "no trade picked"}
 
@@ -191,7 +191,7 @@ def analyze_day(row: Dict[str, str]) -> Dict[str, Any]:
     if atm_same and atm_same["low"] <= BAND[1] and atm_same["high"] >= BAND[0]:
         ae = _estimate_entry(atm_same["open"], atm_same["high"], atm_same["low"], *BAND)
         if ae:
-            ex, reason, _ = _simulate_from_entry(ae, session[trade.direction]["ATM"], idx, "conservative", SL, MIN_TGT, MIN_TGT)
+            ex, reason, _ = _simulate_from_entry(ae, session[trade.direction]["ATM"], idx, SL, SL)
             atm_alt = {"entry": ae, "exit": ex, "reason": reason}
 
     # Top OI at entry vs band-in-band candidates

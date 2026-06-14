@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -352,19 +352,93 @@ def save_cached_session(
     return path
 
 
+def _session_day_indices(
+    series: OptionSeries,
+    *,
+    session_day: Optional[date],
+    start_idx: int = 0,
+) -> List[int]:
+    """Bar indices on `series` belonging to `session_day` (or all bars if unset)."""
+    if session_day is None:
+        return list(range(start_idx, len(series.timestamps)))
+    out: List[int] = []
+    for idx in range(start_idx, len(series.timestamps)):
+        dt = datetime.fromtimestamp(int(series.timestamps[idx]), tz=IST)
+        if dt.date() == session_day:
+            out.append(idx)
+    return out
+
+
+def build_entry_offset_exit_series(
+    session: Dict[str, Dict[str, OptionSeries]],
+    *,
+    kind: str,
+    entry_offset: str,
+    entry_ts: int,
+    entry_strike: int,
+    session_date: Optional[str] = None,
+) -> Optional[Tuple[OptionSeries, int]]:
+    """
+    Exit OHLC on the same rolling-offset slice used for entry, from the entry bar onward.
+
+    Dhan stores one series per ATM offset; merging all offsets that share an absolute
+    strike reuses stale labels from other offsets and inflates trail exits. Exits stay
+    on the entry offset path instead.
+    """
+    kind_key = kind.upper()
+    series = (session.get(kind_key) or {}).get(entry_offset)
+    if not series or not series.timestamps:
+        return None
+
+    session_day = date.fromisoformat(session_date) if session_date else None
+    entry_idx: Optional[int] = None
+    for idx, ts in enumerate(series.timestamps):
+        if int(ts) != int(entry_ts):
+            continue
+        if session_day is not None:
+            dt = datetime.fromtimestamp(int(ts), tz=IST)
+            if dt.date() != session_day:
+                continue
+        entry_idx = idx
+        break
+    if entry_idx is None:
+        return None
+
+    idxs = _session_day_indices(series, session_day=session_day, start_idx=entry_idx)
+    if not idxs:
+        return None
+
+    target = int(entry_strike)
+    return (
+        OptionSeries(
+            kind=kind_key,
+            offset=f"{entry_offset}@{target}",
+            timestamps=[series.timestamps[i] for i in idxs],
+            open=[series.open[i] for i in idxs],
+            high=[series.high[i] for i in idxs],
+            low=[series.low[i] for i in idxs],
+            close=[series.close[i] for i in idxs],
+            oi=[series.oi[i] for i in idxs],
+            spot=[series.spot[i] for i in idxs],
+            strike=[series.strike[i] for i in idxs],
+        ),
+        0,
+    )
+
+
 def build_fixed_strike_series(
     session: Dict[str, Dict[str, OptionSeries]],
     *,
     kind: str,
     strike: int,
     session_date: Optional[str] = None,
+    entry_offset: Optional[str] = None,
 ) -> Optional[OptionSeries]:
     """
     Merge cached rolling-offset series into one OHLC stream for an absolute strike.
 
-    Dhan expired data is stored per ATM offset; as spot moves the mapped absolute
-    strike changes bar-to-bar. After entry, lock to `strike` and take each 5m bar
-    from whichever offset slice reports that strike on that timestamp.
+    When `entry_offset` is set, only that offset slice is used so cross-offset
+    strike reuse cannot contaminate exit bars.
     """
     kind_key = kind.upper()
     leg = session.get(kind_key) or {}
@@ -374,8 +448,11 @@ def build_fixed_strike_series(
     target = int(strike)
     session_day = date.fromisoformat(session_date) if session_date else None
     merged: Dict[int, Dict[str, float]] = {}
+    offsets = [entry_offset] if entry_offset else STRIKE_OFFSETS
 
-    for offset in STRIKE_OFFSETS:
+    for offset in offsets:
+        if not offset:
+            continue
         series = leg.get(offset)
         if not series or not series.timestamps:
             continue
@@ -402,10 +479,11 @@ def build_fixed_strike_series(
     if not merged:
         return None
 
+    lock_label = f"{entry_offset}@{target}" if entry_offset else f"LOCK-{target}"
     timestamps = sorted(merged.keys())
     return OptionSeries(
         kind=kind_key,
-        offset=f"LOCK-{target}",
+        offset=lock_label,
         timestamps=timestamps,
         open=[merged[ts]["open"] for ts in timestamps],
         high=[merged[ts]["high"] for ts in timestamps],

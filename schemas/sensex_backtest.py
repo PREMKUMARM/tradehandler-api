@@ -5,9 +5,17 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class SensexBacktestRunRequest(BaseModel):
+    start_date: Optional[str] = Field(
+        default=None,
+        description="Inclusive backtest start date YYYY-MM-DD (weekdays only)",
+    )
+    end_date: Optional[str] = Field(
+        default=None,
+        description="Inclusive backtest end date YYYY-MM-DD (weekdays only)",
+    )
     expiry_dates: Optional[List[str]] = Field(
         default=None,
-        description="Weekly expiry session dates (YYYY-MM-DD). Omit for all available.",
+        description="Explicit session dates (legacy). Omit when using start_date/end_date.",
     )
     capital: float = Field(default=1_000_000.0, ge=10_000, le=100_000_000)
     risk_pct: float = Field(default=1.0, gt=0, le=10, description="Risk % of capital per trade")
@@ -30,7 +38,6 @@ class SensexBacktestRunRequest(BaseModel):
         default="AUTO",
         description="AUTO (PE gap-down, CE gap-up/flat), CE, or PE",
     )
-    mode: str = Field(default="conservative", description="conservative, optimistic, or both")
     refresh_dhan: bool = Field(default=False, description="Re-fetch from Dhan even if cached")
 
     @field_validator("direction")
@@ -39,14 +46,6 @@ class SensexBacktestRunRequest(BaseModel):
         v = (value or "AUTO").upper()
         if v not in ("AUTO", "CE", "PE"):
             raise ValueError("direction must be AUTO, CE, or PE")
-        return v
-
-    @field_validator("mode")
-    @classmethod
-    def _mode(cls, value: str) -> str:
-        v = (value or "conservative").lower()
-        if v not in ("conservative", "optimistic", "both"):
-            raise ValueError("mode must be conservative, optimistic, or both")
         return v
 
     @field_validator("entry_band_high")

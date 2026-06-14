@@ -134,7 +134,7 @@ def run_with_filter(
             continue  # skip top-of-band entries
 
         exit_px, reason, exit_idx = _simulate_from_entry(
-            entry, series, idx, "conservative", SL, MIN_TGT, MIN_TGT
+            entry, series, idx, SL, MIN_TGT
         )
         r = round((exit_px - entry) / SL, 2)
         return {

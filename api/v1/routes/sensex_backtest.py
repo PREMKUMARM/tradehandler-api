@@ -7,6 +7,7 @@ from core.responses import SuccessResponse
 from schemas.sensex_backtest import SensexBacktestRunRequest
 from services.sensex_dhan_backtest import (
     BacktestParams,
+    backtest_session_calendar,
     check_dhan_status,
     list_available_sessions,
     run_sensex_dhan_backtest,
@@ -17,11 +18,16 @@ router = APIRouter(prefix="/sensex/backtest", tags=["Sensex Backtest"])
 
 @router.get("/sessions")
 async def backtest_sessions(_: Request):
-    """Available weekly expiry sessions with Dhan cache status."""
+    """Trading-day calendar with Dhan cache status (for date-range picker)."""
     sessions = list_available_sessions()
+    calendar = backtest_session_calendar()
     return SuccessResponse(
-        data={"sessions": sessions, "count": len(sessions)},
-        message=f"{len(sessions)} expiry sessions available",
+        data={
+            "sessions": sessions,
+            "count": len(sessions),
+            "calendar": calendar,
+        },
+        message=f"{len(sessions)} trading days · {calendar.get('cached_count', 0)} cached",
     )
 
 
@@ -47,7 +53,8 @@ async def run_backtest(_: Request, body: SensexBacktestRunRequest):
         min_target_low=body.min_target_low,
         min_target_high=body.min_target_high,
         direction=body.direction,
-        mode=body.mode,
+        start_date=body.start_date,
+        end_date=body.end_date,
         expiry_dates=body.expiry_dates,
         refresh_dhan=body.refresh_dhan,
     )
