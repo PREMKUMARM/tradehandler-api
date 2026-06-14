@@ -683,6 +683,35 @@ def _run_day(
     return trades
 
 
+def _missing_session_offsets(
+    session: Dict[str, Dict[str, OptionSeries]],
+) -> List[str]:
+    """Offsets required for current band but absent or empty in a cached session."""
+    required = sensex_atm_near_offsets()
+    missing: List[str] = []
+    for kind in ("CE", "PE"):
+        leg = session.get(kind) or {}
+        for off in required:
+            series = leg.get(off)
+            if not series or not series.timestamps:
+                if off not in missing:
+                    missing.append(off)
+    return missing
+
+
+def _merge_session_series(
+    base: Dict[str, Dict[str, OptionSeries]],
+    extra: Dict[str, Dict[str, OptionSeries]],
+) -> Dict[str, Dict[str, OptionSeries]]:
+    out: Dict[str, Dict[str, OptionSeries]] = {
+        kind: dict(offsets) for kind, offsets in base.items()
+    }
+    for kind, offsets in extra.items():
+        out.setdefault(kind, {})
+        out[kind].update(offsets)
+    return out
+
+
 def fetch_sessions_data(
     sessions: List[Dict[str, Any]],
     *,
@@ -693,6 +722,7 @@ def fetch_sessions_data(
     loaded: Dict[str, Dict[str, Dict[str, OptionSeries]]] = {}
     stats = {"cached": 0, "fetched": 0}
     pending: List[str] = []
+    pending_topup: List[Tuple[str, List[str]]] = []
     total = len(sessions)
     iv_label = _interval_label(interval_min)
 
@@ -708,15 +738,20 @@ def fetch_sessions_data(
                     message=f"Loading Dhan {iv_label} data for {expiry}",
                 )
             )
-        if not refresh:
-            cached = load_cached_session(CACHE_DIR, expiry, interval_min)
-            if cached:
-                loaded[expiry] = cached
-                stats["cached"] += 1
-                continue
-        pending.append(expiry)
+        if refresh:
+            pending.append(expiry)
+            continue
+        cached = load_cached_session(CACHE_DIR, expiry, interval_min)
+        if not cached:
+            pending.append(expiry)
+            continue
+        missing = _missing_session_offsets(cached)
+        loaded[expiry] = cached
+        stats["cached"] += 1
+        if missing:
+            pending_topup.append((expiry, missing))
 
-    if pending:
+    if pending or pending_topup:
         client = DhanDataClient()
         prof = client.profile()
         if str(prof.get("dataPlan") or "").lower() != "active":
@@ -736,6 +771,26 @@ def fetch_sessions_data(
                 meta={"profile_dataPlan": prof.get("dataPlan"), "interval_min": interval_min},
             )
             loaded[expiry] = series
+            stats["fetched"] += 1
+        for expiry, missing_offsets in pending_topup:
+            extra = client.fetch_sensex_session(
+                expiry,
+                offsets=missing_offsets,
+                interval=interval_str,
+            )
+            merged = _merge_session_series(loaded[expiry], extra)
+            save_cached_session(
+                CACHE_DIR,
+                expiry,
+                merged,
+                interval_min=interval_min,
+                meta={
+                    "profile_dataPlan": prof.get("dataPlan"),
+                    "interval_min": interval_min,
+                    "topped_up_offsets": missing_offsets,
+                },
+            )
+            loaded[expiry] = merged
             stats["fetched"] += 1
 
     return loaded, stats
