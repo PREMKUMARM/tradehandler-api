@@ -22,6 +22,7 @@ API_BASE = "https://api.dhan.co/v2"
 SENSEX_SECURITY_ID = "51"
 DEFAULT_INTERVAL = "5"
 DEFAULT_SLEEP_SEC = 1.25
+SUPPORTED_INTERVALS_MIN: Tuple[int, ...] = (1, 5, 15, 25, 60)
 
 STRIKE_OFFSETS: List[str] = ["ATM"] + [f"ATM+{i}" for i in range(1, 11)] + [f"ATM-{i}" for i in range(1, 11)]
 
@@ -304,6 +305,7 @@ class DhanDataClient:
         *,
         kinds: Optional[List[str]] = None,
         offsets: Optional[List[str]] = None,
+        interval: str = DEFAULT_INTERVAL,
     ) -> Dict[str, Dict[str, OptionSeries]]:
         kinds = kinds or ["CE", "PE"]
         offsets = offsets or STRIKE_OFFSETS
@@ -311,16 +313,39 @@ class DhanDataClient:
         for kind in kinds:
             out[kind] = {}
             for offset in offsets:
-                out[kind][offset] = self.rolling_option(session_date=session_date, kind=kind, offset=offset)
+                out[kind][offset] = self.rolling_option(
+                    session_date=session_date,
+                    kind=kind,
+                    offset=offset,
+                    interval=str(interval),
+                )
         return out
 
 
-def cache_path(cache_dir: Path, session_date: str) -> Path:
+def interval_to_str(interval_min: int) -> str:
+    iv = int(interval_min)
+    if iv not in SUPPORTED_INTERVALS_MIN:
+        raise ValueError(f"Unsupported interval {iv}m — use {list(SUPPORTED_INTERVALS_MIN)}")
+    return str(iv)
+
+
+def cache_path(cache_dir: Path, session_date: str, interval_min: int = 5) -> Path:
+    iv = int(interval_min)
+    return cache_dir / f"{session_date.replace('-', '')}_sensex_{iv}m.json"
+
+
+def _legacy_cache_path(cache_dir: Path, session_date: str) -> Path:
     return cache_dir / f"{session_date.replace('-', '')}_sensex_5m.json"
 
 
-def load_cached_session(cache_dir: Path, session_date: str) -> Optional[Dict[str, Dict[str, OptionSeries]]]:
-    path = cache_path(cache_dir, session_date)
+def load_cached_session(
+    cache_dir: Path,
+    session_date: str,
+    interval_min: int = 5,
+) -> Optional[Dict[str, Dict[str, OptionSeries]]]:
+    path = cache_path(cache_dir, session_date, interval_min)
+    if not path.exists() and int(interval_min) == 5:
+        path = _legacy_cache_path(cache_dir, session_date)
     if not path.exists():
         return None
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -336,11 +361,13 @@ def save_cached_session(
     series: Dict[str, Dict[str, OptionSeries]],
     *,
     meta: Optional[Dict[str, Any]] = None,
+    interval_min: int = 5,
 ) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_path(cache_dir, session_date)
+    path = cache_path(cache_dir, session_date, interval_min)
     payload = {
         "session_date": session_date,
+        "interval_min": int(interval_min),
         "fetched_at": datetime.now(IST).isoformat(),
         "meta": meta or {},
         "series": {

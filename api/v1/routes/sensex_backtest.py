@@ -43,7 +43,7 @@ async def backtest_dhan_status(_: Request):
 
 @router.post("/run")
 async def run_backtest(_: Request, body: SensexBacktestRunRequest):
-    """Run 20rupees-strategy backtest on Dhan 5m rolling options."""
+    """Run 20rupees-strategy backtest on Dhan rolling options (configurable bar intervals)."""
     params = BacktestParams(
         capital=body.capital,
         risk_pct=body.risk_pct,
@@ -57,6 +57,7 @@ async def run_backtest(_: Request, body: SensexBacktestRunRequest):
         end_date=body.end_date,
         expiry_dates=body.expiry_dates,
         refresh_dhan=body.refresh_dhan,
+        timeframes_min=body.timeframes_min,
     )
     try:
         result = await asyncio.to_thread(run_sensex_dhan_backtest, params)

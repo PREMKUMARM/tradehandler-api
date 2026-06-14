@@ -1,5 +1,5 @@
 """
-Sensex 20rupees-strategy backtest on Dhan 5-minute rolling options data.
+Sensex 20rupees-strategy backtest on Dhan rolling options data (configurable bar interval).
 """
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ from zoneinfo import ZoneInfo
 from services.dhan_data_client import (
     DhanDataClient,
     OptionSeries,
+    SUPPORTED_INTERVALS_MIN,
     build_entry_offset_exit_series,
     cache_path,
+    interval_to_str,
     load_cached_session,
     save_cached_session,
     ts_to_ist_label,
@@ -52,6 +54,39 @@ DEFAULT_ENTRY_LOW = 17.0
 DEFAULT_ENTRY_HIGH = 23.0
 DEFAULT_MIN_TARGET_LOW = sensex_default_min_target_inr()
 DEFAULT_MIN_TARGET_HIGH = sensex_default_min_target_inr()
+DEFAULT_TIMEFRAMES_MIN: Tuple[int, ...] = (5,)
+
+
+def _normalize_timeframes(raw: Optional[List[int]]) -> List[int]:
+    if not raw:
+        return list(DEFAULT_TIMEFRAMES_MIN)
+    out: List[int] = []
+    for iv in raw:
+        n = int(iv)
+        if n not in SUPPORTED_INTERVALS_MIN:
+            raise ValueError(f"Unsupported timeframe {n}m — choose from {list(SUPPORTED_INTERVALS_MIN)}")
+        if n not in out:
+            out.append(n)
+    if not out:
+        raise ValueError("Select at least one timeframe")
+    return sorted(out)
+
+
+def _timeframe_key(interval_min: int) -> str:
+    return f"{int(interval_min)}m"
+
+
+def _interval_label(interval_min: int) -> str:
+    iv = int(interval_min)
+    return f"{iv}m" if iv < 60 else f"{iv // 60}h"
+
+
+def _session_has_cached_interval(session_date: str, interval_min: int) -> bool:
+    return load_cached_session(CACHE_DIR, session_date, interval_min) is not None
+
+
+def _cached_intervals_for_session(session_date: str) -> List[int]:
+    return [iv for iv in SUPPORTED_INTERVALS_MIN if _session_has_cached_interval(session_date, iv)]
 
 
 @dataclass
@@ -68,6 +103,7 @@ class BacktestParams:
     end_date: Optional[str] = None
     expiry_dates: Optional[List[str]] = None
     refresh_dhan: bool = False
+    timeframes_min: Optional[List[int]] = None
 
 
 @dataclass
@@ -155,7 +191,7 @@ def list_available_sessions() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for row in _load_all_sessions():
         trade_date = row.get("expiry_date") or row.get("session_date") or ""
-        cached = cache_path(CACHE_DIR, trade_date).exists() if trade_date else False
+        cached_intervals = _cached_intervals_for_session(trade_date)
         out.append(
             {
                 "expiry_date": trade_date,
@@ -166,7 +202,8 @@ def list_available_sessions() -> List[Dict[str, Any]]:
                 "index_open": _f(row.get("index_open") or row.get("open")),
                 "index_close": _f(row.get("index_close") or row.get("close")),
                 "prev_close": _f(row.get("prev_close")),
-                "dhan_cached": cached,
+                "dhan_cached": 5 in cached_intervals,
+                "dhan_cached_intervals": cached_intervals,
             }
         )
     return out
@@ -566,6 +603,7 @@ def _run_day(
 def fetch_sessions_data(
     sessions: List[Dict[str, Any]],
     *,
+    interval_min: int = 5,
     refresh: bool = False,
     progress_cb: Optional[Any] = None,
 ) -> Tuple[Dict[str, Dict[str, Dict[str, OptionSeries]]], Dict[str, int]]:
@@ -573,6 +611,7 @@ def fetch_sessions_data(
     stats = {"cached": 0, "fetched": 0}
     pending: List[str] = []
     total = len(sessions)
+    iv_label = _interval_label(interval_min)
 
     for i, row in enumerate(sessions, start=1):
         expiry = row["expiry_date"]
@@ -583,11 +622,11 @@ def fetch_sessions_data(
                     current=i,
                     total=total,
                     expiry_date=expiry,
-                    message=f"Loading Dhan data for {expiry}",
+                    message=f"Loading Dhan {iv_label} data for {expiry}",
                 )
             )
         if not refresh:
-            cached = load_cached_session(CACHE_DIR, expiry)
+            cached = load_cached_session(CACHE_DIR, expiry, interval_min)
             if cached:
                 loaded[expiry] = cached
                 stats["cached"] += 1
@@ -599,19 +638,38 @@ def fetch_sessions_data(
         prof = client.profile()
         if str(prof.get("dataPlan") or "").lower() != "active":
             raise RuntimeError("Dhan Data API is not active. Subscribe at dhan.co and set DHAN_ACCESS_TOKEN.")
+        interval_str = interval_to_str(interval_min)
         for expiry in pending:
-            series = client.fetch_sensex_session(expiry, offsets=sensex_atm_near_offsets())
-            save_cached_session(CACHE_DIR, expiry, series, meta={"profile_dataPlan": prof.get("dataPlan")})
+            series = client.fetch_sensex_session(
+                expiry,
+                offsets=sensex_atm_near_offsets(),
+                interval=interval_str,
+            )
+            save_cached_session(
+                CACHE_DIR,
+                expiry,
+                series,
+                interval_min=interval_min,
+                meta={"profile_dataPlan": prof.get("dataPlan"), "interval_min": interval_min},
+            )
             loaded[expiry] = series
             stats["fetched"] += 1
 
     return loaded, stats
 
 
-def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
-    sessions = _resolve_backtest_sessions(params)
-
-    data, fetch_stats = fetch_sessions_data(sessions, refresh=params.refresh_dhan)
+def _run_backtest_for_timeframe(
+    params: BacktestParams,
+    sessions: List[Dict[str, Any]],
+    interval_min: int,
+) -> Tuple[Dict[str, Any], Dict[str, int]]:
+    """Run the strategy on one bar interval; returns (report_block, fetch_stats)."""
+    data, fetch_stats = fetch_sessions_data(
+        sessions,
+        interval_min=interval_min,
+        refresh=params.refresh_dhan,
+    )
+    iv_label = _interval_label(interval_min)
     start_capital = max(1000.0, float(params.capital))
     cutoff = sensex_entry_cutoff_minutes()
     trades: List[TradeResult] = []
@@ -625,7 +683,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         session_date = row["expiry_date"]
         session = data.get(session_date)
         if not session:
-            skipped.append({"expiry_date": session_date, "reason": "no Dhan data"})
+            skipped.append({"expiry_date": session_date, "reason": f"no Dhan {iv_label} data"})
             continue
 
         index_open, _, prev_close = session_index_from_spot(
@@ -675,7 +733,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
                 {
                     "expiry_date": session_date,
                     "reason": (
-                        f"no 5m close in ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} "
+                        f"no {iv_label} close in ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} "
                         f"from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
                         f"to {cutoff // 60:02d}:{cutoff % 60:02d} IST"
                     ),
@@ -690,8 +748,10 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
     report = {
         "summary": {
             "strategy": STRATEGY_NAME,
+            "timeframe": iv_label,
+            "interval_min": interval_min,
             "direction_mode": params.direction.upper(),
-            "data_source": "Dhan rollingoption 5m (BSE_FNO securityId 51)",
+            "data_source": f"Dhan rollingoption {iv_label} (BSE_FNO securityId 51)",
             "starting_capital_inr": round(start_capital, 2),
             "ending_capital_inr": ending,
             "return_pct": round((ending - start_capital) / start_capital * 100.0, 2)
@@ -721,23 +781,46 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         "trades": [asdict(t) for t in trades],
         "skipped": skipped,
     }
-    reports = {"trail": report}
+    return report, fetch_stats
+
+
+def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
+    sessions = _resolve_backtest_sessions(params)
+    timeframes = _normalize_timeframes(params.timeframes_min)
+    start_capital = max(1000.0, float(params.capital))
+    cutoff = sensex_entry_cutoff_minutes()
+
+    reports: Dict[str, Any] = {}
+    fetch_stats_by_tf: Dict[str, Dict[str, int]] = {}
+    for interval_min in timeframes:
+        key = _timeframe_key(interval_min)
+        report, fetch_stats = _run_backtest_for_timeframe(params, sessions, interval_min)
+        reports[key] = report
+        fetch_stats_by_tf[key] = fetch_stats
+
+    primary_key = _timeframe_key(timeframes[0])
+    if len(timeframes) == 1:
+        reports["trail"] = reports[primary_key]
+
+    tf_labels = ", ".join(_interval_label(iv) for iv in timeframes)
+    total_cached = sum(s.get("cached", 0) for s in fetch_stats_by_tf.values())
+    total_fetched = sum(s.get("fetched", 0) for s in fetch_stats_by_tf.values())
 
     note = (
         f"Starting capital ₹{start_capital:,.0f} · {params.risk_pct:g}% allocation per trade · "
         f"fixed initial SL premium ₹{params.sl_inr:g} · 1R = entry − SL · 1R target = entry + 1R · "
         f"stepped trail every 1R · entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
+        f"Timeframes: {tf_labels}. "
         f"Lots = floor(capital × risk% ÷ (entry × {LOT_SIZE})) — not sized from SL distance. "
-        f"AUTO picks PE on gap-down and CE on gap-up/flat; monitors ATM±{sensex_atm_near_steps()} per leg for ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} close. "
+        f"AUTO picks PE on gap-down and CE on gap-up/flat; monitors ATM±{sensex_atm_near_steps()} per leg for band close. "
         f"Skips bad option ticks (open/high > 3× close). "
         f"Entry from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
-        f"when 5m close is in band. "
+        f"when bar close is in band. "
         f"Exit simulation starts on the bar after entry (fill at close). "
         f"Trail SL deferred on the 1R activation bar (no same-bar low wick stop). "
         f"Exits stay on the entry offset series from the entry bar onward. "
-        f"ATM from Sensex index LTP (spot) each bar · gap from spot open vs prior session close. "
         f"All trading days in window ({len(sessions)} sessions). "
-        f"Dhan data: {fetch_stats['cached']} cached, {fetch_stats['fetched']} fetched. "
+        f"Dhan fetch totals: {total_cached} cached, {total_fetched} fetched across selected timeframes. "
         f"Entries before {cutoff // 60:02d}:{cutoff % 60:02d} IST."
     )
     return {
@@ -747,12 +830,14 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         "sl_inr": params.sl_inr,
         "entry_band": [params.entry_band_low, params.entry_band_high],
         "min_target_band": [params.min_target_low, params.min_target_high],
-        "data_source": "dhan_5m_rolling",
+        "timeframes_min": timeframes,
+        "data_source": "dhan_rolling",
         "dhan_status": check_dhan_status(),
         "selected_expiry_dates": [r["expiry_date"] for r in sessions],
         "start_date": params.start_date,
         "end_date": params.end_date,
-        "dhan_fetch_stats": fetch_stats,
+        "dhan_fetch_stats": fetch_stats_by_tf.get(primary_key, {"cached": 0, "fetched": 0}),
+        "dhan_fetch_stats_by_timeframe": fetch_stats_by_tf,
         "reports": reports,
         "generated_at": datetime.now(IST).isoformat(),
     }

@@ -49,6 +49,27 @@ class SensexBacktestRunRequest(BaseModel):
         description="AUTO (PE gap-down, CE gap-up/flat), CE, or PE",
     )
     refresh_dhan: bool = Field(default=False, description="Re-fetch from Dhan even if cached")
+    timeframes_min: Optional[List[int]] = Field(
+        default=None,
+        description="Bar intervals in minutes (1, 5, 15, 25, 60). Default [5]. Runs one backtest per selection.",
+    )
+
+    @field_validator("timeframes_min")
+    @classmethod
+    def _timeframes(cls, value: Optional[List[int]]) -> Optional[List[int]]:
+        if value is None:
+            return None
+        allowed = {1, 5, 15, 25, 60}
+        out: List[int] = []
+        for iv in value:
+            n = int(iv)
+            if n not in allowed:
+                raise ValueError(f"timeframes_min must be subset of {sorted(allowed)}")
+            if n not in out:
+                out.append(n)
+        if not out:
+            raise ValueError("Select at least one timeframe")
+        return sorted(out)
 
     @field_validator("direction")
     @classmethod
