@@ -32,9 +32,10 @@ LOT_SIZE = 20
 MAX_LOTS = sensex_max_lots_per_trade()
 DEFAULT_RISK_PCT = 1.0
 DEFAULT_SL_INR = 10.0
-DEFAULT_REWARD_INR = 10.0
-DEFAULT_PREMIUM_LOW = 17.0
-DEFAULT_PREMIUM_HIGH = 23.0
+DEFAULT_ENTRY_LOW = 17.0
+DEFAULT_ENTRY_HIGH = 23.0
+DEFAULT_MIN_TARGET_LOW = 34.0
+DEFAULT_MIN_TARGET_HIGH = 34.0
 
 
 @dataclass
@@ -42,9 +43,10 @@ class BacktestParams:
     capital: float = 1_000_000.0
     risk_pct: float = DEFAULT_RISK_PCT
     sl_inr: float = DEFAULT_SL_INR
-    reward_inr: float = DEFAULT_REWARD_INR
-    premium_band_low: float = DEFAULT_PREMIUM_LOW
-    premium_band_high: float = DEFAULT_PREMIUM_HIGH
+    entry_band_low: float = DEFAULT_ENTRY_LOW
+    entry_band_high: float = DEFAULT_ENTRY_HIGH
+    min_target_low: float = DEFAULT_MIN_TARGET_LOW
+    min_target_high: float = DEFAULT_MIN_TARGET_HIGH
     direction: str = "AUTO"
     mode: str = "conservative"
     expiry_dates: Optional[List[str]] = None
@@ -250,11 +252,14 @@ def _pick_entry(
     return None
 
 
-def _trail_stop(entry: float, peak: float, r: float) -> float:
+def _trail_stop(entry: float, peak: float, sl_inr: float) -> float:
+    """Ratchet SL in SL-sized steps after min-target is reached."""
+    r = max(0.05, float(sl_inr))
+    gain = max(0.0, peak - entry)
+    step = max(1, int(gain / r))
+    locked = round(entry + (step - 1) * r, 2)
     cfg = get_momentum_trail_config()
     be = breakeven_stop(entry, r, cfg)
-    step = max(1, int((peak - entry) / r))
-    locked = round(entry + (step - 1) * r, 2) if step > 1 else be
     return max(be, locked)
 
 
@@ -264,12 +269,14 @@ def _simulate_from_entry(
     start_idx: int,
     mode: str,
     sl_inr: float,
-    reward_inr: float,
+    min_target_low: float,
+    min_target_high: float,
 ) -> Tuple[float, str, int]:
     r = max(0.05, float(sl_inr))
-    reward = max(0.05, float(reward_inr))
+    tgt_low = max(r, float(min_target_low))
+    tgt_high = max(tgt_low, float(min_target_high))
     sl = round(entry - r, 2)
-    target = round(entry + reward, 2)
+    trail_trigger = round(entry + tgt_low, 2)
     trailing = False
     peak = entry
     exit_idx = start_idx
@@ -281,27 +288,30 @@ def _simulate_from_entry(
 
         if not trailing:
             hit_sl = low <= sl
-            hit_tgt = high >= target
+            hit_min_tgt = high >= trail_trigger
+            hit_max_tgt = high >= round(entry + tgt_high, 2)
             if mode == "conservative":
                 if hit_sl:
                     return sl, "stop_loss", idx
-                if hit_tgt:
+                if hit_min_tgt:
                     trailing = True
                     peak = high
             else:
-                if hit_sl and hit_tgt:
+                if hit_sl and hit_min_tgt:
                     trailing = True
                     peak = high
                 elif hit_sl:
                     return sl, "stop_loss", idx
-                elif hit_tgt:
+                elif hit_min_tgt:
                     trailing = True
                     peak = high
+            if not trailing and hit_max_tgt and tgt_high > tgt_low:
+                return round(entry + tgt_high, 2), "target_max", idx
 
         if trailing:
             peak = max(peak, high)
             trail_sl = _trail_stop(entry, peak, r)
-            if low <= trail_sl and trail_sl >= entry:
+            if low <= trail_sl:
                 return round(trail_sl, 2), "trail_stop", idx
 
     last_close = round(series.close[exit_idx], 2)
@@ -323,15 +333,15 @@ def _run_day(
     picked = _pick_entry(
         session,
         kind,
-        params.premium_band_low,
-        params.premium_band_high,
+        params.entry_band_low,
+        params.entry_band_high,
         cutoff,
     )
     if not picked:
         return None
 
     bar, source, series = picked
-    entry = _estimate_entry(bar.open, bar.high, bar.low, params.premium_band_low, params.premium_band_high)
+    entry = _estimate_entry(bar.open, bar.high, bar.low, params.entry_band_low, params.entry_band_high)
     if entry is None:
         return None
 
@@ -341,7 +351,8 @@ def _run_day(
         bar.idx,
         mode,
         params.sl_inr,
-        params.reward_inr,
+        params.min_target_low,
+        params.min_target_high,
     )
     r_unit = max(0.05, float(params.sl_inr))
     pnl_per_unit = exit_px - entry
@@ -357,7 +368,7 @@ def _run_day(
         entry=entry,
         exit=exit_px,
         sl=round(entry - params.sl_inr, 2),
-        target=round(entry + params.reward_inr, 2),
+        target=round(entry + params.min_target_low, 2),
         pnl_inr=0.0,
         r_multiple=r_mult,
         exit_reason=reason,
@@ -478,8 +489,8 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
                     {
                         "expiry_date": expiry_date,
                         "reason": (
-                            f"premium never in ₹{params.premium_band_low:g}–₹{params.premium_band_high:g} "
-                            f"band before {cutoff // 60:02d}:{cutoff % 60:02d} IST"
+                            f"premium never in ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} "
+                            f"entry range before {cutoff // 60:02d}:{cutoff % 60:02d} IST"
                         ),
                     }
                 )
@@ -517,18 +528,22 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
                 "max_risk_per_trade_inr": avg_risk,
                 "entry_cutoff_ist": f"{cutoff // 60:02d}:{cutoff % 60:02d}",
                 "sl_inr": params.sl_inr,
-                "reward_inr": params.reward_inr,
-                "premium_band": [params.premium_band_low, params.premium_band_high],
+                "entry_band": [params.entry_band_low, params.entry_band_high],
+                "min_target_band": [params.min_target_low, params.min_target_high],
             },
             "trades": [asdict(t) for t in trades],
             "skipped": skipped,
         }
 
-    rr = round(params.reward_inr / params.sl_inr, 2) if params.sl_inr > 0 else 0.0
+    tgt_label = (
+        f"₹{params.min_target_low:g}"
+        if params.min_target_low == params.min_target_high
+        else f"₹{params.min_target_low:g}–₹{params.min_target_high:g}"
+    )
     note = (
         f"Starting capital ₹{start_capital:,.0f} · {params.risk_pct:g}% risk per trade · "
-        f"₹{params.sl_inr:g} SL / ₹{params.reward_inr:g} target ({rr:g}:1 R:R) · "
-        f"premium ₹{params.premium_band_low:g}–₹{params.premium_band_high:g}. "
+        f"₹{params.sl_inr:g} SL · min-target {tgt_label} (trail in ₹{params.sl_inr:g} steps after min-target) · "
+        f"entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
         f"Dhan 5m data on {len(sessions)} expiry session(s). "
         f"Entries before {cutoff // 60:02d}:{cutoff % 60:02d} IST."
     )
@@ -537,8 +552,8 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         "starting_capital_inr": round(start_capital, 2),
         "risk_pct": params.risk_pct,
         "sl_inr": params.sl_inr,
-        "reward_inr": params.reward_inr,
-        "premium_band": [params.premium_band_low, params.premium_band_high],
+        "entry_band": [params.entry_band_low, params.entry_band_high],
+        "min_target_band": [params.min_target_low, params.min_target_high],
         "data_source": "dhan_5m_rolling",
         "dhan_status": check_dhan_status(),
         "selected_expiry_dates": [r["expiry_date"] for r in sessions],

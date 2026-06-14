@@ -254,6 +254,22 @@ else
     echo "  ⚠️  Skipping Firebase service account JSON upload (missing local file or unset FCM_SERVICE_ACCOUNT_JSON)"
 fi
 
+# Sensex backtest data (gitignored under data/ — required for /sensex/backtest)
+SENSEX_DATA_LOCAL="$REPO_ROOT/data/sensex"
+SENSEX_DATA_REMOTE="$REMOTE_API_PATH/data/sensex"
+if [ -f "$SENSEX_DATA_LOCAL/weekly_expiry_day_ohlc.csv" ]; then
+    echo "📤 Uploading Sensex backtest session list..."
+    ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" "mkdir -p \"$SENSEX_DATA_REMOTE/dhan_intraday\""
+    scp -i "$PEM_FILE" "$SENSEX_DATA_LOCAL/weekly_expiry_day_ohlc.csv" "$EC2_USER@$EC2_IP:$SENSEX_DATA_REMOTE/"
+    if [ -d "$SENSEX_DATA_LOCAL/dhan_intraday" ] && [ "$(ls -A "$SENSEX_DATA_LOCAL/dhan_intraday" 2>/dev/null)" ]; then
+        echo "📤 Uploading Dhan intraday cache ($(ls "$SENSEX_DATA_LOCAL/dhan_intraday" | wc -l | tr -d ' ') sessions)..."
+        scp -i "$PEM_FILE" "$SENSEX_DATA_LOCAL/dhan_intraday/"*.json "$EC2_USER@$EC2_IP:$SENSEX_DATA_REMOTE/dhan_intraday/" 2>/dev/null || true
+    fi
+    echo "  ✓ Sensex backtest data synced"
+else
+    echo "  ⚠️  Sensex weekly_expiry_day_ohlc.csv missing locally — backtest UI will fail on EC2"
+fi
+
 # Now continue with the main deployment
 echo ""
 echo "📦 Starting main deployment process..."
