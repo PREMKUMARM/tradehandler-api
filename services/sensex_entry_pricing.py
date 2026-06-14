@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from services.sensex_constants import is_past_sensex_entry_cutoff, sensex_entry_cutoff_message
 from services.sensex_strategy_analysis import (
     FIXED_SL_INR,
     PREMIUM_BAND_HIGH,
@@ -429,11 +430,16 @@ def _analyze_20rupees(
     quote: Dict[str, float],
     intra: Dict[str, Any],
 ) -> Tuple[bool, Optional[float], int, List[str], Optional[str], str]:
-    """Entry when contract premium is in ₹17–₹23 band."""
+    """Entry when contract premium is in ₹17–₹23 band (not after session entry cutoff)."""
     _, _, ltp, _, _ = _book(quote)
     ltp = float(intra.get("contract_ltp") or intra.get("option_ltp") or ltp or 0)
     notes: List[str] = []
     band = f"₹{PREMIUM_BAND_LOW:.0f}–{PREMIUM_BAND_HIGH:.0f}"
+
+    if is_past_sensex_entry_cutoff():
+        msg = sensex_entry_cutoff_message()
+        notes.append(msg)
+        return False, None, 0, notes, msg, "20rupees_cutoff"
 
     if ltp <= 0:
         return (

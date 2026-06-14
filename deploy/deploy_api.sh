@@ -107,6 +107,8 @@ TRAIL_GTT_FAIL_ALERT_THRESHOLD_VAL="$(_read_local_env TRAIL_GTT_FAIL_ALERT_THRES
 MOMENTUM_TRAIL_POLL_SEC_VAL="$(_read_local_env MOMENTUM_TRAIL_POLL_SEC)"
 MOMENTUM_TRAIL_ENABLED_VAL="$(_read_local_env MOMENTUM_TRAIL_ENABLED)"
 COMMODITY_AUTO_MIN_ENTRY_SCORE_VAL="$(_read_local_env COMMODITY_AUTO_MIN_ENTRY_SCORE)"
+DHAN_ACCESS_TOKEN_VAL="$(_read_local_env DHAN_ACCESS_TOKEN)"
+DHAN_CLIENT_ID_VAL="$(_read_local_env DHAN_CLIENT_ID)"
 
 # Normalize FCM JSON path for EC2:
 # - If your local .env uses an absolute path, we still deploy the file into the API directory
@@ -237,6 +239,8 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
     upsert_env_line "MOMENTUM_TRAIL_POLL_SEC" '$MOMENTUM_TRAIL_POLL_SEC_VAL'
     upsert_env_line "MOMENTUM_TRAIL_ENABLED" '$MOMENTUM_TRAIL_ENABLED_VAL'
     upsert_env_line "COMMODITY_AUTO_MIN_ENTRY_SCORE" '$COMMODITY_AUTO_MIN_ENTRY_SCORE_VAL'
+    upsert_env_line "DHAN_ACCESS_TOKEN" '$DHAN_ACCESS_TOKEN_VAL'
+    upsert_env_line "DHAN_CLIENT_ID" '$DHAN_CLIENT_ID_VAL'
 EOF
 
 # Copy Firebase service account JSON to EC2 (secret file; should NOT be in git)

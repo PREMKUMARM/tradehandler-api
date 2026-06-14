@@ -15,7 +15,8 @@ from services.sensex_option_chain import resolve_sensex_contract
 from services.sensex_live_indicators import get_sensex_bundle_for_v2, get_vix_snapshot, recalculate_from_ticker
 from services.sensex_constants import SENSEX_BFO_PRODUCT
 from services.sensex_entry_pricing import EntryAnalysis, compute_strategy_entry
-from services.sensex_strategy_analysis import FIXED_LOTS, STRATEGY_ID as TWENTY_RUPEES_ID
+from services.sensex_constants import sensex_max_lots_per_trade
+from services.sensex_strategy_analysis import STRATEGY_ID as TWENTY_RUPEES_ID
 from services.option_contract_indicators import (
     merge_option_bb_into_intra,
     order_exit_levels_from_contract_bb,
@@ -263,7 +264,7 @@ def build_indicator_trade_plan(
         spot_sl = sl_prem
         spot_tgt = tgt_prem
         delta = estimate_delta_from_spot(nifty_spot, contract.strike, option_kind, vix=ind.get("vix"))
-        exit_note = "20rupees-strategy: ₹10 SL, 1:1 target; momentum trail after fill"
+        exit_note = "20rupees-strategy: ₹10 SL, 1:1 target; trail after fill; no new entries after 15:00 IST"
     else:
         sl_prem, tgt_prem, spot_sl, spot_tgt, delta, exit_note = resolve_long_buy_exit_levels(
             strategy_id=sid,
@@ -306,15 +307,16 @@ def build_indicator_trade_plan(
     except Exception:
         pass
 
-    if sid == TWENTY_RUPEES_ID:
-        qty_lots = FIXED_LOTS
-        quantity = FIXED_LOTS * lot_size
+    lot_cap = min(sensex_max_lots_per_trade(), max(1, num_lots))
+    if sid == TWENTY_RUPEES_ID or capital > 0:
+        qty_lots, quantity, risk_inr = size_from_risk(
+            capital, risk_pct, float(entry_prem), sl_prem, lot_size, lot_cap
+        )
+    else:
+        qty_lots = num_lots
+        quantity = num_lots * lot_size
         prem_risk = max(0.05, float(entry_prem) - sl_prem)
         risk_inr = prem_risk * quantity
-    else:
-        qty_lots, quantity, risk_inr = size_from_risk(
-            capital, risk_pct, float(entry_prem), sl_prem, lot_size, num_lots
-        )
     reward_inr = max(0.0, (tgt_prem - float(entry_prem)) * quantity)
     rr = (reward_inr / risk_inr) if risk_inr > 0 else 0.0
 
@@ -493,19 +495,15 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     risk_pct = float(ind_meta.get("risk_pct") or 1.0)
     lot_size = int(plan.get("lot_size") or 20)
     num_lots = int(plan.get("num_lots") or 1)
-    if sid == TWENTY_RUPEES_ID:
-        qty_lots = FIXED_LOTS
-        quantity = FIXED_LOTS * lot_size
-        prem_risk = max(0.05, float(entry_prem) - sl_prem)
-        risk_inr = prem_risk * quantity
-    elif capital > 0:
+    lot_cap = min(sensex_max_lots_per_trade(), max(1, num_lots))
+    if capital > 0:
         qty_lots, quantity, risk_inr = size_from_risk(
             capital,
             risk_pct,
             float(entry_prem),
             sl_prem,
             lot_size,
-            num_lots,
+            lot_cap,
         )
     else:
         qty_lots = num_lots

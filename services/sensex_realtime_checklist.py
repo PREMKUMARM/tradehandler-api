@@ -350,11 +350,20 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
     src_map = ctx.src_map
 
     if i == 0:
+        from services.sensex_constants import (
+            is_past_sensex_entry_cutoff,
+            sensex_entry_cutoff_label,
+        )
+
         ok = margin > 0 and spot > 0
         src = live.get("spot_source", "quote")
         ticks = live.get("tick_count_today", 0)
         out = f"Margin ₹{margin:,.0f} · Sensex {spot:.2f} via {src} ({ticks} ticks today)"
-        return _step(i, title, ok, "Session live", out)
+        msg = "Session live"
+        if market_open and is_past_sensex_entry_cutoff():
+            out += f" · entries closed after {sensex_entry_cutoff_label()} IST"
+            msg = "Session live — no new entries (last-minute window)"
+        return _step(i, title, ok, msg, out)
     if i == 1:
         gap = ((ohlc.get("open", spot) - prev_close) / prev_close * 100) if prev_close else 0
         bias = "CE" if spot >= prev_close else "PE"
@@ -383,11 +392,18 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
     if i == 3:
         ok = bool(strategy_analysis.get("selected_id"))
         out = strategy_analysis.get("output_summary", "")
+        ctx_block = (strategy_analysis.get("context") or {}).get("entry_allowed")
+        msg = f"20rupees: {strategy_analysis.get('selected_name')} ({strategy_analysis.get('selected_score')}/100)"
+        if ctx_block is False:
+            from services.sensex_constants import sensex_entry_cutoff_label
+
+            ok = False
+            msg = f"Entry window closed — no new trades after {sensex_entry_cutoff_label()} IST"
         return _step(
             i,
             title,
             ok,
-            f"20rupees: {strategy_analysis.get('selected_name')} ({strategy_analysis.get('selected_score')}/100)",
+            msg,
             out,
         )
     if i == 4:

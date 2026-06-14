@@ -250,6 +250,24 @@ def _commodity_pre_check() -> Tuple[bool, str]:
     return has_any_exchange_position(exchange="MCX", log_prefix="CommodityGuard")
 
 
+def _sensex_cutoff_check() -> Tuple[bool, str]:
+    try:
+        from services.sensex_constants import is_sensex_new_entry_allowed, sensex_entry_cutoff_message
+
+        if not is_sensex_new_entry_allowed():
+            return False, sensex_entry_cutoff_message()
+    except Exception:
+        pass
+    return True, "OK"
+
+
+def _sensex_pre_check() -> Tuple[bool, str]:
+    ok, msg = _sensex_cutoff_check()
+    if not ok:
+        return ok, msg
+    return True, "OK"
+
+
 NIFTY_GUARD = GuardAgentConfig(
     segment="nifty50",
     exchange="NFO",
@@ -266,6 +284,7 @@ SENSEX_GUARD = GuardAgentConfig(
     max_spread_env="SENSEX_AUTO_MAX_SPREAD_PCT",
     log_prefix="SensexGuard",
     placed_today_message="Max autonomous Sensex trades per day reached",
+    pre_check=_sensex_pre_check,
 )
 
 COMMODITY_GUARD = GuardAgentConfig(

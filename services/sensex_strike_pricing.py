@@ -43,7 +43,11 @@ def _pick_moneyness(
     reward_pts = abs(spot_tgt - spot)
 
     if strategy_id == "20rupees_strategy":
-        return "ATM", "20rupees", "ATM or highest-OI strike in ₹17–₹23 premium band"
+        return (
+            "ATM",
+            "20rupees",
+            "ATM or highest-OI in ₹17–₹23 · size to 1% risk · no entries after 3:00 PM IST",
+        )
 
     if strategy_id == "bb_5m_mean_reversion":
         return "ATM", "bb_5m", "5m BB mean reversion — ATM for liquidity and delta"
@@ -172,7 +176,7 @@ def refine_spot_levels_from_candles(
         if entry_prem > 0 and entry_prem < 5000:
             sl = max(0.05, entry_prem - 10.0)
             tgt = entry_prem + 10.0
-            notes.append("20rupees: fixed ₹10 SL and 1:1 target on premium")
+            notes.append("20rupees: ₹10 SL, 1:1 target, size to risk % of capital")
 
     elif strategy_id == "bb_5m_mean_reversion":
         lower = intra.get("bb_lower")

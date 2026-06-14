@@ -11,6 +11,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from services.sensex_constants import (
+    is_past_sensex_entry_cutoff,
+    sensex_entry_cutoff_label,
+    sensex_entry_cutoff_message,
+)
 from utils.logger import log_warning
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -19,7 +24,8 @@ STRATEGY_ID = "20rupees_strategy"
 STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
     "Buy ATM or highest-OI Sensex option when premium is ₹17–₹23. "
-    "1 lot, ₹10 SL, 1:1 target; trailing stop as per other segments."
+    "Size to risk % (default 1% of capital), ₹10 SL, 1:1 target; trailing stop as per other segments. "
+    "No new entries after 3:00 PM IST (last 30 minutes)."
 )
 
 STRATEGY_IDS = (STRATEGY_ID,)
@@ -225,7 +231,9 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
             f"{kind} {moneyness} strike {strike}: premium ₹{entry_prem:.2f} in "
             f"₹{PREMIUM_BAND_LOW:.0f}–{PREMIUM_BAND_HIGH:.0f} band"
         )
-        reasons.append(f"Plan: 1 lot · SL ₹{sl_prem:.2f} · target ₹{tgt_prem:.2f} (1:1)")
+        reasons.append(
+            f"Plan: size to risk % of capital · SL ₹{sl_prem:.2f} · target ₹{tgt_prem:.2f} (1:1)"
+        )
     elif entry_prem > PREMIUM_BAND_HIGH:
         warnings.append(
             f"Premium ₹{entry_prem:.2f} above band — wait for ₹{PREMIUM_BAND_HIGH:.0f}–{PREMIUM_BAND_LOW:.0f}"
@@ -248,7 +256,14 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
     if ctx.vix_ltp and 12 <= ctx.vix_ltp <= 28:
         score += 3
 
-    pattern = "20rupees_ready" if _in_premium_band(entry_prem) else "20rupees_wait"
+    if is_past_sensex_entry_cutoff():
+        warnings.append(sensex_entry_cutoff_message())
+        score = min(score, 25)
+        pattern = "20rupees_cutoff"
+    elif _in_premium_band(entry_prem):
+        pattern = "20rupees_ready"
+    else:
+        pattern = "20rupees_wait"
 
     return StrategyCandidate(
         id=STRATEGY_ID,
@@ -298,6 +313,8 @@ def analyze_fno_strategies(
         "premium_band": [PREMIUM_BAND_LOW, PREMIUM_BAND_HIGH],
         "fixed_sl_inr": FIXED_SL_INR,
         "fixed_lots": FIXED_LOTS,
+        "entry_cutoff_ist": sensex_entry_cutoff_label(),
+        "entry_allowed": not is_past_sensex_entry_cutoff(),
     }
 
     def _to_dict(c: StrategyCandidate) -> Dict[str, Any]:

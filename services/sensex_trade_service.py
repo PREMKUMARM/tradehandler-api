@@ -16,7 +16,11 @@ from utils.margin_utils import parse_equity_margins
 from services.sensex_strategy_analysis import analyze_fno_strategies
 from utils.kite_utils import get_kite_instance, get_access_token
 from utils.logger import log_error, log_info, log_warning
-from services.sensex_constants import resolve_sensex_bfo_product
+from services.sensex_constants import (
+    is_past_sensex_entry_cutoff,
+    resolve_sensex_bfo_product,
+    sensex_entry_cutoff_message,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -917,6 +921,10 @@ def place_trade(
         result["errors"].append(
             "Market is closed. Enable V2_ALLOW_OFFHOURS_PLACE for test bypass or place during 9:15 AM–3:30 PM IST."
         )
+        return result
+
+    if market_open and is_past_sensex_entry_cutoff() and not skip_session:
+        result["errors"].append(sensex_entry_cutoff_message())
         return result
 
     if skip_session:
