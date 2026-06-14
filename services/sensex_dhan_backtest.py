@@ -313,36 +313,50 @@ def _pick_entry(
     return None
 
 
-def _trail_stop(entry: float, peak: float, sl_inr: float) -> float:
-    """Ratchet SL in SL-sized steps after min-target is reached."""
+def _trail_stop(entry: float, peak: float, sl_inr: float, *, trail_active: bool) -> float:
+    """Stepped-R trail aligned with live momentum_trail.compute_trailed_levels."""
     r = max(0.05, float(sl_inr))
-    gain = max(0.0, peak - entry)
-    step = max(1, int(gain / r))
-    locked = round(entry + (step - 1) * r, 2)
     cfg = get_momentum_trail_config()
     be = breakeven_stop(entry, r, cfg)
-    return max(be, locked)
+    if not trail_active:
+        return be
+    step = max(1, int((peak - entry) / r))
+    locked_step = max(0, step - 1)
+    locked = round(entry + locked_step * r, 2) if locked_step >= 1 else be
+    return round(max(be, locked), 2)
 
 
 def _simulate_from_entry(
     entry: float,
     series: OptionSeries,
-    start_idx: int,
+    entry_bar_idx: int,
     mode: str,
     sl_inr: float,
     min_target_low: float,
     min_target_high: float,
 ) -> Tuple[float, str, int]:
+    """
+    Simulate exits after a fill at the entry bar's close.
+
+    OHLC on the entry bar includes price action before the fill, so exit logic
+    starts on the next 5m bar. Conservative mode also skips trail SL checks on
+    the bar where min-target is first touched (SL-before-target on same bar).
+    """
     r = max(0.05, float(sl_inr))
     tgt_low = max(r, float(min_target_low))
     tgt_high = max(tgt_low, float(min_target_high))
     sl = round(entry - r, 2)
     trail_trigger = round(entry + tgt_low, 2)
     trailing = False
+    defer_trail_sl = False
     peak = entry
-    exit_idx = start_idx
+    first_idx = entry_bar_idx + 1
+    if first_idx >= len(series.timestamps):
+        last_close = round(series.close[entry_bar_idx], 2)
+        return last_close, "eod", entry_bar_idx
 
-    for idx in range(start_idx, len(series.timestamps)):
+    exit_idx = first_idx
+    for idx in range(first_idx, len(series.timestamps)):
         low = series.low[idx]
         high = series.high[idx]
         exit_idx = idx
@@ -357,6 +371,7 @@ def _simulate_from_entry(
                 if hit_min_tgt:
                     trailing = True
                     peak = high
+                    defer_trail_sl = True
             else:
                 if hit_sl and hit_min_tgt:
                     trailing = True
@@ -371,9 +386,12 @@ def _simulate_from_entry(
 
         if trailing:
             peak = max(peak, high)
-            trail_sl = _trail_stop(entry, peak, r)
-            if low <= trail_sl:
-                return round(trail_sl, 2), "trail_stop", idx
+            if defer_trail_sl:
+                defer_trail_sl = False
+            else:
+                trail_sl = _trail_stop(entry, peak, r, trail_active=True)
+                if low <= trail_sl:
+                    return round(trail_sl, 2), "trail_stop", idx
 
     last_close = round(series.close[exit_idx], 2)
     if trailing:
@@ -656,6 +674,9 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         f"Skips gap-up sessions (open > prev close) and bad option ticks (open/high > 3× close). "
         f"Entry from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
         f"when 5m close is in band · trail at entry + ₹{params.min_target_low:g} (1R). "
+        f"Exit simulation starts on the bar after entry (fill at close). "
+        f"Conservative defers trail SL on the activation bar; optimistic vs conservative only "
+        f"differs when SL and 1R target both touch one bar. "
         f"Dhan 5m data on {len(sessions)} expiry session(s). "
         f"Entries before {cutoff // 60:02d}:{cutoff % 60:02d} IST."
     )
