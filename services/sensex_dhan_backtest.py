@@ -362,6 +362,30 @@ def _simulate_from_entry(
     return last_close, "eod", exit_idx
 
 
+def _resolve_exit_bar_index(
+    entry: float,
+    series: OptionSeries,
+    start_idx: int,
+    exit_px: float,
+    reason: str,
+    sim_exit_idx: int,
+    sl_inr: float,
+) -> int:
+    """Map simulated exit to a display bar — profit exits never show the entry bar."""
+    sl = round(entry - sl_inr, 2)
+    if reason == "stop_loss":
+        if series.low[start_idx] <= sl:
+            return start_idx
+        for idx in range(start_idx + 1, len(series.timestamps)):
+            if series.low[idx] <= sl:
+                return idx
+        return sim_exit_idx
+
+    if sim_exit_idx == start_idx and start_idx + 1 < len(series.timestamps):
+        return start_idx + 1
+    return sim_exit_idx
+
+
 def _run_day(
     expiry_date: str,
     index_open: float,
@@ -407,6 +431,9 @@ def _run_day(
         params.min_target_low,
         params.min_target_high,
     )
+    display_exit_idx = _resolve_exit_bar_index(
+        entry, series, bar.idx, exit_px, reason, exit_idx, params.sl_inr
+    )
     r_unit = max(0.05, float(params.sl_inr))
     pnl_per_unit = exit_px - entry
     r_mult = round(pnl_per_unit / r_unit, 2)
@@ -430,7 +457,7 @@ def _run_day(
         premium_high=bar.high,
         premium_low=bar.low,
         entry_datetime_ist=bar.ist_time,
-        exit_datetime_ist=ts_to_ist_label(series.timestamps[exit_idx]),
+        exit_datetime_ist=ts_to_ist_label(series.timestamps[display_exit_idx]),
     )
 
 
