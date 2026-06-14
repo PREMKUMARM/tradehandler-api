@@ -33,7 +33,7 @@ STRATEGY_ID = "20rupees_strategy"
 STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
     "Buy Sensex option when premium closes ₹17–₹23 on 5m (from 14:00 IST). "
-    "AUTO: PE on gap-down, CE on gap-up/flat; monitors 11 strikes around ATM (ATM±5); ATM from index LTP. "
+    "AUTO: PE on gap-down, CE on gap-up/flat; monitors 5 strikes around ATM (ATM±2); ATM from index LTP. "
     "Fixed initial SL at ₹9 premium; 1R = entry − SL; 1:1 target then stepped trail. "
     "Size lots from risk % ÷ entry premium (not SL distance). "
     "No new entries after 3:00 PM IST."

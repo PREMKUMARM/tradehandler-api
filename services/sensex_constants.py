@@ -131,12 +131,12 @@ def sensex_premium_in_band(px: float, band_low: float = 17.0, band_high: float =
 
 
 def sensex_atm_near_steps() -> int:
-    """Rolling offsets each side of ATM to monitor (default 5 → ATM-5…ATM+5 = 11 strikes)."""
-    return max(0, min(5, _env_int("SENSEX_ATM_NEAR_STEPS", 5)))
+    """Rolling offsets each side of ATM to monitor (default 2 → ATM-2…ATM+2 = 5 strikes)."""
+    return max(0, min(5, _env_int("SENSEX_ATM_NEAR_STEPS", 2)))
 
 
 def sensex_atm_near_offsets() -> list[str]:
-    """Dhan rolling offsets monitored around ATM (11 per leg by default)."""
+    """Dhan rolling offsets monitored around ATM (5 per leg by default)."""
     steps = sensex_atm_near_steps()
     if steps <= 0:
         return ["ATM"]
