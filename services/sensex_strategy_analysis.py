@@ -31,11 +31,10 @@ IST = ZoneInfo("Asia/Kolkata")
 STRATEGY_ID = "20rupees_strategy"
 STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
-    "Buy Sensex option when premium closes ₹17–₹23 on 5m (from 09:20 IST, not opening wick). "
+    "Buy Sensex option when premium closes ₹17–₹23 on 5m (from 14:00 IST). "
     "AUTO picks smart OI strike (high OI, nearest to ATM within band). "
-    "Skips gap-up sessions (index open > prev close). "
-    "Size to risk % (default 1% of capital), ₹10 SL, 1:1 target; trailing stop as per other segments. "
-    "No new entries after 3:00 PM IST (last 30 minutes)."
+    "Skips gap-up sessions. ₹10 SL, 1:1 target; trail activates at entry + ₹10 (1R). "
+    "No new entries after 3:00 PM IST."
 )
 
 STRATEGY_IDS = (STRATEGY_ID,)
@@ -287,7 +286,7 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
     elif ctx.minutes > 0 and ctx.minutes < sensex_entry_scan_start_minutes():
         scan = sensex_entry_scan_start_minutes()
         warnings.append(
-            f"Before {scan // 60:02d}:{scan % 60:02d} IST — wait for 5m close in band (skip opening wick)"
+            f"Before {scan // 60:02d}:{scan % 60:02d} IST — wait for afternoon 5m close in band"
         )
         score = min(score, 28)
         pattern = "20rupees_open_bar_skip"

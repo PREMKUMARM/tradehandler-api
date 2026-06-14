@@ -50,17 +50,18 @@ def main() -> None:
     parser.add_argument("--capital", type=float, default=1_000_000.0)
     parser.add_argument("--risk-pct", type=float, default=1.0)
     parser.add_argument("--sl", type=float, default=10.0)
-    parser.add_argument("--min-target", type=float, default=34.0)
+    parser.add_argument("--min-target", type=float, default=None, help="Trail trigger (default 10 = 1R)")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--output", default=str(DATA_DIR / "backtest_20rupees_dhan_results.json"))
     args = parser.parse_args()
 
+    mt = args.min_target if args.min_target is not None else BacktestParams().min_target_low
     params = BacktestParams(
         capital=args.capital,
         risk_pct=args.risk_pct,
         sl_inr=args.sl,
-        min_target_low=args.min_target,
-        min_target_high=args.min_target,
+        min_target_low=mt,
+        min_target_high=mt,
         direction=args.direction,
         mode=args.mode,
         refresh_dhan=args.refresh,

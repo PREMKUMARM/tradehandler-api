@@ -23,6 +23,7 @@ from services.momentum_trail import breakeven_stop, get_momentum_trail_config
 from services.sensex_constants import (
     sensex_entry_cutoff_minutes,
     sensex_entry_scan_start_minutes,
+    sensex_default_min_target_inr,
     sensex_is_bad_option_bar,
     sensex_is_gap_up_session,
     sensex_max_lots_per_trade,
@@ -42,8 +43,8 @@ DEFAULT_RISK_PCT = 1.0
 DEFAULT_SL_INR = 10.0
 DEFAULT_ENTRY_LOW = 17.0
 DEFAULT_ENTRY_HIGH = 23.0
-DEFAULT_MIN_TARGET_LOW = 34.0
-DEFAULT_MIN_TARGET_HIGH = 34.0
+DEFAULT_MIN_TARGET_LOW = sensex_default_min_target_inr()
+DEFAULT_MIN_TARGET_HIGH = sensex_default_min_target_inr()
 
 
 @dataclass
@@ -654,7 +655,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         f"entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
         f"Skips gap-up sessions (open > prev close) and bad option ticks (open/high > 3× close). "
         f"Entry from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
-        f"when 5m close is in band (no opening-bar wick fill). "
+        f"when 5m close is in band · trail at entry + ₹{params.min_target_low:g} (1R). "
         f"Dhan 5m data on {len(sessions)} expiry session(s). "
         f"Entries before {cutoff // 60:02d}:{cutoff % 60:02d} IST."
     )

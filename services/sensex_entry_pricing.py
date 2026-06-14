@@ -460,7 +460,7 @@ def _analyze_20rupees(
     if bar_minutes > 0 and bar_minutes < scan_start:
         msg = (
             f"Wait until {scan_start // 60:02d}:{scan_start % 60:02d} IST "
-            f"(skip opening 5m wick; need close in band)"
+            f"(afternoon session; need 5m close in band)"
         )
         notes.append(msg)
         return False, None, 0, notes, msg, "20rupees_open_bar_skip"

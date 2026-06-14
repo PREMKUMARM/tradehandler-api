@@ -15,13 +15,13 @@ class SensexBacktestRunRequest(BaseModel):
     entry_band_low: float = Field(default=17.0, gt=0, le=500, description="Entry premium range low (₹)")
     entry_band_high: float = Field(default=23.0, gt=0, le=500, description="Entry premium range high (₹)")
     min_target_low: float = Field(
-        default=34.0,
+        default=10.0,
         gt=0,
         le=500,
-        description="Min target premium points from entry — trail activates at entry + this",
+        description="Min target premium points from entry — trail activates at entry + this (default 10 = 1R)",
     )
     min_target_high: float = Field(
-        default=34.0,
+        default=10.0,
         gt=0,
         le=500,
         description="Max target premium points (optional cap before trail)",
@@ -57,7 +57,7 @@ class SensexBacktestRunRequest(BaseModel):
     @field_validator("min_target_high")
     @classmethod
     def _min_target_band(cls, value: float, info) -> float:
-        low = info.data.get("min_target_low", 34.0)
+        low = info.data.get("min_target_low", 10.0)
         if value < low:
             raise ValueError("min_target_high must be >= min_target_low")
         return value

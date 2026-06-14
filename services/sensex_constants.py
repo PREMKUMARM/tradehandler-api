@@ -93,8 +93,20 @@ def sensex_is_bad_option_bar(open_p: float, high: float, close: float) -> bool:
 
 
 def sensex_entry_scan_start_minutes() -> int:
-    """First bar to scan for entry (default 09:20 — skip opening 5m wick lottery)."""
-    return SENSEX_SESSION_OPEN_MINUTES + _env_int("SENSEX_ENTRY_SCAN_START_OFFSET_MIN", 5)
+    """First bar to scan for entry (default 14:00 — afternoon close-in-band, skip morning chop)."""
+    hour = _env_int("SENSEX_ENTRY_START_HOUR", 14)
+    minute = _env_int("SENSEX_ENTRY_START_MINUTE", 0)
+    hour = max(0, min(23, hour))
+    minute = max(0, min(59, minute))
+    return hour * 60 + minute
+
+
+def sensex_default_min_target_inr() -> float:
+    """Trail activates at entry + this (default ₹10 = 1R, same as SL / 1:1 target)."""
+    try:
+        return max(5.0, float(os.getenv("SENSEX_MIN_TARGET_INR", "10").strip()))
+    except (TypeError, ValueError):
+        return 10.0
 
 
 def sensex_premium_in_band(px: float, band_low: float = 17.0, band_high: float = 23.0) -> bool:
