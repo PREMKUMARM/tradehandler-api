@@ -106,6 +106,48 @@ class BacktestParams:
     expiry_dates: Optional[List[str]] = None
     refresh_dhan: bool = False
     timeframes_min: Optional[List[int]] = None
+    entry_scan_start_ist: Optional[str] = None
+    entry_scan_end_ist: Optional[str] = None
+
+
+def _format_ist_minutes(minutes: int) -> str:
+    m = int(minutes)
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def _parse_ist_hhmm(value: str) -> int:
+    raw = (value or "").strip()
+    parts = raw.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid IST time {value!r} — use HH:MM")
+    hour = int(parts[0])
+    minute = int(parts[1])
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Invalid IST time {value!r}")
+    return hour * 60 + minute
+
+
+def resolve_backtest_scan_window(params: BacktestParams) -> Tuple[int, int, str, str]:
+    """Return (start_min, end_min_exclusive, start_label, end_label) for entry scan."""
+    from services.sensex_constants import SENSEX_SESSION_CLOSE_MINUTES, SENSEX_SESSION_OPEN_MINUTES
+
+    start = sensex_entry_scan_start_minutes()
+    end = sensex_entry_cutoff_minutes()
+    if params.entry_scan_start_ist:
+        start = _parse_ist_hhmm(params.entry_scan_start_ist)
+    if params.entry_scan_end_ist:
+        end = _parse_ist_hhmm(params.entry_scan_end_ist)
+    if end <= start:
+        raise ValueError("entry_scan_end_ist must be after entry_scan_start_ist")
+    if start < SENSEX_SESSION_OPEN_MINUTES:
+        raise ValueError(
+            f"entry_scan_start_ist must be on or after {_format_ist_minutes(SENSEX_SESSION_OPEN_MINUTES)} IST"
+        )
+    if end > SENSEX_SESSION_CLOSE_MINUTES:
+        raise ValueError(
+            f"entry_scan_end_ist must be on or before {_format_ist_minutes(SENSEX_SESSION_CLOSE_MINUTES)} IST"
+        )
+    return start, end, _format_ist_minutes(start), _format_ist_minutes(end)
 
 
 @dataclass
@@ -216,11 +258,15 @@ def backtest_session_calendar() -> Dict[str, Any]:
     sessions = list_available_sessions()
     dates = [s["expiry_date"] for s in sessions if s.get("expiry_date")]
     cached = sum(1 for s in sessions if s.get("dhan_cached"))
+    scan_start = sensex_entry_scan_start_minutes()
+    scan_end = sensex_entry_cutoff_minutes()
     return {
         "start_date": min(dates) if dates else None,
         "end_date": max(dates) if dates else None,
         "trading_days": len(dates),
         "cached_count": cached,
+        "default_entry_scan_start_ist": _format_ist_minutes(scan_start),
+        "default_entry_scan_end_ist": _format_ist_minutes(scan_end),
     }
 
 
@@ -347,6 +393,7 @@ def _pick_entry_auto(
     index_open: float = 0.0,
     prev_close: float = 0.0,
     *,
+    scan_start_min: Optional[int] = None,
     start_idx: int = 0,
     contract_trade_counts: Optional[Dict[str, int]] = None,
     max_trades_per_contract: int = MAX_TRADES_PER_CONTRACT_PER_DAY,
@@ -360,6 +407,7 @@ def _pick_entry_auto(
         band_high,
         cutoff_minutes,
         prev_close=prev_close,
+        scan_start_min=scan_start_min,
         start_idx=start_idx,
         contract_trade_counts=contract_trade_counts,
         max_trades_per_contract=max_trades_per_contract,
@@ -374,6 +422,7 @@ def _pick_entry(
     cutoff_minutes: int,
     prev_close: float = 0.0,
     *,
+    scan_start_min: Optional[int] = None,
     start_idx: int = 0,
     contract_trade_counts: Optional[Dict[str, int]] = None,
     max_trades_per_contract: int = MAX_TRADES_PER_CONTRACT_PER_DAY,
@@ -385,7 +434,7 @@ def _pick_entry(
         return None
 
     counts = contract_trade_counts or {}
-    scan_start = sensex_entry_scan_start_minutes()
+    scan_start = int(scan_start_min if scan_start_min is not None else sensex_entry_scan_start_minutes())
     for idx in range(max(0, int(start_idx)), len(ref.timestamps)):
         ts = ref.timestamps[idx]
         dt = datetime.fromtimestamp(ts, tz=IST)
@@ -622,7 +671,7 @@ def _run_day(
     params: BacktestParams,
 ) -> List[TradeResult]:
     """Up to N round-trips per contract per session day; re-entries after exit."""
-    cutoff = sensex_entry_cutoff_minutes()
+    scan_start, cutoff, _, _ = resolve_backtest_scan_window(params)
     direction = (params.direction or "AUTO").upper()
     ref = _ref_series(session)
     if not ref:
@@ -641,6 +690,7 @@ def _run_day(
                 cutoff,
                 index_open=index_open,
                 prev_close=prev_close,
+                scan_start_min=scan_start,
                 start_idx=start_idx,
                 contract_trade_counts=contract_counts,
             )
@@ -652,6 +702,7 @@ def _run_day(
                 params.entry_band_high,
                 cutoff,
                 prev_close=prev_close,
+                scan_start_min=scan_start,
                 start_idx=start_idx,
                 contract_trade_counts=contract_counts,
             )
@@ -809,7 +860,7 @@ def _run_backtest_for_timeframe(
     )
     iv_label = _interval_label(interval_min)
     start_capital = max(1000.0, float(params.capital))
-    cutoff = sensex_entry_cutoff_minutes()
+    scan_start, cutoff, scan_start_label, scan_end_label = resolve_backtest_scan_window(params)
     trades: List[TradeResult] = []
     skipped: List[Dict[str, str]] = []
     equity = start_capital
@@ -844,8 +895,7 @@ def _run_backtest_for_timeframe(
                     "expiry_date": session_date,
                     "reason": (
                         f"no {iv_label} close in ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} "
-                        f"from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
-                        f"to {cutoff // 60:02d}:{cutoff % 60:02d} IST"
+                        f"from {scan_start_label} to {scan_end_label} IST"
                     ),
                 }
             )
@@ -916,7 +966,9 @@ def _run_backtest_for_timeframe(
             "live_max_lots_cap": MAX_LOTS,
             "avg_lots_per_trade": avg_lots,
             "max_risk_per_trade_inr": avg_risk,
-            "entry_cutoff_ist": f"{cutoff // 60:02d}:{cutoff % 60:02d}",
+            "entry_scan_start_ist": scan_start_label,
+            "entry_scan_end_ist": scan_end_label,
+            "entry_cutoff_ist": scan_end_label,
             "sl_inr": params.sl_inr,
             "entry_band": [params.entry_band_low, params.entry_band_high],
             "min_target_band": [params.min_target_low, params.min_target_high],
@@ -932,7 +984,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
     sessions = _resolve_backtest_sessions(params)
     timeframes = _normalize_timeframes(params.timeframes_min)
     start_capital = max(1000.0, float(params.capital))
-    cutoff = sensex_entry_cutoff_minutes()
+    _, _, scan_start_label, scan_end_label = resolve_backtest_scan_window(params)
 
     reports: Dict[str, Any] = {}
     fetch_stats_by_tf: Dict[str, Dict[str, int]] = {}
@@ -958,15 +1010,13 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         f"Lots = floor(capital × risk% ÷ (entry × {LOT_SIZE})) — not sized from SL distance. "
         f"AUTO picks PE on gap-down and CE on gap-up/flat; monitors ATM±{sensex_atm_near_steps()} per leg for band close. "
         f"Skips bad option ticks (open/high > 3× close). "
-        f"Entry from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
-        f"when bar close is in band. "
+        f"Entry scan {scan_start_label}–{scan_end_label} IST when bar close is in band. "
         f"Exit simulation starts on the bar after entry (fill at close). "
         f"Trail SL deferred on the 1R activation bar (no same-bar low wick stop). "
         f"Exits stay on the entry offset series from the entry bar onward. "
         f"Up to {MAX_TRADES_PER_CONTRACT_PER_DAY} round-trips per contract per session day (re-entry after exit). "
         f"All trading days in window ({len(sessions)} sessions). "
-        f"Dhan fetch totals: {total_cached} cached, {total_fetched} fetched across selected timeframes. "
-        f"Entries before {cutoff // 60:02d}:{cutoff % 60:02d} IST."
+        f"Dhan fetch totals: {total_cached} cached, {total_fetched} fetched across selected timeframes."
     )
     return {
         "note": note,
@@ -975,6 +1025,8 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         "sl_inr": params.sl_inr,
         "entry_band": [params.entry_band_low, params.entry_band_high],
         "min_target_band": [params.min_target_low, params.min_target_high],
+        "entry_scan_start_ist": scan_start_label,
+        "entry_scan_end_ist": scan_end_label,
         "timeframes_min": timeframes,
         "data_source": "dhan_rolling",
         "dhan_status": check_dhan_status(),

@@ -58,6 +58,8 @@ async def run_backtest(_: Request, body: SensexBacktestRunRequest):
         expiry_dates=body.expiry_dates,
         refresh_dhan=body.refresh_dhan,
         timeframes_min=body.timeframes_min,
+        entry_scan_start_ist=body.entry_scan_start_ist,
+        entry_scan_end_ist=body.entry_scan_end_ist,
     )
     try:
         result = await asyncio.to_thread(run_sensex_dhan_backtest, params)

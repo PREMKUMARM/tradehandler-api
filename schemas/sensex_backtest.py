@@ -53,6 +53,45 @@ class SensexBacktestRunRequest(BaseModel):
         default=None,
         description="Bar intervals in minutes (1, 5, 15, 25, 60). Default [5]. Runs one backtest per selection.",
     )
+    entry_scan_start_ist: Optional[str] = Field(
+        default=None,
+        description="First bar to scan for entry, IST HH:MM (default 14:00)",
+    )
+    entry_scan_end_ist: Optional[str] = Field(
+        default=None,
+        description="Last minute to allow new entries (exclusive), IST HH:MM (default 15:00)",
+    )
+
+    @field_validator("entry_scan_start_ist", "entry_scan_end_ist")
+    @classmethod
+    def _scan_time(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or not str(value).strip():
+            return None
+        raw = str(value).strip()
+        parts = raw.split(":")
+        if len(parts) != 2:
+            raise ValueError(f"Invalid time {raw!r} — use HH:MM")
+        hour = int(parts[0])
+        minute = int(parts[1])
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(f"Invalid time {raw!r}")
+        return f"{hour:02d}:{minute:02d}"
+
+    @field_validator("entry_scan_end_ist")
+    @classmethod
+    def _scan_window(cls, value: Optional[str], info) -> Optional[str]:
+        if value is None:
+            return None
+        start_raw = info.data.get("entry_scan_start_ist")
+        if not start_raw:
+            return value
+        start_parts = str(start_raw).split(":")
+        end_parts = str(value).split(":")
+        start_min = int(start_parts[0]) * 60 + int(start_parts[1])
+        end_min = int(end_parts[0]) * 60 + int(end_parts[1])
+        if end_min <= start_min:
+            raise ValueError("entry_scan_end_ist must be after entry_scan_start_ist")
+        return value
 
     @field_validator("timeframes_min")
     @classmethod
