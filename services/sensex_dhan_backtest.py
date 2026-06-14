@@ -22,6 +22,7 @@ from services.dhan_data_client import (
 from services.momentum_trail import breakeven_stop, get_momentum_trail_config
 from services.sensex_constants import sensex_entry_cutoff_minutes, sensex_max_lots_per_trade
 from services.sensex_indicator_plan import size_from_risk
+from services.sensex_strike_selection import pick_smart_at_bar, strike_source_label
 from services.sensex_strategy_analysis import STRATEGY_NAME
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -206,38 +207,14 @@ def _ref_series(session: Dict[str, Dict[str, OptionSeries]]) -> Optional[OptionS
     return None
 
 
-def _max_oi_at_bar(
-    session: Dict[str, Dict[str, OptionSeries]],
-    idx: int,
-    *,
-    kinds: Tuple[str, ...] = ("CE", "PE"),
-) -> Optional[Tuple[str, str, OptionSeries]]:
-    best_kind = None
-    best_offset = None
-    best_oi = -1.0
-    best_series: Optional[OptionSeries] = None
-    for kind in kinds:
-        for offset, series in (session.get(kind) or {}).items():
-            if idx >= len(series.oi):
-                continue
-            oi = float(series.oi[idx])
-            if oi > best_oi:
-                best_oi = oi
-                best_kind = kind
-                best_offset = offset
-                best_series = series
-    if best_series is None or best_kind is None or best_offset is None:
-        return None
-    return best_kind, best_offset, best_series
-
-
 def _pick_entry_auto(
     session: Dict[str, Dict[str, OptionSeries]],
     band_low: float,
     band_high: float,
     cutoff_minutes: int,
+    prev_close: float = 0.0,
 ) -> Optional[Tuple[MinuteBar, str, OptionSeries]]:
-    """AUTO: enter on the highest-OI strike (CE or PE) when premium is in band."""
+    """AUTO: smart OI + proximity strike when premium band is touched."""
     ref = _ref_series(session)
     if not ref:
         return None
@@ -248,12 +225,19 @@ def _pick_entry_auto(
         if dt.hour * 60 + dt.minute >= cutoff_minutes:
             break
 
-        picked = _max_oi_at_bar(session, idx)
+        picked = pick_smart_at_bar(
+            session,
+            idx,
+            kinds=("CE", "PE"),
+            band_low=band_low,
+            band_high=band_high,
+            prev_close=prev_close,
+        )
         if not picked:
             continue
-        _kind, offset, series = picked
+        candidate, series = picked
         bar = _series_bar(series, idx)
-        source = "ATM" if offset == "ATM" else "MAX_OI"
+        source = strike_source_label(candidate.offset)
         entry = _estimate_entry(bar.open, bar.high, bar.low, band_low, band_high)
         if entry is not None:
             return bar, source, series
@@ -267,8 +251,9 @@ def _pick_entry(
     band_low: float,
     band_high: float,
     cutoff_minutes: int,
+    prev_close: float = 0.0,
 ) -> Optional[Tuple[MinuteBar, str, OptionSeries]]:
-    """CE/PE: enter on highest-OI strike within the chosen leg when premium is in band."""
+    """CE/PE: smart strike within the chosen leg when premium is in band."""
     leg = session.get(kind) or {}
     ref = leg.get("ATM")
     if not ref or not ref.timestamps:
@@ -280,12 +265,19 @@ def _pick_entry(
         if dt.hour * 60 + dt.minute >= cutoff_minutes:
             break
 
-        picked = _max_oi_at_bar(session, idx, kinds=(kind,))
+        picked = pick_smart_at_bar(
+            session,
+            idx,
+            kinds=(kind.upper(),),
+            band_low=band_low,
+            band_high=band_high,
+            prev_close=prev_close,
+        )
         if not picked:
             continue
-        _k, offset, series = picked
+        candidate, series = picked
         bar = _series_bar(series, idx)
-        source = "ATM" if offset == "ATM" else "MAX_OI"
+        source = strike_source_label(candidate.offset)
         entry = _estimate_entry(bar.open, bar.high, bar.low, band_low, band_high)
         if entry is not None:
             return bar, source, series
@@ -377,6 +369,7 @@ def _run_day(
             params.entry_band_low,
             params.entry_band_high,
             cutoff,
+            prev_close=prev_close,
         )
     else:
         picked = _pick_entry(
@@ -385,6 +378,7 @@ def _run_day(
             params.entry_band_low,
             params.entry_band_high,
             cutoff,
+            prev_close=prev_close,
         )
     if not picked:
         return None

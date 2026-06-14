@@ -16,6 +16,12 @@ from services.sensex_constants import (
     sensex_entry_cutoff_label,
     sensex_entry_cutoff_message,
 )
+from services.sensex_strike_selection import (
+    moneyness_label,
+    pick_smart_from_chain,
+    PREMIUM_BAND_HIGH,
+    PREMIUM_BAND_LOW,
+)
 from utils.logger import log_warning
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -23,15 +29,14 @@ IST = ZoneInfo("Asia/Kolkata")
 STRATEGY_ID = "20rupees_strategy"
 STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
-    "Buy highest-OI Sensex option (AUTO) or forced CE/PE when premium is ₹17–₹23. "
+    "Buy Sensex option when premium is ₹17–₹23. AUTO picks smart OI strike "
+    "(high OI, nearest to ATM within band). "
     "Size to risk % (default 1% of capital), ₹10 SL, 1:1 target; trailing stop as per other segments. "
     "No new entries after 3:00 PM IST (last 30 minutes)."
 )
 
 STRATEGY_IDS = (STRATEGY_ID,)
 
-PREMIUM_BAND_LOW = 17.0
-PREMIUM_BAND_HIGH = 23.0
 FIXED_SL_INR = 10.0
 FIXED_LOTS = 1
 
@@ -113,97 +118,48 @@ def _highest_oi_row(ranked: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 def _pick_auto_strike_from_chain(
     chain_oi: Dict[str, Any],
     spot: float,
+    prev_close: float = 0.0,
 ) -> Tuple[Optional[int], float, str, Optional[str], Optional[float], str]:
-    """
-    AUTO: pick the single highest-OI contract (CE or PE) whose premium is in band when possible.
-    Returns (strike, ltp, moneyness, symbol, oi, option_kind).
-    """
-    contract = chain_oi.get("max_oi_contract") or {}
-    candidates: List[Tuple[str, int, float, Optional[str], float]] = []
-
-    if contract.get("strike") and contract.get("kind"):
-        candidates.append(
-            (
-                str(contract["kind"]).upper(),
-                int(contract["strike"]),
-                float(contract.get("ltp") or 0),
-                contract.get("symbol"),
-                float(contract.get("oi") or 0),
-            )
-        )
-
-    for kind in ("CE", "PE"):
-        ranked = chain_oi.get("ranked_ce_oi") if kind == "CE" else chain_oi.get("ranked_pe_oi")
-        row = _highest_oi_row(list(ranked or []))
-        if row and int(row.get("strike") or 0) > 0:
-            candidates.append(
-                (
-                    kind,
-                    int(row["strike"]),
-                    float(row.get("ltp") or 0),
-                    row.get("symbol"),
-                    float(row.get("oi") or 0),
-                )
-            )
-
-    if not candidates:
+    """AUTO: smart OI + proximity strike in premium band."""
+    picked = pick_smart_from_chain(
+        chain_oi,
+        spot,
+        kinds=("CE", "PE"),
+        band_low=PREMIUM_BAND_LOW,
+        band_high=PREMIUM_BAND_HIGH,
+        prev_close=prev_close,
+    )
+    if not picked:
         atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
         return atm, 0.0, "ATM", None, None, "CE"
-
-    deduped: Dict[Tuple[str, int], Tuple[str, int, float, Optional[str], float]] = {}
-    for c in candidates:
-        deduped[(c[0], c[1])] = c
-    pool = list(deduped.values())
-    in_band = [c for c in pool if _in_premium_band(c[2])]
-    kind, strike, ltp, sym, oi = max(in_band or pool, key=lambda row: row[4])
-    moneyness = "MAX_OI"
     atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
-    if strike == atm:
-        moneyness = "ATM"
-    return strike, ltp, moneyness, sym, oi or None, kind
+    money = moneyness_label(picked.strike, atm, picked.offset)
+    return picked.strike, picked.ltp, money, picked.symbol, picked.oi, picked.kind
 
 
 def _pick_strike_from_chain(
     chain_oi: Dict[str, Any],
     kind: str,
     spot: float,
+    prev_close: float = 0.0,
 ) -> Tuple[Optional[int], float, str, Optional[str], Optional[float]]:
-    """
-    Pick ATM or highest-OI strike whose premium is in band (prefer ATM).
-    Returns (strike, ltp, moneyness, symbol, oi).
-    """
+    """CE/PE: smart strike in premium band on the chosen leg."""
+    picked = pick_smart_from_chain(
+        chain_oi,
+        spot,
+        kinds=(kind.upper(),),
+        band_low=PREMIUM_BAND_LOW,
+        band_high=PREMIUM_BAND_HIGH,
+        prev_close=prev_close,
+    )
     atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
+    if picked:
+        money = moneyness_label(picked.strike, atm, picked.offset)
+        return picked.strike, picked.ltp, money, picked.symbol, picked.oi
+
+    # Fallback: ATM quote on leg
     atm_row = (chain_oi.get("atm_ce") or {}) if kind == "CE" else (chain_oi.get("atm_pe") or {})
     atm_ltp = float(atm_row.get("ltp") or 0)
-
-    ranked = chain_oi.get("ranked_ce_oi") if kind == "CE" else chain_oi.get("ranked_pe_oi")
-    high_oi = _highest_oi_row(list(ranked or []))
-
-    candidates: List[Tuple[str, int, float, Optional[str], Optional[float]]] = []
-    if atm_ltp > 0:
-        candidates.append(("ATM", atm, atm_ltp, None, float(atm_row.get("oi") or 0) or None))
-    if high_oi and int(high_oi.get("strike") or 0) != atm:
-        candidates.append(
-            (
-                "MAX_OI",
-                int(high_oi["strike"]),
-                float(high_oi.get("ltp") or 0),
-                high_oi.get("symbol"),
-                float(high_oi.get("oi") or 0),
-            )
-        )
-
-    in_band = [c for c in candidates if _in_premium_band(c[2])]
-    if in_band:
-        source, strike, ltp, sym, oi = in_band[0]
-        money = "ATM" if source == "ATM" else "MAX_OI"
-        return strike, ltp, money, sym, oi
-
-    if candidates:
-        source, strike, ltp, sym, oi = candidates[0]
-        money = "ATM" if source == "ATM" else "MAX_OI"
-        return strike, ltp, money, sym, oi
-
     return atm if atm > 0 else None, atm_ltp, "ATM", None, None
 
 
@@ -254,10 +210,14 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
         )
 
     if ctx.direction_pref == "AUTO":
-        strike, ltp, moneyness, sym, oi, kind = _pick_auto_strike_from_chain(chain, spot)
+        strike, ltp, moneyness, sym, oi, kind = _pick_auto_strike_from_chain(
+            chain, spot, prev_close=ctx.prev_close
+        )
     else:
         kind = ctx.direction_pref
-        strike, ltp, moneyness, sym, oi = _pick_strike_from_chain(chain, kind, spot)
+        strike, ltp, moneyness, sym, oi = _pick_strike_from_chain(
+            chain, kind, spot, prev_close=ctx.prev_close
+        )
 
     if strike is None or ltp <= 0:
         warnings.append("Option chain LTP unavailable — refresh after 9:20 AM")
@@ -301,8 +261,8 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
         )
         score = min(score, 32)
 
-    if moneyness == "MAX_OI" and oi:
-        reasons.append(f"Highest-OI {kind} strike {strike} (OI {oi:,.0f})")
+    if moneyness in ("MAX_OI", "SMART_OI") and oi:
+        reasons.append(f"Smart OI {kind} strike {strike} (OI {oi:,.0f}, near ATM)")
     elif moneyness == "ATM":
         reasons.append(f"ATM {kind} strike {strike}")
 
