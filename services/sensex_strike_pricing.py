@@ -176,7 +176,7 @@ def refine_spot_levels_from_candles(
         if entry_prem > 0 and entry_prem < 5000:
             sl = max(0.05, entry_prem - 10.0)
             tgt = entry_prem + 10.0
-            notes.append("20rupees: ₹10 SL, 1:1 target, size to risk % of capital")
+            notes.append("20rupees: fixed SL ₹9 premium, 1:1 target, size from risk % ÷ entry")
 
     elif strategy_id == "bb_5m_mean_reversion":
         lower = intra.get("bb_lower")

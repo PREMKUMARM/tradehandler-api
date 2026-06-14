@@ -47,7 +47,7 @@ OHLC_PATH = DATA_DIR / "weekly_expiry_day_ohlc.csv"
 LOT_SIZE = 20
 MAX_LOTS = sensex_max_lots_per_trade()
 DEFAULT_RISK_PCT = 1.0
-DEFAULT_SL_INR = 10.0
+DEFAULT_SL_INR = 9.0  # fixed initial stop-loss premium price (API field: sl_inr)
 DEFAULT_ENTRY_LOW = 17.0
 DEFAULT_ENTRY_HIGH = 23.0
 DEFAULT_MIN_TARGET_LOW = sensex_default_min_target_inr()
@@ -354,6 +354,11 @@ def _pick_entry(
     return None
 
 
+def _r_unit(entry: float, fixed_sl_premium: float) -> float:
+    """1R = entry premium minus fixed initial SL premium."""
+    return max(0.05, float(entry) - max(0.05, float(fixed_sl_premium)))
+
+
 def _stepped_trail_sl(entry: float, peak: float, r_inr: float) -> float:
     """
     Stepped-R trail after 1R target (aligned with live momentum_trail stepped_rr).
@@ -368,38 +373,38 @@ def _stepped_trail_sl(entry: float, peak: float, r_inr: float) -> float:
     return round(entry, 2)
 
 
-def _backtest_size_from_risk(
+def _backtest_size_from_allocation(
     capital: float,
     risk_pct: float,
     entry_premium: float,
-    sl_premium: float,
     lot_size: int,
 ) -> Tuple[int, int, float]:
-    """Risk-based lots for backtest — no live 50-lot cap; capital check is applied separately."""
-    prem_risk = max(0.05, entry_premium - sl_premium)
-    max_risk_amt = capital * (risk_pct / 100.0)
-    lots = int(max_risk_amt / (prem_risk * lot_size)) if prem_risk > 0 else 1
+    """Lots from risk% capital allocation ÷ entry premium (not SL distance)."""
+    alloc_inr = capital * (risk_pct / 100.0)
+    if entry_premium <= 0:
+        return 1, lot_size, alloc_inr
+    lots = int(alloc_inr / (entry_premium * lot_size))
     lots = max(1, lots)
     quantity = lots * lot_size
-    return lots, quantity, prem_risk * quantity
+    return lots, quantity, round(alloc_inr, 2)
 
 
 def _simulate_from_entry(
     entry: float,
     series: OptionSeries,
     entry_bar_idx: int,
-    sl_inr: float,
+    fixed_sl_premium: float,
     min_target_high: float,
 ) -> Tuple[float, str, int]:
     """
     Stepped trailing stop on 5m bars after fill at entry close.
 
-    R = sl_inr (1R target is entry + R; SL at entry − R; trail steps every R).
-    Trail SL is not checked on the bar where 1R first activates (avoids same-bar
-    low wicks stopping out at breakeven while close still holds).
+    fixed_sl_premium: absolute initial SL option price (e.g. ₹9).
+    R = entry − fixed_sl; 1R target = entry + R; trail steps every R.
+    Trail SL is not checked on the bar where 1R first activates.
     """
-    r = max(0.05, float(sl_inr))
-    initial_sl = round(entry - r, 2)
+    initial_sl = round(max(0.05, float(fixed_sl_premium)), 2)
+    r = _r_unit(entry, initial_sl)
     first_target = round(entry + r, 2)
     max_target = round(entry + max(r, float(min_target_high)), 2)
 
@@ -449,10 +454,10 @@ def _resolve_exit_bar_index(
     exit_px: float,
     reason: str,
     sim_exit_idx: int,
-    sl_inr: float,
+    fixed_sl_premium: float,
 ) -> int:
     """Map simulated exit to a display bar — profit exits never show the entry bar."""
-    sl = round(entry - sl_inr, 2)
+    sl = round(max(0.05, float(fixed_sl_premium)), 2)
     if reason == "stop_loss":
         if series.low[start_idx] <= sl:
             return start_idx
@@ -502,6 +507,10 @@ def _run_day(
     if entry is None:
         return None
 
+    fixed_sl = round(max(0.05, float(params.sl_inr)), 2)
+    if fixed_sl >= entry:
+        return None
+
     entry_strike = int(bar.strike)
     entry_ts = series.timestamps[bar.idx]
     exit_bundle = build_entry_offset_exit_series(
@@ -521,13 +530,13 @@ def _run_day(
         entry,
         sim_series,
         sim_entry_idx,
-        params.sl_inr,
+        fixed_sl,
         params.min_target_high,
     )
     display_exit_idx = _resolve_exit_bar_index(
-        entry, sim_series, sim_entry_idx, exit_px, reason, exit_idx, params.sl_inr
+        entry, sim_series, sim_entry_idx, exit_px, reason, exit_idx, fixed_sl
     )
-    r_unit = max(0.05, float(params.sl_inr))
+    r_unit = _r_unit(entry, fixed_sl)
     pnl_per_unit = exit_px - entry
     r_mult = round(pnl_per_unit / r_unit, 2)
 
@@ -540,8 +549,8 @@ def _run_day(
         symbol=f"SENSEX-{entry_strike}-{kind}",
         entry=entry,
         exit=exit_px,
-        sl=round(entry - params.sl_inr, 2),
-        target=round(entry + params.sl_inr, 2),
+        sl=fixed_sl,
+        target=round(entry + r_unit, 2),
         pnl_inr=0.0,
         r_multiple=r_mult,
         exit_reason=reason,
@@ -634,12 +643,10 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         if spot_s and spot_s.spot:
             prev_spot_close = float(spot_s.spot[-1])
         if tr:
-            sl_prem = round(tr.entry - params.sl_inr, 2)
-            lots, qty, risk_inr = _backtest_size_from_risk(
+            lots, qty, alloc_inr = _backtest_size_from_allocation(
                 equity,
                 params.risk_pct,
                 tr.entry,
-                sl_prem,
                 LOT_SIZE,
             )
             notional = tr.entry * qty
@@ -659,7 +666,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
             tr.num_lots = lots
             tr.pnl_inr = pnl_inr
             tr.entry_notional = round(notional, 2)
-            tr.risk_at_sl_inr = round(risk_inr, 2)
+            tr.risk_at_sl_inr = round(alloc_inr, 2)
             tr.capital_before = round(cap_before, 2)
             tr.capital_after = equity
             trades.append(tr)
@@ -717,10 +724,10 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
     reports = {"trail": report}
 
     note = (
-        f"Starting capital ₹{start_capital:,.0f} · {params.risk_pct:g}% risk per trade · "
-        f"₹{params.sl_inr:g} SL · 1R target = entry + ₹{params.sl_inr:g} · stepped trail every ₹{params.sl_inr:g} · "
-        f"entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
-        f"Lot sizing from {params.risk_pct:g}% risk (no live {MAX_LOTS}-lot cap; limited by capital). "
+        f"Starting capital ₹{start_capital:,.0f} · {params.risk_pct:g}% allocation per trade · "
+        f"fixed initial SL premium ₹{params.sl_inr:g} · 1R = entry − SL · 1R target = entry + 1R · "
+        f"stepped trail every 1R · entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
+        f"Lots = floor(capital × risk% ÷ (entry × {LOT_SIZE})) — not sized from SL distance. "
         f"AUTO picks PE on gap-down and CE on gap-up/flat; monitors ATM±{sensex_atm_near_steps()} per leg for ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} close. "
         f"Skips bad option ticks (open/high > 3× close). "
         f"Entry from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "

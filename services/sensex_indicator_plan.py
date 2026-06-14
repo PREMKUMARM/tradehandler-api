@@ -135,6 +135,25 @@ def size_from_risk(
     return qty_lots, quantity, risk_inr
 
 
+def size_from_allocation(
+    capital: float,
+    risk_pct: float,
+    entry_premium: float,
+    lot_size: int,
+    num_lots: int,
+) -> Tuple[int, int, float]:
+    """20rupees: lots from risk% capital ÷ entry premium (not SL distance)."""
+    alloc_inr = capital * (risk_pct / 100.0)
+    if entry_premium <= 0:
+        qty_lots = min(num_lots, 1)
+        quantity = qty_lots * lot_size
+        return qty_lots, quantity, alloc_inr
+    max_lots = int(alloc_inr / (entry_premium * lot_size))
+    qty_lots = min(num_lots, max(1, max_lots))
+    quantity = qty_lots * lot_size
+    return qty_lots, quantity, round(alloc_inr, 2)
+
+
 def build_indicator_trade_plan(
     *,
     direction: str,
@@ -259,14 +278,18 @@ def build_indicator_trade_plan(
     from services.option_contract_indicators import resolve_long_buy_exit_levels
 
     if sid == TWENTY_RUPEES_ID:
-        from services.sensex_strategy_analysis import FIXED_SL_INR
+        from services.sensex_strategy_analysis import FIXED_SL_PREMIUM
 
-        sl_prem = round_to_tick(max(0.05, float(entry_prem) - FIXED_SL_INR))
-        tgt_prem = round_to_tick(float(entry_prem) + FIXED_SL_INR)
+        sl_prem = round_to_tick(float(FIXED_SL_PREMIUM))
+        r_dist = max(0.05, float(entry_prem) - sl_prem)
+        tgt_prem = round_to_tick(float(entry_prem) + r_dist)
         spot_sl = sl_prem
         spot_tgt = tgt_prem
         delta = estimate_delta_from_spot(nifty_spot, contract.strike, option_kind, vix=ind.get("vix"))
-        exit_note = "20rupees-strategy: ₹10 SL, 1:1 target; trail after fill; no new entries after 15:00 IST"
+        exit_note = (
+            f"20rupees-strategy: fixed SL ₹{sl_prem:.2f} premium, 1:1 target; "
+            f"trail after fill; no new entries after 15:00 IST"
+        )
     else:
         sl_prem, tgt_prem, spot_sl, spot_tgt, delta, exit_note = resolve_long_buy_exit_levels(
             strategy_id=sid,
@@ -310,7 +333,11 @@ def build_indicator_trade_plan(
         pass
 
     lot_cap = min(sensex_max_lots_per_trade(), max(1, num_lots))
-    if sid == TWENTY_RUPEES_ID or capital > 0:
+    if sid == TWENTY_RUPEES_ID:
+        qty_lots, quantity, risk_inr = size_from_allocation(
+            capital, risk_pct, float(entry_prem), lot_size, lot_cap
+        )
+    elif capital > 0:
         qty_lots, quantity, risk_inr = size_from_risk(
             capital, risk_pct, float(entry_prem), sl_prem, lot_size, lot_cap
         )

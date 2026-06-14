@@ -34,13 +34,15 @@ STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
     "Buy Sensex option when premium closes ₹17–₹23 on 5m (from 14:00 IST). "
     "AUTO: PE on gap-down, CE on gap-up/flat; monitors 5 strikes around ATM (ATM±2); ATM from index LTP. "
-    "₹10 SL, 1:1 target; trail activates at entry + ₹10 (1R). "
+    "Fixed initial SL at ₹9 premium; 1R = entry − SL; 1:1 target then stepped trail. "
+    "Size lots from risk % ÷ entry premium (not SL distance). "
     "No new entries after 3:00 PM IST."
 )
 
 STRATEGY_IDS = (STRATEGY_ID,)
 
-FIXED_SL_INR = 10.0
+FIXED_SL_PREMIUM = 9.0  # absolute initial stop-loss option premium (trail adjusts after fill)
+FIXED_SL_INR = FIXED_SL_PREMIUM  # legacy export name
 FIXED_LOTS = 1
 
 
@@ -247,8 +249,9 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
         )
 
     entry_prem = round(ltp, 2)
-    sl_prem = round(max(0.05, entry_prem - FIXED_SL_INR), 2)
-    tgt_prem = round(entry_prem + FIXED_SL_INR, 2)
+    sl_prem = round(FIXED_SL_PREMIUM, 2)
+    r_dist = max(0.05, entry_prem - sl_prem)
+    tgt_prem = round(entry_prem + r_dist, 2)
     score = _band_score(entry_prem)
 
     if _in_premium_band(entry_prem):
@@ -343,7 +346,8 @@ def analyze_fno_strategies(
         "hypothesis_note": hypothesis_note,
         "strategy_mode": "20rupees_only",
         "premium_band": [PREMIUM_BAND_LOW, PREMIUM_BAND_HIGH],
-        "fixed_sl_inr": FIXED_SL_INR,
+        "fixed_sl_premium": FIXED_SL_PREMIUM,
+        "fixed_sl_inr": FIXED_SL_PREMIUM,
         "fixed_lots": FIXED_LOTS,
         "entry_cutoff_ist": sensex_entry_cutoff_label(),
         "entry_allowed": not is_past_sensex_entry_cutoff(),

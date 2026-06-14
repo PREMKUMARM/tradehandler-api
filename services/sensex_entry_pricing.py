@@ -17,7 +17,7 @@ from services.sensex_constants import (
     sensex_is_bad_option_bar,
 )
 from services.sensex_strategy_analysis import (
-    FIXED_SL_INR,
+    FIXED_SL_PREMIUM,
     PREMIUM_BAND_HIGH,
     PREMIUM_BAND_LOW,
     STRATEGY_ID as TWENTY_RUPEES_ID,
@@ -482,7 +482,7 @@ def _analyze_20rupees(
         score = max(75, min(95, int(92 - abs(ltp - center) * 4)))
         notes.append(
             f"Premium closed in band — entry at ₹{ltp:.2f} · "
-            f"SL ₹{max(0.05, ltp - FIXED_SL_INR):.2f} · target ₹{ltp + FIXED_SL_INR:.2f} (1:1)"
+            f"SL ₹{FIXED_SL_PREMIUM:.2f} · target ₹{ltp + max(0.05, ltp - FIXED_SL_PREMIUM):.2f} (1:1)"
         )
         return True, round(ltp, 2), score, notes, None, "20rupees_in_band"
 

@@ -19,7 +19,12 @@ class SensexBacktestRunRequest(BaseModel):
     )
     capital: float = Field(default=1_000_000.0, ge=10_000, le=100_000_000)
     risk_pct: float = Field(default=1.0, gt=0, le=10, description="Risk % of capital per trade")
-    sl_inr: float = Field(default=10.0, gt=0, le=100, description="Stop-loss in premium points (₹)")
+    sl_inr: float = Field(
+        default=9.0,
+        gt=0,
+        le=100,
+        description="Fixed initial stop-loss option premium price (₹), e.g. 9 — not distance from entry",
+    )
     entry_band_low: float = Field(default=17.0, gt=0, le=500, description="Entry premium range low (₹)")
     entry_band_high: float = Field(default=23.0, gt=0, le=500, description="Entry premium range high (₹)")
     min_target_low: float = Field(

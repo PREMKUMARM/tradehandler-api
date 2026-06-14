@@ -131,11 +131,11 @@ def resolve_long_buy_exit_levels(
     prem = float(entry_premium)
 
     if sid == "20rupees_strategy":
-        from services.sensex_strategy_analysis import FIXED_SL_INR
+        from services.sensex_strategy_analysis import FIXED_SL_PREMIUM
 
-        sl_inr = float(FIXED_SL_INR)
-        sl_prem = round_to_tick(max(0.05, prem - sl_inr))
-        tgt_prem = round_to_tick(prem + sl_inr)
+        sl_prem = round_to_tick(float(FIXED_SL_PREMIUM))
+        r_dist = max(0.05, prem - sl_prem)
+        tgt_prem = round_to_tick(prem + r_dist)
         delta = estimate_delta_from_spot(
             float(underlying_spot),
             int(strike),
@@ -146,7 +146,7 @@ def resolve_long_buy_exit_levels(
             sl_prem, tgt_prem = normalize_exits(
                 prem, sl_prem, tgt_prem, min_rr=1.0
             )
-        note = f"20rupees-strategy: fixed ₹{sl_inr:.0f} SL, 1:1 target (trail after fill)"
+        note = f"20rupees-strategy: fixed SL ₹{sl_prem:.2f} premium, 1:1 target (trail after fill)"
         return sl_prem, tgt_prem, sl_prem, tgt_prem, delta, note
 
     if sid in STRUCTURE_STRATEGIES:
