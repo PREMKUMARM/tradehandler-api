@@ -18,7 +18,12 @@ class SensexBacktestRunRequest(BaseModel):
         description="Explicit session dates (legacy). Omit when using start_date/end_date.",
     )
     capital: float = Field(default=1_000_000.0, ge=10_000, le=100_000_000)
-    risk_pct: float = Field(default=1.0, gt=0, le=10, description="Risk % of capital per trade")
+    risk_pct: float = Field(
+        default=1.0,
+        gt=0,
+        le=100,
+        description="Capital allocation % per trade (lots = allocation ÷ entry premium)",
+    )
     sl_inr: float = Field(
         default=9.0,
         gt=0,
