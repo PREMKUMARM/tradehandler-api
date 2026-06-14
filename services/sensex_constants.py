@@ -125,6 +125,26 @@ def sensex_premium_in_band(px: float, band_low: float = 17.0, band_high: float =
     return band_low <= px <= band_high
 
 
+def sensex_atm_near_steps() -> int:
+    """Rolling offsets each side of ATM to monitor (default 2 → ATM-2…ATM+2 = 5 strikes)."""
+    return max(0, min(5, _env_int("SENSEX_ATM_NEAR_STEPS", 2)))
+
+
+def sensex_atm_near_offsets() -> list[str]:
+    """Dhan rolling offsets monitored around ATM (5 per leg by default)."""
+    steps = sensex_atm_near_steps()
+    if steps <= 0:
+        return ["ATM"]
+    minus = [f"ATM-{i}" for i in range(steps, 0, -1)]
+    plus = [f"ATM+{i}" for i in range(1, steps + 1)]
+    return minus + ["ATM"] + plus
+
+
+def sensex_atm_near_strike_points() -> int:
+    """Absolute strike distance from ATM included in live chain monitoring."""
+    return sensex_atm_near_steps() * 100
+
+
 def resolve_sensex_bfo_product(plan: dict | None = None) -> str:
     """Product for V2 entry + GTT exit. Always NRML when exit is GTT_OCO."""
     if not plan:

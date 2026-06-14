@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.dhan_data_client import build_fixed_strike_series, load_cached_session
-from services.sensex_constants import sensex_entry_cutoff_minutes
+from services.sensex_constants import sensex_atm_near_offsets, sensex_entry_cutoff_minutes
 from services.sensex_dhan_backtest import (
     CACHE_DIR,
     BacktestParams,

@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from services.sensex_constants import sensex_atm_near_offsets, sensex_atm_near_strike_points
+
 # ₹17–₹23 band on Sensex weekly options typically sits ~700–1000 pts OTM.
 MAX_OTM_POINTS = 1000
 MAX_OTM_POINTS_RELAXED = 1200
@@ -42,7 +44,12 @@ def _band_touched(bar_low: float, bar_high: float, band_low: float, band_high: f
 
 
 def _true_atm(spot: float) -> int:
+    """ATM strike from Sensex index LTP (rounded to 100)."""
     return int(round(float(spot) / 100.0) * 100)
+
+
+def true_atm_from_spot(spot: float) -> int:
+    return _true_atm(spot)
 
 
 def _valid_otm_side(kind: str, strike: int, atm: int) -> bool:
@@ -58,6 +65,28 @@ def _proximity_factor(dist_pts: int) -> float:
     """Prefer nearer OTM (700 pts) over tail (1000 pts) within the band."""
     d = max(0, int(dist_pts))
     return 1.0 / (1.0 + max(0, d - 400) / 200.0)
+
+
+def _offset_step_distance(offset: str) -> int:
+    off = (offset or "ATM").upper()
+    if off == "ATM":
+        return 0
+    if off.startswith("ATM+"):
+        return int(off[4:] or 0)
+    if off.startswith("ATM-"):
+        return int(off[4:] or 0)
+    return 99
+
+
+def _near_atm_strike_ok(strike: int, atm: int) -> bool:
+    return abs(int(strike) - int(atm)) <= sensex_atm_near_strike_points()
+
+
+def _pick_best_near_atm(pool: List[StrikeCandidate]) -> Optional[StrikeCandidate]:
+    if not pool:
+        return None
+    # Prefer strike nearest spot-derived ATM (LTP), then rolling offset, then OI.
+    return min(pool, key=lambda c: (c.dist_pts, _offset_step_distance(c.offset), -c.oi))
 
 
 def _direction_bias_kind(spot: float, prev_close: float) -> Optional[str]:
@@ -166,13 +195,15 @@ def pick_smart_from_chain(
         ranked = chain_oi.get("ranked_ce_oi") if k == "CE" else chain_oi.get("ranked_pe_oi")
         for row in list(ranked or []):
             strike = int(row.get("strike") or 0)
-            if strike <= 0:
+            if strike <= 0 or not _near_atm_strike_ok(strike, atm):
                 continue
+            step = abs(strike - atm) // 100
+            off = "ATM" if step == 0 else (f"ATM+{step}" if strike > atm else f"ATM-{step}")
             rows.append(
                 (
                     k,
                     strike,
-                    "MAX_OI",
+                    off,
                     float(row.get("oi") or 0),
                     float(row.get("ltp") or 0),
                     row.get("symbol"),
@@ -183,22 +214,20 @@ def pick_smart_from_chain(
         return None
 
     max_oi = max(r[3] for r in rows) or 1.0
-    for max_dist in (MAX_OTM_POINTS, MAX_OTM_POINTS_RELAXED, 2000):
-        pool = _build_pool_from_rows(
-            rows,
-            atm,
-            max_dist,
-            max_oi,
-            bias,
-            require_band=True,
-            band_low=band_low,
-            band_high=band_high,
-        )
-        best = _pick_best(pool)
-        if best:
-            return best
+    pool = _build_pool_from_rows(
+        rows,
+        atm,
+        sensex_atm_near_strike_points(),
+        max_oi,
+        bias,
+        require_band=True,
+        band_low=band_low,
+        band_high=band_high,
+    )
+    best = _pick_best_near_atm(pool)
+    if best:
+        return best
 
-    # Nothing in band — return closest-to-ATM high-OI row for wait state
     fallback: List[StrikeCandidate] = []
     for kind, strike, offset, oi, ltp, sym in rows:
         if oi <= 0:
@@ -208,11 +237,14 @@ def pick_smart_from_chain(
         fallback.append(
             StrikeCandidate(kind.upper(), strike, offset, oi, ltp, sc, dist, sym)
         )
-    return _pick_best(fallback)
+    return _pick_best_near_atm(fallback)
 
 
 def strike_source_label(offset: str) -> str:
-    return "ATM" if (offset or "").upper() == "ATM" else "SMART_OI"
+    off = (offset or "ATM").upper()
+    if off == "ATM" or off.startswith("ATM+") or off.startswith("ATM-"):
+        return off
+    return "SMART_OI"
 
 
 def moneyness_label(strike: int, atm: int, offset: str) -> str:
@@ -231,7 +263,7 @@ def pick_smart_at_bar(
     prev_close: float = 0.0,
 ) -> Optional[Tuple[StrikeCandidate, Any]]:
     """
-    Backtest: pick best strike among band-touching series at bar idx.
+    Backtest: first band close among ATM±N monitored offsets at bar idx.
     Returns (candidate, OptionSeries).
     """
     spot = 0.0
@@ -243,53 +275,38 @@ def pick_smart_at_bar(
     if spot <= 0:
         return None
     atm = _true_atm(spot)
-    bias = _direction_bias_kind(spot, prev_close)
 
-    rows: List[Tuple[str, int, str, float, float, Optional[str]]] = []
+    pool: List[StrikeCandidate] = []
+    series_map: Dict[Tuple[str, str], Any] = {}
     for kind in kinds:
-        for offset, series in (session.get(kind) or {}).items():
-            if idx >= len(series.oi):
+        k = kind.upper()
+        for offset in sensex_atm_near_offsets():
+            series = (session.get(k) or {}).get(offset)
+            if not series or idx >= len(series.close):
                 continue
+            series_map[(k, offset)] = series
             bar_close = float(series.close[idx])
             if bar_close <= 0 or not _in_band(bar_close, band_low, band_high):
                 continue
-            ltp = bar_close
-            rows.append(
-                (
-                    kind.upper(),
-                    int(series.strike[idx]),
-                    str(offset),
-                    float(series.oi[idx]),
-                    ltp,
-                    None,
+            strike = int(series.strike[idx])
+            if not _valid_otm_side(k, strike, atm):
+                continue
+            pool.append(
+                StrikeCandidate(
+                    kind=k,
+                    strike=strike,
+                    offset=str(offset),
+                    oi=float(series.oi[idx]),
+                    ltp=bar_close,
+                    score=0.0,
+                    dist_pts=abs(strike - atm),
                 )
             )
 
-    if not rows:
+    best = _pick_best_near_atm(pool)
+    if not best:
         return None
-
-    max_oi = max(r[3] for r in rows) or 1.0
-    series_map: Dict[Tuple[str, str], Any] = {}
-    for kind in kinds:
-        for offset, series in (session.get(kind) or {}).items():
-            series_map[(kind.upper(), str(offset))] = series
-
-    for max_dist in (MAX_OTM_POINTS, MAX_OTM_POINTS_RELAXED, 2000):
-        pool = _build_pool_from_rows(
-            rows,
-            atm,
-            max_dist,
-            max_oi,
-            bias,
-            require_band=False,
-            band_low=band_low,
-            band_high=band_high,
-        )
-        # Re-filter with per-row bar touch already applied in rows; apply OTM dist in pool
-        best = _pick_best(pool)
-        if best:
-            series = series_map.get((best.kind, best.offset))
-            if series is not None:
-                return best, series
-
-    return None
+    series = series_map.get((best.kind, best.offset))
+    if series is None:
+        return None
+    return best, series

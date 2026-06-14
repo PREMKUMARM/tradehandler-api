@@ -22,6 +22,8 @@ from services.dhan_data_client import (
 )
 from services.momentum_trail import breakeven_stop, get_momentum_trail_config
 from services.sensex_constants import (
+    sensex_atm_near_offsets,
+    sensex_atm_near_steps,
     sensex_entry_cutoff_minutes,
     sensex_entry_scan_start_minutes,
     sensex_default_min_target_inr,
@@ -33,6 +35,12 @@ from services.sensex_constants import (
 from services.sensex_indicator_plan import size_from_risk
 from services.sensex_strike_selection import pick_smart_at_bar, strike_source_label
 from services.sensex_strategy_analysis import STRATEGY_NAME
+from services.sensex_trading_calendar import (
+    expiry_index_by_date,
+    list_trading_days,
+    session_index_from_spot,
+    session_spot_series,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "sensex"
@@ -124,26 +132,40 @@ def _f(val: Any, default: float = 0.0) -> float:
 
 
 def _load_all_sessions() -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    with OHLC_PATH.open(encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            rows.append(dict(row))
-    rows.sort(key=lambda r: r.get("expiry_date") or "")
-    return rows
+    """All weekday sessions in the backtest window (not expiry-only)."""
+    expiry_idx = expiry_index_by_date()
+    out: List[Dict[str, Any]] = []
+    for trade_date in list_trading_days():
+        row = expiry_idx.get(trade_date) or {}
+        out.append(
+            {
+                "expiry_date": trade_date,
+                "session_date": trade_date,
+                "is_weekly_expiry": trade_date in expiry_idx,
+                "expiry_weekday": row.get("expiry_weekday") or "",
+                "holiday_adjusted": row.get("holiday_adjusted") == "True",
+                "index_open": _f(row.get("open")),
+                "index_close": _f(row.get("close")),
+                "prev_close": _f(row.get("prev_close")),
+            }
+        )
+    return out
 
 
 def list_available_sessions() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for row in _load_all_sessions():
-        expiry = row.get("expiry_date") or ""
-        cached = cache_path(CACHE_DIR, expiry).exists() if expiry else False
+        trade_date = row.get("expiry_date") or row.get("session_date") or ""
+        cached = cache_path(CACHE_DIR, trade_date).exists() if trade_date else False
         out.append(
             {
-                "expiry_date": expiry,
+                "expiry_date": trade_date,
+                "session_date": trade_date,
+                "is_weekly_expiry": bool(row.get("is_weekly_expiry")),
                 "expiry_weekday": row.get("expiry_weekday"),
-                "holiday_adjusted": row.get("holiday_adjusted") == "True",
-                "index_open": _f(row.get("open")),
-                "index_close": _f(row.get("close")),
+                "holiday_adjusted": row.get("holiday_adjusted"),
+                "index_open": _f(row.get("index_open") or row.get("open")),
+                "index_close": _f(row.get("index_close") or row.get("close")),
                 "prev_close": _f(row.get("prev_close")),
                 "dhan_cached": cached,
             }
@@ -527,7 +549,7 @@ def fetch_sessions_data(
             if cached:
                 loaded[expiry] = cached
                 continue
-        series = client.fetch_sensex_session(expiry)
+        series = client.fetch_sensex_session(expiry, offsets=sensex_atm_near_offsets())
         save_cached_session(CACHE_DIR, expiry, series, meta={"profile_dataPlan": prof.get("dataPlan")})
         loaded[expiry] = series
     return loaded
@@ -559,16 +581,28 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         peak_equity = start_capital
         max_drawdown_inr = 0.0
 
+        prev_spot_close = 0.0
         for row in sessions:
-            expiry_date = row["expiry_date"]
-            index_open = _f(row.get("open"))
-            prev_close = _f(row.get("prev_close"))
-            session = data.get(expiry_date)
+            session_date = row["expiry_date"]
+            session = data.get(session_date)
             if not session:
-                skipped.append({"expiry_date": expiry_date, "reason": "no Dhan data"})
+                skipped.append({"expiry_date": session_date, "reason": "no Dhan data"})
                 continue
 
-            tr = _run_day(expiry_date, index_open, prev_close, session, params, m)
+            index_open, _, prev_close = session_index_from_spot(
+                session,
+                prev_trading_close=prev_spot_close,
+            )
+            if index_open <= 0:
+                skipped.append({"expiry_date": session_date, "reason": "no Sensex spot in Dhan data"})
+                continue
+            if prev_spot_close <= 0 and _f(row.get("prev_close")) > 0:
+                prev_close = _f(row.get("prev_close"))
+
+            tr = _run_day(session_date, index_open, prev_close, session, params, m)
+            spot_s = session_spot_series(session)
+            if spot_s and spot_s.spot:
+                prev_spot_close = float(spot_s.spot[-1])
             if tr:
                 sl_prem = round(tr.entry - params.sl_inr, 2)
                 lots, qty, risk_inr = size_from_risk(
@@ -583,7 +617,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
                 if notional > equity:
                     skipped.append(
                         {
-                            "expiry_date": expiry_date,
+                            "expiry_date": session_date,
                             "reason": f"insufficient capital (need ₹{notional:.0f}, have ₹{equity:.0f})",
                         }
                     )
@@ -603,7 +637,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
             else:
                 skipped.append(
                     {
-                        "expiry_date": expiry_date,
+                        "expiry_date": session_date,
                         "reason": (
                             f"no 5m close in ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} "
                             f"from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
@@ -661,7 +695,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         f"Starting capital ₹{start_capital:,.0f} · {params.risk_pct:g}% risk per trade · "
         f"₹{params.sl_inr:g} SL · min-target {tgt_label} (trail in ₹{params.sl_inr:g} steps after min-target) · "
         f"entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
-        f"AUTO picks PE on gap-down and CE on gap-up/flat (index open vs prev close). "
+        f"AUTO picks PE on gap-down and CE on gap-up/flat; monitors ATM±{sensex_atm_near_steps()} per leg for ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} close. "
         f"Skips bad option ticks (open/high > 3× close). "
         f"Entry from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
         f"when 5m close is in band · trail at entry + ₹{params.min_target_low:g} (1R). "
@@ -669,7 +703,8 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         f"Strike locked at entry — exits use fixed absolute strike OHLC, not drifting rolling offset. "
         f"Conservative defers trail SL on the activation bar; optimistic vs conservative only "
         f"differs when SL and 1R target both touch one bar. "
-        f"Dhan 5m data on {len(sessions)} expiry session(s). "
+        f"ATM from Sensex index LTP (spot) each bar · gap from spot open vs prior session close. "
+        f"All trading days in window ({len(sessions)} sessions). "
         f"Entries before {cutoff // 60:02d}:{cutoff % 60:02d} IST."
     )
     return {

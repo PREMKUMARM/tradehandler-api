@@ -14,7 +14,7 @@ from services.dhan_data_client import (
     save_cached_session,
     ts_to_ist_label,
 )
-from services.sensex_constants import sensex_entry_scan_start_minutes
+from services.sensex_constants import sensex_atm_near_offsets, sensex_entry_scan_start_minutes
 from services.sensex_dhan_backtest import CACHE_DIR as BACKTEST_CACHE_DIR, list_available_sessions
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -85,7 +85,7 @@ def list_dhan_contracts(
     contracts: List[Dict[str, Any]] = []
     for leg in kinds:
         offsets = session.get(leg) or {}
-        for offset in STRIKE_OFFSETS:
+        for offset in sensex_atm_near_offsets():
             series = offsets.get(offset)
             if not series or not series.timestamps:
                 continue
@@ -137,8 +137,8 @@ def get_dhan_ohlc(
     off = (offset or "ATM").upper()
     if leg not in ("CE", "PE"):
         raise ValueError("kind must be CE or PE")
-    if off not in STRIKE_OFFSETS:
-        raise ValueError(f"offset must be one of: {', '.join(STRIKE_OFFSETS)}")
+    if off not in sensex_atm_near_offsets():
+        raise ValueError(f"offset must be one of: {', '.join(sensex_atm_near_offsets())}")
 
     session = _load_session(session_date, refresh=refresh)
     if not session:
