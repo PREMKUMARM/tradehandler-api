@@ -130,6 +130,25 @@ def resolve_long_buy_exit_levels(
     sid = strategy_id or "bb_5m_mean_reversion"
     prem = float(entry_premium)
 
+    if sid == "20rupees_strategy":
+        from services.sensex_strategy_analysis import FIXED_SL_INR
+
+        sl_inr = float(FIXED_SL_INR)
+        sl_prem = round_to_tick(max(0.05, prem - sl_inr))
+        tgt_prem = round_to_tick(prem + sl_inr)
+        delta = estimate_delta_from_spot(
+            float(underlying_spot),
+            int(strike),
+            option_kind,
+            vix=vix,
+        )
+        if normalize_exits:
+            sl_prem, tgt_prem = normalize_exits(
+                prem, sl_prem, tgt_prem, min_rr=1.0
+            )
+        note = f"20rupees-strategy: fixed ₹{sl_inr:.0f} SL, 1:1 target (trail after fill)"
+        return sl_prem, tgt_prem, sl_prem, tgt_prem, delta, note
+
     if sid in STRUCTURE_STRATEGIES:
         from services.push.option_contract_resolver import estimate_delta_from_spot
 

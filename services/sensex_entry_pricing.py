@@ -10,7 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.sensex_live_indicators import bollinger_zone
+from services.sensex_strategy_analysis import (
+    FIXED_SL_INR,
+    PREMIUM_BAND_HIGH,
+    PREMIUM_BAND_LOW,
+    STRATEGY_ID as TWENTY_RUPEES_ID,
+)
 from services.option_contract_indicators import contract_bb_is_active, contract_price_for_bb
 from utils.kite_order_utils import round_to_tick
 
@@ -420,6 +425,57 @@ def _analyze_green_bar_sentinel(
     return False, trigger, score, notes, msg
 
 
+def _analyze_20rupees(
+    quote: Dict[str, float],
+    intra: Dict[str, Any],
+) -> Tuple[bool, Optional[float], int, List[str], Optional[str], str]:
+    """Entry when contract premium is in ₹17–₹23 band."""
+    _, _, ltp, _, _ = _book(quote)
+    ltp = float(intra.get("contract_ltp") or intra.get("option_ltp") or ltp or 0)
+    notes: List[str] = []
+    band = f"₹{PREMIUM_BAND_LOW:.0f}–{PREMIUM_BAND_HIGH:.0f}"
+
+    if ltp <= 0:
+        return (
+            False,
+            None,
+            0,
+            notes,
+            "Option LTP unavailable — wait for chain quote",
+            "20rupees_no_ltp",
+        )
+
+    notes.append(f"20rupees band {band} · LTP ₹{ltp:.2f}")
+
+    if PREMIUM_BAND_LOW <= ltp <= PREMIUM_BAND_HIGH:
+        center = (PREMIUM_BAND_LOW + PREMIUM_BAND_HIGH) / 2.0
+        score = max(75, min(95, int(92 - abs(ltp - center) * 4)))
+        notes.append(
+            f"Premium in band — SL ₹{max(0.05, ltp - FIXED_SL_INR):.2f} · "
+            f"target ₹{ltp + FIXED_SL_INR:.2f} (1:1)"
+        )
+        return True, round(ltp, 2), score, notes, None, "20rupees_in_band"
+
+    if ltp > PREMIUM_BAND_HIGH:
+        return (
+            False,
+            PREMIUM_BAND_HIGH,
+            32,
+            notes,
+            f"Premium ₹{ltp:.2f} above {band} — wait for pullback into band",
+            "20rupees_high",
+        )
+
+    return (
+        False,
+        PREMIUM_BAND_LOW,
+        28,
+        notes,
+        f"Premium ₹{ltp:.2f} below {band} — wait for price to reach band",
+        "20rupees_low",
+    )
+
+
 def _analyze_bb_5m(
     spot: float,
     kind: str,
@@ -483,21 +539,27 @@ def compute_strategy_entry(
     Decide if 5m BB entry is confirmed and compute LIMIT price (patient, not ask chase).
     """
     kind = (option_kind or "CE").upper()
-    sid = strategy_id or "bb_5m_mean_reversion"
+    sid = strategy_id or TWENTY_RUPEES_ID
     bid, ask, ltp, mid, spread_pct = _book(quote)
     ref_ltp = ltp or mid or ask or bid
 
-    if sid == "bb_5m_mean_reversion":
-        ready, trigger, score, notes, block, bb_style = _analyze_bb_5m(spot, kind, intra)
+    if sid == TWENTY_RUPEES_ID:
+        ready, trigger, score, notes, block, tag = _analyze_20rupees(quote, intra)
+    elif sid == "bb_5m_mean_reversion":
+        ready, trigger, score, notes, block, tag = _analyze_bb_5m(spot, kind, intra)
     else:
-        ready, trigger, score, notes, block, bb_style = _analyze_bb_5m(spot, kind, intra)
+        ready, trigger, score, notes, block, tag = _analyze_bb_5m(spot, kind, intra)
 
     fair = _structure_fair_premium(
         ref_ltp, spot, trigger if trigger is not None else spot, kind, delta
     )
-    limit, style = _patient_buy_limit(quote, fair)
-    if bb_style:
-        style = f"{style}_{bb_style}" if ready else bb_style
+    limit, limit_style = _patient_buy_limit(quote, fair)
+    if sid == TWENTY_RUPEES_ID:
+        style = f"{limit_style}_{tag}" if ready and tag else (tag or limit_style)
+    elif ready:
+        style = f"{limit_style}_{tag}" if tag else limit_style
+    else:
+        style = tag or "blocked_wait"
 
     if ready:
         notes.append(
@@ -513,7 +575,7 @@ def compute_strategy_entry(
         entry_ready=ready,
         entry_limit_price=limit,
         fair_premium=round(fair, 2),
-        entry_style=style if ready else "blocked_wait",
+        entry_style=style if ready else (tag or "blocked_wait"),
         spot_trigger=round(trigger, 2) if trigger is not None else None,
         confirmation_score=score,
         notes=notes,

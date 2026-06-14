@@ -1,5 +1,8 @@
 """
-V2 — Sensex50 paper/live strategy: simple 5m Bollinger Bands (20, 2σ) mean reversion.
+Sensex — single custom strategy: 20rupees-strategy.
+
+Enter when ATM or highest-OI strike premium is in ₹17–₹23.
+Fixed 1 lot, ₹10 stop-loss, 1:1 initial target; trailing handled by momentum trail.
 """
 from __future__ import annotations
 
@@ -12,13 +15,19 @@ from utils.logger import log_warning
 
 IST = ZoneInfo("Asia/Kolkata")
 
-STRATEGY_ID = "bb_5m_mean_reversion"
-STRATEGY_NAME = "5m Bollinger Bands"
+STRATEGY_ID = "20rupees_strategy"
+STRATEGY_NAME = "20rupees-strategy"
 STRATEGY_DESC = (
-    "Buy ATM options on 5m BB pullbacks: CE at lower/middle band, PE at upper/middle band."
+    "Buy ATM or highest-OI Sensex option when premium is ₹17–₹23. "
+    "1 lot, ₹10 SL, 1:1 target; trailing stop as per other segments."
 )
 
 STRATEGY_IDS = (STRATEGY_ID,)
+
+PREMIUM_BAND_LOW = 17.0
+PREMIUM_BAND_HIGH = 23.0
+FIXED_SL_INR = 10.0
+FIXED_LOTS = 1
 
 
 @dataclass
@@ -29,10 +38,6 @@ class MarketContext:
     margin: float = 0.0
     direction_pref: str = "AUTO"
     vix_ltp: Optional[float] = None
-    bb_middle: Optional[float] = None
-    bb_upper: Optional[float] = None
-    bb_lower: Optional[float] = None
-    bb_zone: str = ""
     minutes: int = 0
     is_weekday: bool = True
 
@@ -52,9 +57,14 @@ class StrategyCandidate:
     reasons: List[str]
     warnings: List[str]
     strike_moneyness: str = "ATM"
-    pattern_tag: str = "bb_5m"
+    pattern_tag: str = "20rupees"
     anchor_strike: Optional[int] = None
     oi_change: Optional[float] = None
+    entry_premium: Optional[float] = None
+    stop_loss_premium: Optional[float] = None
+    target_premium: Optional[float] = None
+    strike_source: str = ""
+    tradingsymbol: Optional[str] = None
 
 
 def _fit_label(score: int) -> str:
@@ -77,6 +87,67 @@ def _resolve_kind(ctx: MarketContext, bias: str) -> str:
     return "CE"
 
 
+def _in_premium_band(ltp: float) -> bool:
+    return PREMIUM_BAND_LOW <= ltp <= PREMIUM_BAND_HIGH
+
+
+def _band_score(ltp: float) -> int:
+    if not _in_premium_band(ltp):
+        return 25
+    center = (PREMIUM_BAND_LOW + PREMIUM_BAND_HIGH) / 2.0
+    return max(72, min(95, int(92 - abs(ltp - center) * 4)))
+
+
+def _highest_oi_row(ranked: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not ranked:
+        return None
+    return max(ranked, key=lambda row: float(row.get("oi") or 0))
+
+
+def _pick_strike_from_chain(
+    chain_oi: Dict[str, Any],
+    kind: str,
+    spot: float,
+) -> Tuple[Optional[int], float, str, Optional[str], Optional[float]]:
+    """
+    Pick ATM or highest-OI strike whose premium is in band (prefer ATM).
+    Returns (strike, ltp, moneyness, symbol, oi).
+    """
+    atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
+    atm_row = (chain_oi.get("atm_ce") or {}) if kind == "CE" else (chain_oi.get("atm_pe") or {})
+    atm_ltp = float(atm_row.get("ltp") or 0)
+
+    ranked = chain_oi.get("ranked_ce_oi") if kind == "CE" else chain_oi.get("ranked_pe_oi")
+    high_oi = _highest_oi_row(list(ranked or []))
+
+    candidates: List[Tuple[str, int, float, Optional[str], Optional[float]]] = []
+    if atm_ltp > 0:
+        candidates.append(("ATM", atm, atm_ltp, None, float(atm_row.get("oi") or 0) or None))
+    if high_oi and int(high_oi.get("strike") or 0) != atm:
+        candidates.append(
+            (
+                "MAX_OI",
+                int(high_oi["strike"]),
+                float(high_oi.get("ltp") or 0),
+                high_oi.get("symbol"),
+                float(high_oi.get("oi") or 0),
+            )
+        )
+
+    in_band = [c for c in candidates if _in_premium_band(c[2])]
+    if in_band:
+        source, strike, ltp, sym, oi = in_band[0]
+        money = "ATM" if source == "ATM" else "MAX_OI"
+        return strike, ltp, money, sym, oi
+
+    if candidates:
+        source, strike, ltp, sym, oi = candidates[0]
+        money = "ATM" if source == "ATM" else "MAX_OI"
+        return strike, ltp, money, sym, oi
+
+    return atm if atm > 0 else None, atm_ltp, "ATM", None, None
+
+
 def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
     ctx = MarketContext(margin=margin, direction_pref=(direction_pref or "AUTO").upper())
     now = datetime.now(IST)
@@ -93,146 +164,91 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
         if live.get("vix"):
             ctx.vix_ltp = float(live["vix"])
     except Exception as exc:
-        log_warning(f"[V2 strategy] live indicators failed: {exc}")
+        log_warning(f"[Sensex strategy] live indicators failed: {exc}")
 
     return ctx
 
 
-def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
+def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> StrategyCandidate:
     kind = _resolve_kind(ctx, "AUTO")
-    nifty = ctx.nifty_ltp
-    rr = 1.5
-    score = 20
+    chain = chain_oi or {}
+    spot = ctx.nifty_ltp
+    if spot <= 0:
+        spot = float(chain.get("atm") or 0)
+    rr = 1.0
     reasons: List[str] = []
     warnings: List[str] = []
 
-    if nifty <= 0:
+    if spot <= 0 and not chain:
         warnings.append("Sensex spot unavailable — connect Kite ticker")
         return StrategyCandidate(
             id=STRATEGY_ID,
             name=STRATEGY_NAME,
             description=STRATEGY_DESC,
-            score=score,
-            fit=_fit_label(score),
+            score=15,
+            fit=_fit_label(15),
             option_kind=kind,
-            spot_entry=nifty,
-            spot_stop_loss=nifty - 30,
-            spot_target=nifty + 45,
+            spot_entry=0,
+            spot_stop_loss=0,
+            spot_target=0,
             rr_ratio=rr,
             reasons=reasons,
             warnings=warnings,
         )
 
-    from services.sensex_live_indicators import bollinger_zone, get_option_bollinger_snapshot
-    from services.push.option_contract_resolver import resolve_nifty_contract
-
-    contract = resolve_nifty_contract(spot=nifty, kind=kind, moneyness="ATM")
-    if contract is None:
-        warnings.append("Could not resolve ATM option for contract BB")
+    strike, ltp, moneyness, sym, oi = _pick_strike_from_chain(chain, kind, spot)
+    if strike is None or ltp <= 0:
+        warnings.append("Option chain LTP unavailable — refresh after 9:20 AM")
         return StrategyCandidate(
             id=STRATEGY_ID,
             name=STRATEGY_NAME,
             description=STRATEGY_DESC,
-            score=score,
-            fit=_fit_label(score),
+            score=20,
+            fit=_fit_label(20),
             option_kind=kind,
-            spot_entry=nifty,
-            spot_stop_loss=nifty - 30,
-            spot_target=nifty + 45,
+            spot_entry=spot,
+            spot_stop_loss=0,
+            spot_target=0,
             rr_ratio=rr,
             reasons=reasons,
             warnings=warnings,
+            anchor_strike=strike,
         )
 
-    opt_bb = get_option_bollinger_snapshot(contract.tradingsymbol, "NFO")
-    entry = float(opt_bb.get("option_ltp") or 0)
-    mid = opt_bb.get("bb_middle")
-    upper = opt_bb.get("bb_upper")
-    lower = opt_bb.get("bb_lower")
+    entry_prem = round(ltp, 2)
+    sl_prem = round(max(0.05, entry_prem - FIXED_SL_INR), 2)
+    tgt_prem = round(entry_prem + FIXED_SL_INR, 2)
+    score = _band_score(entry_prem)
 
-    if entry <= 0 or mid is None or upper is None or lower is None:
+    if _in_premium_band(entry_prem):
+        reasons.append(
+            f"{kind} {moneyness} strike {strike}: premium ₹{entry_prem:.2f} in "
+            f"₹{PREMIUM_BAND_LOW:.0f}–{PREMIUM_BAND_HIGH:.0f} band"
+        )
+        reasons.append(f"Plan: 1 lot · SL ₹{sl_prem:.2f} · target ₹{tgt_prem:.2f} (1:1)")
+    elif entry_prem > PREMIUM_BAND_HIGH:
         warnings.append(
-            f"5m BB not ready on {contract.tradingsymbol} — need 20×5m bars on contract chart"
+            f"Premium ₹{entry_prem:.2f} above band — wait for ₹{PREMIUM_BAND_HIGH:.0f}–{PREMIUM_BAND_LOW:.0f}"
         )
-        risk = max(0.5, (entry or 50) * 0.12)
-        if kind == "CE":
-            sl, tgt = (entry or 50) - risk, (entry or 50) + risk * rr
-        else:
-            sl, tgt = (entry or 50) + risk, (entry or 50) - risk * rr
-        return StrategyCandidate(
-            id=STRATEGY_ID,
-            name=STRATEGY_NAME,
-            description=STRATEGY_DESC,
-            score=score,
-            fit=_fit_label(score),
-            option_kind=kind,
-            spot_entry=nifty,
-            spot_stop_loss=sl,
-            spot_target=tgt,
-            rr_ratio=rr,
-            reasons=reasons,
-            warnings=warnings,
-        )
-
-    ctx.bb_middle = float(mid)
-    ctx.bb_upper = float(upper)
-    ctx.bb_lower = float(lower)
-
-    bb = bollinger_zone(entry, ctx.bb_middle, ctx.bb_upper, ctx.bb_lower, kind)
-    zone = bb["zone"]
-    width = ctx.bb_upper - ctx.bb_lower
-    buf = max(0.5, width * 0.04)
-
-    if kind == "CE":
-        sl = ctx.bb_lower - buf
-        risk = max(0.05, entry - sl)
-        tgt = ctx.bb_middle + rr * risk * 0.85
-        if zone == "lower":
-            score = 88
-            reasons.append(f"CE: contract BB lower touch (₹{ctx.bb_lower:.2f})")
-        elif zone == "middle":
-            score = 78
-            reasons.append(f"CE: contract BB middle (₹{ctx.bb_middle:.2f})")
-        elif zone == "between":
-            score = 62
-            reasons.append("CE: LTP between contract bands — patient limit")
-        elif bb["extended"]:
-            score = 25
-            warnings.append("CE blocked: LTP at upper band — wait for pullback")
-        else:
-            score = 45
-            warnings.append(bb["wait_msg"])
+        score = min(score, 38)
     else:
-        sl = ctx.bb_upper + buf
-        risk = max(0.05, sl - entry)
-        tgt = ctx.bb_middle - rr * risk * 0.85
-        if zone == "upper":
-            score = 88
-            reasons.append(f"PE: contract BB upper touch (₹{ctx.bb_upper:.2f})")
-        elif zone == "middle":
-            score = 78
-            reasons.append(f"PE: contract BB middle (₹{ctx.bb_middle:.2f})")
-        elif zone == "between":
-            score = 62
-            reasons.append("PE: LTP between contract bands — patient limit")
-        elif bb["extended"]:
-            score = 25
-            warnings.append("PE blocked: LTP at lower band — wait for rally")
-        else:
-            score = 45
-            warnings.append(bb["wait_msg"])
+        warnings.append(
+            f"Premium ₹{entry_prem:.2f} below band — wait for ₹{PREMIUM_BAND_HIGH:.0f}–{PREMIUM_BAND_LOW:.0f}"
+        )
+        score = min(score, 32)
+
+    if moneyness == "MAX_OI" and oi:
+        reasons.append(f"Highest-OI {kind} strike {strike} (OI {oi:,.0f})")
+    elif moneyness == "ATM":
+        reasons.append(f"ATM {kind} strike {strike}")
 
     if ctx.margin > 5000:
-        score += 8
-        reasons.append(f"Margin ₹{ctx.margin:,.0f} OK for ATM buy")
-    if ctx.vix_ltp and 12 <= ctx.vix_ltp <= 24:
         score += 5
-        reasons.append(f"VIX {ctx.vix_ltp:.1f} in tradeable range")
+        reasons.append(f"Margin ₹{ctx.margin:,.0f} OK for 1-lot entry")
+    if ctx.vix_ltp and 12 <= ctx.vix_ltp <= 28:
+        score += 3
 
-    reasons.append(
-        f"{contract.tradingsymbol} BB L ₹{ctx.bb_lower:.2f} M ₹{ctx.bb_middle:.2f} "
-        f"U ₹{ctx.bb_upper:.2f} · LTP ₹{entry:.2f} · zone {zone}"
-    )
+    pattern = "20rupees_ready" if _in_premium_band(entry_prem) else "20rupees_wait"
 
     return StrategyCandidate(
         id=STRATEGY_ID,
@@ -241,14 +257,21 @@ def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
         score=max(0, min(100, score)),
         fit=_fit_label(score),
         option_kind=kind,
-        spot_entry=nifty,
-        spot_stop_loss=sl,
-        spot_target=tgt,
+        spot_entry=spot,
+        spot_stop_loss=sl_prem,
+        spot_target=tgt_prem,
         rr_ratio=rr,
         reasons=reasons,
         warnings=warnings,
-        strike_moneyness="ATM",
-        pattern_tag=f"bb_{zone}",
+        strike_moneyness=moneyness,
+        pattern_tag=pattern,
+        anchor_strike=int(strike),
+        oi_change=oi,
+        entry_premium=entry_prem,
+        stop_loss_premium=sl_prem,
+        target_premium=tgt_prem,
+        strike_source=moneyness,
+        tradingsymbol=sym,
     )
 
 
@@ -258,33 +281,9 @@ def analyze_fno_strategies(
     hypothesis_note: Optional[str] = None,
     chain_oi: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Single 5m Bollinger Bands strategy for Sensex50 (paper debug + live)."""
-    del chain_oi  # OI ranking not used for BB-only strategy
+    """Single 20rupees-strategy for Sensex (paper + live)."""
     ctx = _fetch_market_context(direction_pref, margin)
-    selected = _score_bb_5m(ctx)
-
-    try:
-        from services.sensex_live_indicators import recalculate_from_ticker
-
-        intra = recalculate_from_ticker()
-    except Exception as exc:
-        log_warning(f"[V2 strategy] intraday for strike pick: {exc}")
-        intra = {}
-
-    from services.sensex_strike_pricing import _pick_moneyness
-
-    m, pt, reason = _pick_moneyness(
-        selected.id,
-        ctx.nifty_ltp,
-        selected.option_kind,
-        selected.spot_stop_loss,
-        selected.spot_target,
-        intra,
-    )
-    selected.strike_moneyness = m
-    selected.pattern_tag = pt
-    if reason:
-        selected.reasons = list(selected.reasons) + [f"Strike {m}: {reason}"]
+    selected = _score_20rupees(ctx, chain_oi)
 
     ranked = [selected]
 
@@ -293,13 +292,12 @@ def analyze_fno_strategies(
         "prev_close": round(ctx.prev_close, 2),
         "margin": round(ctx.margin, 2),
         "vix": round(ctx.vix_ltp, 2) if ctx.vix_ltp else None,
-        "bb_middle": round(ctx.bb_middle, 2) if ctx.bb_middle else None,
-        "bb_upper": round(ctx.bb_upper, 2) if ctx.bb_upper else None,
-        "bb_lower": round(ctx.bb_lower, 2) if ctx.bb_lower else None,
-        "bb_zone": ctx.bb_zone or None,
         "direction_pref": ctx.direction_pref,
         "hypothesis_note": hypothesis_note,
-        "strategy_mode": "bb_5m_only",
+        "strategy_mode": "20rupees_only",
+        "premium_band": [PREMIUM_BAND_LOW, PREMIUM_BAND_HIGH],
+        "fixed_sl_inr": FIXED_SL_INR,
+        "fixed_lots": FIXED_LOTS,
     }
 
     def _to_dict(c: StrategyCandidate) -> Dict[str, Any]:
@@ -320,15 +318,28 @@ def analyze_fno_strategies(
             "pattern_tag": c.pattern_tag,
             "anchor_strike": c.anchor_strike,
             "oi_change": c.oi_change,
+            "entry_premium": c.entry_premium,
+            "stop_loss_premium": c.stop_loss_premium,
+            "target_premium": c.target_premium,
+            "strike_source": c.strike_source,
+            "tradingsymbol": c.tradingsymbol,
+            "fixed_lots": FIXED_LOTS,
         }
 
+    band = f"₹{PREMIUM_BAND_LOW:.0f}–{PREMIUM_BAND_HIGH:.0f}"
     output_lines = [
         f"Selected: {selected.name} (score {selected.score}/100, {selected.fit})",
-        f"Leg: BUY Sensex {selected.option_kind} · BB zone {ctx.bb_zone or '—'}",
-        f"SL {selected.spot_stop_loss:.0f} · Tgt {selected.spot_target:.0f}",
+        f"Leg: BUY Sensex {selected.option_kind} · premium band {band}",
     ]
+    if selected.entry_premium:
+        output_lines.append(
+            f"LTP ₹{selected.entry_premium:.2f} · 1 lot · SL ₹{selected.stop_loss_premium:.2f} · "
+            f"Tgt ₹{selected.target_premium:.2f}"
+        )
     if selected.reasons:
-        output_lines.append("Why: " + "; ".join(selected.reasons[:3]))
+        output_lines.append("Why: " + "; ".join(selected.reasons[:2]))
+    if selected.warnings:
+        output_lines.append("Wait: " + selected.warnings[0])
 
     return {
         "selected_id": selected.id,

@@ -10,12 +10,12 @@ from services.push.option_contract_resolver import (
     OptionContract,
     estimate_delta_from_spot,
     fetch_option_ltp,
-    resolve_nifty_contract,
-    resolve_nifty_contract_at_strike,
 )
+from services.sensex_option_chain import resolve_sensex_contract
 from services.sensex_live_indicators import get_sensex_bundle_for_v2, get_vix_snapshot, recalculate_from_ticker
 from services.sensex_constants import SENSEX_BFO_PRODUCT
 from services.sensex_entry_pricing import EntryAnalysis, compute_strategy_entry
+from services.sensex_strategy_analysis import FIXED_LOTS, STRATEGY_ID as TWENTY_RUPEES_ID
 from services.option_contract_indicators import (
     merge_option_bb_into_intra,
     order_exit_levels_from_contract_bb,
@@ -34,7 +34,7 @@ def fetch_realtime_indicators() -> Dict[str, Any]:
     return recalculate_from_ticker()
 
 
-def live_option_quote(tradingsymbol: str, exchange: str = "NFO") -> Dict[str, float]:
+def live_option_quote(tradingsymbol: str, exchange: str = "BFO") -> Dict[str, float]:
     """Bid/ask/LTP for precise LIMIT entry."""
     kite = get_kite_instance()
     key = f"{exchange}:{tradingsymbol}"
@@ -169,6 +169,7 @@ def build_indicator_trade_plan(
         anchor_strike = sel.get("anchor_strike")
     else:
         anchor_strike = None
+        sel = {}
         d = (direction or "AUTO").upper()
         if d in ("CE", "PE"):
             option_kind = d
@@ -186,7 +187,7 @@ def build_indicator_trade_plan(
         else:
             spot_sl, spot_tgt = spot + risk_pts, spot - risk_pts * rr_entry
 
-    sid = strategy_id or "bb_5m_mean_reversion"
+    sid = strategy_id or TWENTY_RUPEES_ID
     # Index structure only — BB for order prices comes from the selected contract chart.
     nifty_spot = float(ind["nifty_spot"])
     intra = {
@@ -201,12 +202,15 @@ def build_indicator_trade_plan(
         "anchor_strike": anchor_strike,
         "nifty_spot": nifty_spot,
         "oi_baseline_ready": bool(
-            sid == "green_bar_sentinel_2nd_oi"
-            and anchor_strike
-            and (not strategy_analysis or sel.get("oi_change") is not None)
+            sid == TWENTY_RUPEES_ID and anchor_strike
         ),
     }
     spot_entry = nifty_spot
+    if strategy_analysis and sid == TWENTY_RUPEES_ID:
+        prem = float(sel.get("entry_premium") or 0)
+        if prem > 0:
+            intra["contract_ltp"] = prem
+            intra["option_ltp"] = prem
     if strategy_analysis:
         cand_entry = float(sel.get("spot_entry") or nifty_spot)
         if cand_entry > 5000:
@@ -221,16 +225,11 @@ def build_indicator_trade_plan(
     )
 
     contract: Optional[OptionContract] = None
-    if sid == "green_bar_sentinel_2nd_oi" and anchor_strike:
-        contract = resolve_nifty_contract_at_strike(
-            strike=int(anchor_strike), kind=option_kind
-        )
+    kite = get_kite_instance()
+    pick_strike = int(anchor_strike or round(nifty_spot / 100) * 100)
+    contract = resolve_sensex_contract(kite, strike=pick_strike, kind=option_kind)
     if contract is None:
-        contract = resolve_nifty_contract(
-            spot=spot_entry, kind=option_kind, moneyness=moneyness
-        )
-    if contract is None:
-        return None, ["Could not resolve option contract for live strike"]
+        return None, ["Could not resolve Sensex BFO option contract for live strike"]
 
     quote = live_option_quote(contract.tradingsymbol)
     entry_prem = quote["ltp"] or fetch_option_ltp(contract)
@@ -240,7 +239,7 @@ def build_indicator_trade_plan(
 
     from services.sensex_live_indicators import get_option_bollinger_snapshot
 
-    opt_bb = get_option_bollinger_snapshot(contract.tradingsymbol, "NFO")
+    opt_bb = get_option_bollinger_snapshot(contract.tradingsymbol, "BFO")
     intra_bb = merge_option_bb_into_intra(intra, opt_bb, contract.tradingsymbol)
     intra_bb["contract_ltp"] = float(entry_prem)
     intra_bb["option_ltp"] = quote.get("ltp") or opt_bb.get("option_ltp")
@@ -256,18 +255,28 @@ def build_indicator_trade_plan(
     strategy_rr = reward_pct / risk_pct if risk_pct > 0 else 2.0
     from services.option_contract_indicators import resolve_long_buy_exit_levels
 
-    sl_prem, tgt_prem, spot_sl, spot_tgt, delta, exit_note = resolve_long_buy_exit_levels(
-        strategy_id=sid,
-        entry_premium=float(entry_prem),
-        option_kind=option_kind,
-        intra_bb=intra_bb,
-        underlying_spot=nifty_spot,
-        underlying_sl=spot_sl,
-        underlying_tgt=spot_tgt,
-        strike=contract.strike,
-        vix=ind.get("vix"),
-        reward_ratio=rr_ratio,
-    )
+    if sid == TWENTY_RUPEES_ID:
+        from services.sensex_strategy_analysis import FIXED_SL_INR
+
+        sl_prem = round_to_tick(max(0.05, float(entry_prem) - FIXED_SL_INR))
+        tgt_prem = round_to_tick(float(entry_prem) + FIXED_SL_INR)
+        spot_sl = sl_prem
+        spot_tgt = tgt_prem
+        delta = estimate_delta_from_spot(nifty_spot, contract.strike, option_kind, vix=ind.get("vix"))
+        exit_note = "20rupees-strategy: ₹10 SL, 1:1 target; momentum trail after fill"
+    else:
+        sl_prem, tgt_prem, spot_sl, spot_tgt, delta, exit_note = resolve_long_buy_exit_levels(
+            strategy_id=sid,
+            entry_premium=float(entry_prem),
+            option_kind=option_kind,
+            intra_bb=intra_bb,
+            underlying_spot=nifty_spot,
+            underlying_sl=spot_sl,
+            underlying_tgt=spot_tgt,
+            strike=contract.strike,
+            vix=ind.get("vix"),
+            reward_ratio=rr_ratio,
+        )
     if exit_note:
         level_note = (level_note + " · " + exit_note).strip(" ·")
 
@@ -290,7 +299,6 @@ def build_indicator_trade_plan(
 
     lot_size = 20
     try:
-        kite = get_kite_instance()
         for row in kite.instruments("BFO"):
             if row.get("name") == "SENSEX" and row.get("instrument_type") == option_kind:
                 lot_size = int(row.get("lot_size") or 20)
@@ -298,9 +306,15 @@ def build_indicator_trade_plan(
     except Exception:
         pass
 
-    qty_lots, quantity, risk_inr = size_from_risk(
-        capital, risk_pct, float(entry_prem), sl_prem, lot_size, num_lots
-    )
+    if sid == TWENTY_RUPEES_ID:
+        qty_lots = FIXED_LOTS
+        quantity = FIXED_LOTS * lot_size
+        prem_risk = max(0.05, float(entry_prem) - sl_prem)
+        risk_inr = prem_risk * quantity
+    else:
+        qty_lots, quantity, risk_inr = size_from_risk(
+            capital, risk_pct, float(entry_prem), sl_prem, lot_size, num_lots
+        )
     reward_inr = max(0.0, (tgt_prem - float(entry_prem)) * quantity)
     rr = (reward_inr / risk_inr) if risk_inr > 0 else 0.0
 
@@ -344,7 +358,7 @@ def build_indicator_trade_plan(
 
     plan = {
         "tradingsymbol": contract.tradingsymbol,
-        "exchange": "NFO",
+        "exchange": "BFO",
         "option_type": option_kind,
         "strike": int(contract.strike),
         "expiry": contract.expiry.isoformat(),
@@ -372,7 +386,7 @@ def build_indicator_trade_plan(
         "strike_moneyness": moneyness,
         "pattern_tag": pattern_tag,
         "anchor_strike": anchor_strike,
-        "oi_change": sel.get("oi_change") if strategy_analysis and sid == "green_bar_sentinel_2nd_oi" else None,
+        "oi_change": sel.get("oi_change") if strategy_analysis and sid == TWENTY_RUPEES_ID else None,
         "delta_used": round(delta, 3),
         "atm_reference": int(round(nifty_spot / 100) * 100),
         "pricing_note": (
@@ -393,8 +407,8 @@ def build_indicator_trade_plan(
     )
     messages.append(
         f"Entry LIMIT ₹{entry_limit} (LTP ₹{entry_prem:.2f}) · {qty_lots} lot(s) × {lot_size} = {quantity} qty · "
-        f"Risk ₹{risk_inr:.0f} · GTT exit SL ₹{sl_prem} TP ₹{tgt_prem} "
-        f"(from {contract.tradingsymbol} 5m BB)"
+        f"Risk ₹{risk_inr:.0f} · GTT exit SL ₹{sl_prem} TP ₹{tgt_prem}"
+        + (" (20rupees 1:1 + trail)" if sid == TWENTY_RUPEES_ID else f" (from {contract.tradingsymbol} 5m BB)")
     )
     return plan, messages
 
@@ -416,11 +430,11 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         "ema9": live.get("ema9"),
         "nifty_spot": nifty_spot,
     }
-    sid = plan.get("strategy_id") or "bb_5m_mean_reversion"
+    sid = plan.get("strategy_id") or TWENTY_RUPEES_ID
     kind = plan.get("option_type", "CE")
     from services.sensex_live_indicators import get_option_bollinger_snapshot
 
-    opt_bb = get_option_bollinger_snapshot(sym, "NFO")
+    opt_bb = get_option_bollinger_snapshot(sym, "BFO")
     intra_bb = merge_option_bb_into_intra(intra, opt_bb, sym)
     intra_bb["contract_ltp"] = entry_prem
     intra_bb["option_ltp"] = quote.get("ltp") or opt_bb.get("option_ltp")
@@ -479,7 +493,12 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     risk_pct = float(ind_meta.get("risk_pct") or 1.0)
     lot_size = int(plan.get("lot_size") or 20)
     num_lots = int(plan.get("num_lots") or 1)
-    if capital > 0:
+    if sid == TWENTY_RUPEES_ID:
+        qty_lots = FIXED_LOTS
+        quantity = FIXED_LOTS * lot_size
+        prem_risk = max(0.05, float(entry_prem) - sl_prem)
+        risk_inr = prem_risk * quantity
+    elif capital > 0:
         qty_lots, quantity, risk_inr = size_from_risk(
             capital,
             risk_pct,
