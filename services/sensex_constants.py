@@ -74,6 +74,11 @@ def sensex_max_lots_per_trade() -> int:
     return max(1, min(50, _env_int("SENSEX_MAX_LOTS", 50)))
 
 
+def sensex_backtest_max_trades_per_contract_per_day() -> int:
+    """Max entry/exit round-trips per tradingsymbol within one backtest session day."""
+    return max(1, min(20, _env_int("SENSEX_BACKTEST_MAX_TRADES_PER_CONTRACT_PER_DAY", 5)))
+
+
 def sensex_gap_pct(day_open: float, prev_close: float) -> float:
     if prev_close <= 0:
         return 0.0

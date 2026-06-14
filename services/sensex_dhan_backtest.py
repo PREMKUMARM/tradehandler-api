@@ -30,6 +30,7 @@ from services.sensex_constants import (
     sensex_default_min_target_inr,
     sensex_gap_direction_kind,
     sensex_is_bad_option_bar,
+    sensex_backtest_max_trades_per_contract_per_day,
     sensex_max_lots_per_trade,
     sensex_premium_in_band,
 )
@@ -48,6 +49,7 @@ CACHE_DIR = DATA_DIR / "dhan_intraday"
 OHLC_PATH = DATA_DIR / "weekly_expiry_day_ohlc.csv"
 LOT_SIZE = 20
 MAX_LOTS = sensex_max_lots_per_trade()
+MAX_TRADES_PER_CONTRACT_PER_DAY = sensex_backtest_max_trades_per_contract_per_day()
 DEFAULT_RISK_PCT = 1.0
 DEFAULT_SL_INR = 9.0  # fixed initial stop-loss premium price (API field: sl_inr)
 DEFAULT_ENTRY_LOW = 17.0
@@ -325,6 +327,18 @@ def _ref_series(session: Dict[str, Dict[str, OptionSeries]]) -> Optional[OptionS
     return None
 
 
+def _contract_key(kind: str, strike: int) -> str:
+    return f"SENSEX-{int(strike)}-{str(kind).upper()}"
+
+
+def _ref_idx_after_ts(ref: OptionSeries, ts: int) -> int:
+    """First ref bar strictly after `ts` (resume scan after exit)."""
+    for idx, bar_ts in enumerate(ref.timestamps):
+        if int(bar_ts) > int(ts):
+            return idx
+    return len(ref.timestamps)
+
+
 def _pick_entry_auto(
     session: Dict[str, Dict[str, OptionSeries]],
     band_low: float,
@@ -332,6 +346,10 @@ def _pick_entry_auto(
     cutoff_minutes: int,
     index_open: float = 0.0,
     prev_close: float = 0.0,
+    *,
+    start_idx: int = 0,
+    contract_trade_counts: Optional[Dict[str, int]] = None,
+    max_trades_per_contract: int = MAX_TRADES_PER_CONTRACT_PER_DAY,
 ) -> Optional[Tuple[MinuteBar, str, OptionSeries]]:
     """AUTO: gap direction (PE gap-down, CE gap-up/flat) + smart OI strike in band."""
     kind = sensex_gap_direction_kind(index_open, prev_close)
@@ -342,6 +360,9 @@ def _pick_entry_auto(
         band_high,
         cutoff_minutes,
         prev_close=prev_close,
+        start_idx=start_idx,
+        contract_trade_counts=contract_trade_counts,
+        max_trades_per_contract=max_trades_per_contract,
     )
 
 
@@ -352,6 +373,10 @@ def _pick_entry(
     band_high: float,
     cutoff_minutes: int,
     prev_close: float = 0.0,
+    *,
+    start_idx: int = 0,
+    contract_trade_counts: Optional[Dict[str, int]] = None,
+    max_trades_per_contract: int = MAX_TRADES_PER_CONTRACT_PER_DAY,
 ) -> Optional[Tuple[MinuteBar, str, OptionSeries]]:
     """CE/PE: smart strike within the chosen leg when premium is in band."""
     leg = session.get(kind) or {}
@@ -359,8 +384,9 @@ def _pick_entry(
     if not ref or not ref.timestamps:
         return None
 
+    counts = contract_trade_counts or {}
     scan_start = sensex_entry_scan_start_minutes()
-    for idx in range(len(ref.timestamps)):
+    for idx in range(max(0, int(start_idx)), len(ref.timestamps)):
         ts = ref.timestamps[idx]
         dt = datetime.fromtimestamp(ts, tz=IST)
         bar_minutes = dt.hour * 60 + dt.minute
@@ -382,6 +408,9 @@ def _pick_entry(
         candidate, series = picked
         bar = _series_bar(series, idx)
         if sensex_is_bad_option_bar(bar.open, bar.high, bar.close):
+            continue
+        contract = _contract_key(series.kind, bar.strike)
+        if counts.get(contract, 0) >= max(1, int(max_trades_per_contract)):
             continue
         source = strike_source_label(candidate.offset)
         entry = _entry_from_bar_close(bar.close, band_low, band_high)
@@ -508,45 +537,25 @@ def _resolve_exit_bar_index(
     return sim_exit_idx
 
 
-def _run_day(
+def _simulate_trade(
     expiry_date: str,
     index_open: float,
-    prev_close: float,
+    bar: MinuteBar,
+    source: str,
+    series: OptionSeries,
     session: Dict[str, Dict[str, OptionSeries]],
     params: BacktestParams,
-) -> Optional[TradeResult]:
-    cutoff = sensex_entry_cutoff_minutes()
-    direction = (params.direction or "AUTO").upper()
-    if direction == "AUTO":
-        picked = _pick_entry_auto(
-            session,
-            params.entry_band_low,
-            params.entry_band_high,
-            cutoff,
-            index_open=index_open,
-            prev_close=prev_close,
-        )
-    else:
-        picked = _pick_entry(
-            session,
-            direction,
-            params.entry_band_low,
-            params.entry_band_high,
-            cutoff,
-            prev_close=prev_close,
-        )
-    if not picked:
-        return None
-
-    bar, source, series = picked
+    ref: OptionSeries,
+) -> Tuple[Optional[TradeResult], int]:
+    """Simulate one round-trip; returns (trade, next ref scan index after exit)."""
     kind = series.kind
     entry = _entry_from_bar_close(bar.close, params.entry_band_low, params.entry_band_high)
     if entry is None:
-        return None
+        return None, bar.idx + 1
 
     fixed_sl = round(max(0.05, float(params.sl_inr)), 2)
     if fixed_sl >= entry:
-        return None
+        return None, bar.idx + 1
 
     entry_strike = int(bar.strike)
     entry_ts = series.timestamps[bar.idx]
@@ -576,28 +585,102 @@ def _run_day(
     r_unit = _r_unit(entry, fixed_sl)
     pnl_per_unit = exit_px - entry
     r_mult = round(pnl_per_unit / r_unit, 2)
+    exit_ts = int(sim_series.timestamps[display_exit_idx])
+    next_idx = _ref_idx_after_ts(ref, exit_ts)
 
-    return TradeResult(
-        expiry_date=expiry_date,
-        direction=kind,
-        strike=entry_strike,
-        kind=kind,
-        strike_source=source,
-        symbol=f"SENSEX-{entry_strike}-{kind}",
-        entry=entry,
-        exit=exit_px,
-        sl=fixed_sl,
-        target=round(entry + r_unit, 2),
-        pnl_inr=0.0,
-        r_multiple=r_mult,
-        exit_reason=reason,
-        index_open=index_open,
-        premium_open=bar.open,
-        premium_high=bar.high,
-        premium_low=bar.low,
-        entry_datetime_ist=bar.ist_time,
-        exit_datetime_ist=ts_to_ist_label(sim_series.timestamps[display_exit_idx]),
+    return (
+        TradeResult(
+            expiry_date=expiry_date,
+            direction=kind,
+            strike=entry_strike,
+            kind=kind,
+            strike_source=source,
+            symbol=_contract_key(kind, entry_strike),
+            entry=entry,
+            exit=exit_px,
+            sl=fixed_sl,
+            target=round(entry + r_unit, 2),
+            pnl_inr=0.0,
+            r_multiple=r_mult,
+            exit_reason=reason,
+            index_open=index_open,
+            premium_open=bar.open,
+            premium_high=bar.high,
+            premium_low=bar.low,
+            entry_datetime_ist=bar.ist_time,
+            exit_datetime_ist=ts_to_ist_label(exit_ts),
+        ),
+        next_idx,
     )
+
+
+def _run_day(
+    expiry_date: str,
+    index_open: float,
+    prev_close: float,
+    session: Dict[str, Dict[str, OptionSeries]],
+    params: BacktestParams,
+) -> List[TradeResult]:
+    """Up to N round-trips per contract per session day; re-entries after exit."""
+    cutoff = sensex_entry_cutoff_minutes()
+    direction = (params.direction or "AUTO").upper()
+    ref = _ref_series(session)
+    if not ref:
+        return []
+
+    contract_counts: Dict[str, int] = {}
+    trades: List[TradeResult] = []
+    start_idx = 0
+
+    while start_idx < len(ref.timestamps):
+        if direction == "AUTO":
+            picked = _pick_entry_auto(
+                session,
+                params.entry_band_low,
+                params.entry_band_high,
+                cutoff,
+                index_open=index_open,
+                prev_close=prev_close,
+                start_idx=start_idx,
+                contract_trade_counts=contract_counts,
+            )
+        else:
+            picked = _pick_entry(
+                session,
+                direction,
+                params.entry_band_low,
+                params.entry_band_high,
+                cutoff,
+                prev_close=prev_close,
+                start_idx=start_idx,
+                contract_trade_counts=contract_counts,
+            )
+        if not picked:
+            break
+
+        bar, source, series = picked
+        trade, next_idx = _simulate_trade(
+            expiry_date,
+            index_open,
+            bar,
+            source,
+            series,
+            session,
+            params,
+            ref,
+        )
+        if next_idx <= start_idx:
+            start_idx += 1
+        else:
+            start_idx = next_idx
+        if trade is None:
+            continue
+
+        contract = trade.symbol
+        contract_counts[contract] = contract_counts.get(contract, 0) + 1
+        trades.append(trade)
+
+    return trades
 
 
 def fetch_sessions_data(
@@ -696,11 +779,24 @@ def _run_backtest_for_timeframe(
         if prev_spot_close <= 0 and _f(row.get("prev_close")) > 0:
             prev_close = _f(row.get("prev_close"))
 
-        tr = _run_day(session_date, index_open, prev_close, session, params)
+        tr_list = _run_day(session_date, index_open, prev_close, session, params)
         spot_s = session_spot_series(session)
         if spot_s and spot_s.spot:
             prev_spot_close = float(spot_s.spot[-1])
-        if tr:
+        if not tr_list:
+            skipped.append(
+                {
+                    "expiry_date": session_date,
+                    "reason": (
+                        f"no {iv_label} close in ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} "
+                        f"from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
+                        f"to {cutoff // 60:02d}:{cutoff % 60:02d} IST"
+                    ),
+                }
+            )
+            continue
+
+        for tr in tr_list:
             lots, qty, alloc_inr = _backtest_size_from_allocation(
                 equity,
                 params.risk_pct,
@@ -712,7 +808,10 @@ def _run_backtest_for_timeframe(
                 skipped.append(
                     {
                         "expiry_date": session_date,
-                        "reason": f"insufficient capital (need ₹{notional:.0f}, have ₹{equity:.0f})",
+                        "reason": (
+                            f"{tr.symbol} insufficient capital "
+                            f"(need ₹{notional:.0f}, have ₹{equity:.0f})"
+                        ),
                     }
                 )
                 continue
@@ -728,17 +827,6 @@ def _run_backtest_for_timeframe(
             tr.capital_before = round(cap_before, 2)
             tr.capital_after = equity
             trades.append(tr)
-        else:
-            skipped.append(
-                {
-                    "expiry_date": session_date,
-                    "reason": (
-                        f"no {iv_label} close in ₹{params.entry_band_low:g}–₹{params.entry_band_high:g} "
-                        f"from {sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d} "
-                        f"to {cutoff // 60:02d}:{cutoff % 60:02d} IST"
-                    ),
-                }
-            )
 
     wins = [t for t in trades if t.pnl_inr > 0]
     total_pnl = sum(t.pnl_inr for t in trades)
@@ -777,6 +865,7 @@ def _run_backtest_for_timeframe(
             "sl_inr": params.sl_inr,
             "entry_band": [params.entry_band_low, params.entry_band_high],
             "min_target_band": [params.min_target_low, params.min_target_high],
+            "max_trades_per_contract_per_day": MAX_TRADES_PER_CONTRACT_PER_DAY,
         },
         "trades": [asdict(t) for t in trades],
         "skipped": skipped,
@@ -819,6 +908,7 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
         f"Exit simulation starts on the bar after entry (fill at close). "
         f"Trail SL deferred on the 1R activation bar (no same-bar low wick stop). "
         f"Exits stay on the entry offset series from the entry bar onward. "
+        f"Up to {MAX_TRADES_PER_CONTRACT_PER_DAY} round-trips per contract per session day (re-entry after exit). "
         f"All trading days in window ({len(sessions)} sessions). "
         f"Dhan fetch totals: {total_cached} cached, {total_fetched} fetched across selected timeframes. "
         f"Entries before {cutoff // 60:02d}:{cutoff % 60:02d} IST."

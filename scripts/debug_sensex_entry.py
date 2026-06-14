@@ -127,7 +127,8 @@ def analyze_day(row: Dict[str, str]) -> Dict[str, Any]:
         return {"expiry": expiry, "error": "no cache"}
 
     params = BacktestParams(direction="AUTO")
-    trade = _run_day(expiry, float(row["open"]), float(row["prev_close"]), session, params)
+    trades = _run_day(expiry, float(row["open"]), float(row["prev_close"]), session, params)
+    trade = trades[0] if trades else None
     if not trade:
         return {"expiry": expiry, "error": "no trade picked"}
 

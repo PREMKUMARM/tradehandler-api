@@ -129,7 +129,8 @@ def _iter_executed_contracts(params: BacktestParams) -> Iterator[ExecutedContrac
             continue
 
         entry_bar, strike_source, series = picked
-        trade = _run_day(expiry_date, index_open, prev_close, session, params)
+        day_trades = _run_day(expiry_date, index_open, prev_close, session, params)
+        trade = day_trades[0] if day_trades else None
         if not trade:
             continue
 
