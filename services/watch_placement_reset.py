@@ -19,6 +19,10 @@ def reset_watch_placement_for_segment(segment: str) -> None:
         from services.crypto_strategy_watch import reset_crypto_watch_placement_counters
 
         reset_crypto_watch_placement_counters()
+    elif seg == "sensex":
+        from services.sensex_strategy_watch import reset_sensex_watch_placement_counters
+
+        reset_sensex_watch_placement_counters()
 
 
 def on_segment_paper_mode_changed(segment: str, was_paper: bool, is_paper: bool) -> None:
@@ -44,6 +48,13 @@ def on_segment_paper_mode_changed(segment: str, was_paper: bool, is_paper: bool)
             on_crypto_trading_mode_changed(is_paper)
             log_info(
                 f"[CryptoWatch] {'paper' if is_paper else 'live'} — signals and counters reset"
+            )
+        elif seg == "sensex":
+            from services.sensex_strategy_watch import on_sensex_trading_mode_changed
+
+            on_sensex_trading_mode_changed(is_paper)
+            log_info(
+                f"[SensexWatch] Sensex {'paper' if is_paper else 'live'} — placement counters reset"
             )
         # Paper fills must not consume the live daily trade-count cap (MAX_TRADES_PER_DAY).
         if was_paper and not is_paper:

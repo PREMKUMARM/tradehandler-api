@@ -98,6 +98,21 @@ SEGMENTS: Dict[str, SegmentAgentProfile] = {
         supports_momentum_trail=False,
         session_label="24/7",
     ),
+    "sensex": SegmentAgentProfile(
+        id="sensex",
+        label="Sensex",
+        exchange="BFO",
+        api_prefix="/api/v1/sensex/trade",
+        checklist_steps=12,
+        kill_switch_key="sensex",
+        watch_state_file="data/sensex_strategy_watch.json",
+        agents=_KITE_OPTION_AGENTS,
+        supports_gtt=True,
+        supports_pending_invalidation=True,
+        supports_momentum_trail=True,
+        session_label="BSE 9:15–15:30 IST",
+        extra={"min_score_env": "SENSEX_AUTO_MIN_ENTRY_SCORE"},
+    ),
 }
 
 
@@ -105,6 +120,8 @@ def get_segment(segment_id: str) -> Optional[SegmentAgentProfile]:
     key = (segment_id or "").strip().lower()
     if key in ("nifty", "v2"):
         key = "nifty50"
+    if key in ("bfo", "bse"):
+        key = "sensex"
     return SEGMENTS.get(key)
 
 

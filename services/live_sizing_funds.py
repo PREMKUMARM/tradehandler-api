@@ -21,6 +21,7 @@ DEFAULT_LIVE_SIZING: Dict[str, Dict[str, Any]] = {
     "nifty50": {"allocated": 500_000.0, "currency": "INR"},
     "commodity": {"allocated": 200_000.0, "currency": "INR"},
     "crypto": {"allocated": 10_000.0, "currency": "USDT"},
+    "sensex": {"allocated": 500_000.0, "currency": "INR"},
 }
 
 
@@ -29,7 +30,7 @@ def _read_file() -> Dict[str, Dict[str, Any]]:
     try:
         if LIVE_SIZING_FUNDS_PATH.exists():
             raw = json.loads(LIVE_SIZING_FUNDS_PATH.read_text(encoding="utf-8"))
-            for seg in ("nifty50", "commodity", "crypto"):
+            for seg in ("nifty50", "commodity", "crypto", "sensex"):
                 if seg in raw and isinstance(raw[seg], dict) and "allocated" in raw[seg]:
                     out[seg]["allocated"] = float(raw[seg]["allocated"])
                     if raw[seg].get("currency"):
@@ -62,7 +63,7 @@ def get_live_sizing_snapshot(segment: str) -> Dict[str, Any]:
 
 
 def get_all_live_sizing_snapshots() -> Dict[str, Dict[str, Any]]:
-    return {seg: get_live_sizing_snapshot(seg) for seg in ("nifty50", "commodity", "crypto")}
+    return {seg: get_live_sizing_snapshot(seg) for seg in ("nifty50", "commodity", "crypto", "sensex")}
 
 
 def set_live_sizing_allocated(segment: str, allocated: float) -> Dict[str, Any]:

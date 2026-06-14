@@ -259,6 +259,15 @@ NIFTY_GUARD = GuardAgentConfig(
     placed_today_message="Max autonomous Nifty trades per day reached",
 )
 
+SENSEX_GUARD = GuardAgentConfig(
+    segment="sensex",
+    exchange="BFO",
+    min_score_env="SENSEX_AUTO_MIN_ENTRY_SCORE",
+    max_spread_env="SENSEX_AUTO_MAX_SPREAD_PCT",
+    log_prefix="SensexGuard",
+    placed_today_message="Max autonomous Sensex trades per day reached",
+)
+
 COMMODITY_GUARD = GuardAgentConfig(
     segment="commodity",
     exchange="MCX",

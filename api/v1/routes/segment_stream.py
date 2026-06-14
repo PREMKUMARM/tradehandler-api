@@ -57,6 +57,34 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "nuclear_reset": nuclear_reset_watch,
             "balance": lambda: get_segment_balance(seg),
         }
+    if seg in ("sensex", "bfo", "bse"):
+        from services import sensex_trade_service
+        from services.sensex_trade_service import (
+            get_checklist_analyze as checklist_analyze,
+            get_checklist_live as checklist_live,
+            get_strategy_analysis as strategy_analysis,
+        )
+        from services.sensex_strategy_watch import (
+            arm_watch,
+            disarm_watch,
+            get_watch_events,
+            get_watch_status,
+            nuclear_reset_watch,
+        )
+
+        return {
+            "checklist_live": checklist_live,
+            "checklist_analyze": checklist_analyze,
+            "strategy_analysis": strategy_analysis,
+            "preview": lambda **kw: sensex_trade_service.preview_trade(auto_execute=True, **kw),
+            "place": lambda **kw: sensex_trade_service.place_trade(**kw),
+            "watch_status": get_watch_status,
+            "watch_events": get_watch_events,
+            "arm": arm_watch,
+            "disarm": disarm_watch,
+            "nuclear_reset": nuclear_reset_watch,
+            "balance": lambda: get_segment_balance(seg),
+        }
     if seg in ("commodity", "mcx", "crude"):
         from services import commodity_trade_service
         from services.commodity_trade_service import (

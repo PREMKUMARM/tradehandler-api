@@ -17,6 +17,7 @@ DEFAULT_FUNDS: Dict[str, Dict[str, Any]] = {
     "nifty50": {"allocated": 500_000.0, "currency": "INR"},
     "commodity": {"allocated": 200_000.0, "currency": "INR"},
     "crypto": {"allocated": 10_000.0, "currency": "USDT"},
+    "sensex": {"allocated": 500_000.0, "currency": "INR"},
 }
 
 
@@ -25,7 +26,7 @@ def _read_funds_file() -> Dict[str, Dict[str, Any]]:
     try:
         if PAPER_FUNDS_PATH.exists():
             raw = json.loads(PAPER_FUNDS_PATH.read_text(encoding="utf-8"))
-            for seg in ("nifty50", "commodity", "crypto"):
+            for seg in ("nifty50", "commodity", "crypto", "sensex"):
                 if seg in raw and isinstance(raw[seg], dict):
                     if "allocated" in raw[seg]:
                         out[seg]["allocated"] = float(raw[seg]["allocated"])
@@ -66,7 +67,7 @@ def set_segment_allocated(segment: str, allocated: float) -> Dict[str, Any]:
 
 
 def get_all_fund_snapshots() -> Dict[str, Dict[str, Any]]:
-    return {seg: get_fund_snapshot(seg) for seg in ("nifty50", "commodity", "crypto")}
+    return {seg: get_fund_snapshot(seg) for seg in ("nifty50", "commodity", "crypto", "sensex")}
 
 
 def _parse_payload(raw: Any) -> Dict[str, Any]:

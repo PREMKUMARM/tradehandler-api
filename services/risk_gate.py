@@ -28,6 +28,8 @@ def _normalize_segment(segment: Optional[str]) -> Optional[str]:
         return "commodity"
     if s in ("crypto", "binance", "btc"):
         return "crypto"
+    if s in ("sensex", "bfo", "bse"):
+        return "sensex"
     return s
 
 
@@ -62,7 +64,9 @@ def is_kill_switch_active(segment: Optional[str] = None) -> bool:
         return bool(data.get("commodity"))
     if seg == "crypto":
         return bool(data.get("crypto"))
-    return bool(data.get("nifty") or data.get("nifty50") or data.get("commodity") or data.get("crypto"))
+    if seg == "sensex":
+        return bool(data.get("sensex"))
+    return bool(data.get("nifty") or data.get("nifty50") or data.get("commodity") or data.get("crypto") or data.get("sensex"))
 
 
 def get_kill_switch_status() -> Dict[str, Any]:
@@ -73,6 +77,7 @@ def get_kill_switch_status() -> Dict[str, Any]:
         "nifty": bool(data.get("nifty") or data.get("nifty50")),
         "commodity": bool(data.get("commodity")),
         "crypto": bool(data.get("crypto")),
+        "sensex": bool(data.get("sensex")),
         "read_error": bool(data.get("_read_error")),
     }
 
@@ -95,6 +100,9 @@ def set_kill_switch(active: bool, segment: Optional[str] = None) -> None:
     elif seg == "crypto":
         data["crypto"] = bool(active)
         log_info(f"[RiskGate] Crypto kill switch set to active={active}")
+    elif seg == "sensex":
+        data["sensex"] = bool(active)
+        log_info(f"[RiskGate] Sensex kill switch set to active={active}")
     else:
         data[seg] = bool(active)
 
@@ -105,6 +113,8 @@ def _segment_for_exchange(exchange: str) -> Optional[str]:
     ex = (exchange or "").upper()
     if ex == "MCX":
         return "commodity"
+    if ex == "BFO":
+        return "sensex"
     if ex in ("NFO", "NSE", "BSE"):
         return "nifty"
     return None

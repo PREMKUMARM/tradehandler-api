@@ -221,7 +221,7 @@ PAPER_TRADING_STATE_PATH = Path(os.getenv("PAPER_TRADING_STATE_FILE", "data/pape
 PAPER_SEGMENT_STATE_PATH = Path(
     os.getenv("PAPER_TRADING_SEGMENTS_FILE", "data/paper_trading_segments.json")
 )
-VALID_SEGMENTS = ("nifty50", "commodity", "crypto")
+VALID_SEGMENTS = ("nifty50", "commodity", "crypto", "sensex")
 DEFAULT_SEGMENT_PAPER = {s: True for s in VALID_SEGMENTS}
 
 
@@ -233,6 +233,8 @@ def normalize_segment(segment: Optional[str]) -> str:
         return "commodity"
     if s in ("binance", "btc", "crypto"):
         return "crypto"
+    if s in ("bfo", "bse", "sensex"):
+        return "sensex"
     return "nifty50"
 
 
@@ -243,6 +245,8 @@ def infer_segment_from_order(exchange: str, tradingsymbol: str) -> str:
         return "crypto"
     if ex == "MCX" or sym.startswith("CRUDEOIL"):
         return "commodity"
+    if ex == "BFO" or sym.startswith("SENSEX"):
+        return "sensex"
     return "nifty50"
 
 

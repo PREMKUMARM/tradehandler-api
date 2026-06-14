@@ -2,10 +2,10 @@
 from services.trading_agents import get_segment, segment_registry_payload
 
 
-def test_registry_lists_three_segments():
+def test_registry_lists_four_segments():
     payload = segment_registry_payload()
     ids = {s["id"] for s in payload["segments"]}
-    assert ids == {"nifty50", "commodity", "crypto"}
+    assert ids == {"nifty50", "commodity", "crypto", "sensex"}
 
 
 def test_nifty_has_invalidation_agent():
