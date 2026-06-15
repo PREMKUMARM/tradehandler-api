@@ -62,11 +62,15 @@ def enrich_chain_with_oi_buildup(
     spot: float,
     universe: List[Dict[str, Any]],
     *,
-    strike_window: int = 500,
+    strike_window: int = 0,
 ) -> Dict[str, Any]:
     """
     Extend chain payload with OI buildup ranks and 2nd-anchor strikes.
     """
+    if strike_window <= 0:
+        from services.sensex_constants import sensex_premium_band_scan_points
+
+        strike_window = sensex_premium_band_scan_points()
     if spot <= 0 or not universe:
         return {}
 
@@ -102,6 +106,10 @@ def enrich_chain_with_oi_buildup(
         qd = quotes.get(key, {}) or {}
         oi = float(qd.get("oi") or 0)
         ltp = float(qd.get("last_price") or 0)
+        depth = qd.get("depth") or {}
+        bid = float((depth.get("buy") or [{}])[0].get("price") or 0) if depth.get("buy") else 0
+        ask = float((depth.get("sell") or [{}])[0].get("price") or 0) if depth.get("sell") else 0
+        spread_pct = ((ask - bid) / ltp * 100) if ltp > 0 and ask > bid else 0.0
         current_oi[sym] = oi
         strike = int(r.get("strike") or 0)
         kind = (r.get("instrument_type") or "").upper()
@@ -111,10 +119,12 @@ def enrich_chain_with_oi_buildup(
             by_strike[strike]["ce_oi"] = oi
             by_strike[strike]["ce_ltp"] = ltp
             by_strike[strike]["ce_symbol"] = sym
+            by_strike[strike]["ce_spread_pct"] = round(spread_pct, 2)
         elif kind == "PE":
             by_strike[strike]["pe_oi"] = oi
             by_strike[strike]["pe_ltp"] = ltp
             by_strike[strike]["pe_symbol"] = sym
+            by_strike[strike]["pe_spread_pct"] = round(spread_pct, 2)
 
     if need_baseline and current_oi:
         _save_baseline({"date": _today_key(), "oi_by_symbol": current_oi, "captured_at": now.isoformat()})
@@ -142,6 +152,7 @@ def enrich_chain_with_oi_buildup(
                     "oi_change_pct": round(ce_pct, 1),
                     "ltp": float(row.get("ce_ltp") or 0),
                     "symbol": ce_sym,
+                    "spread_pct": float(row.get("ce_spread_pct") or 0),
                 }
             )
         if pe_chg > 0 or float(row.get("pe_oi") or 0) > 0:
@@ -153,6 +164,7 @@ def enrich_chain_with_oi_buildup(
                     "oi_change_pct": round(pe_pct, 1),
                     "ltp": float(row.get("pe_ltp") or 0),
                     "symbol": pe_sym,
+                    "spread_pct": float(row.get("pe_spread_pct") or 0),
                 }
             )
 

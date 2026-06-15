@@ -44,9 +44,9 @@ def _pick_moneyness(
 
     if strategy_id == "20rupees_strategy":
         return (
-            "ATM",
+            "SMART_OI",
             "20rupees",
-            "ATM or highest-OI in ₹17–₹23 · size to 1% risk · no entries after 3:00 PM IST",
+            "Smart OI pick in ₹17–₹23 near ATM · size to risk % · no entries after cutoff IST",
         )
 
     if strategy_id == "bb_5m_mean_reversion":

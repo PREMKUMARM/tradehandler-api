@@ -183,6 +183,11 @@ def sensex_atm_near_strike_points() -> int:
     return sensex_atm_near_steps() * 100
 
 
+def sensex_premium_band_scan_points() -> int:
+    """Strike distance from ATM to scan for ₹17–₹23 premium-band OTM candidates."""
+    return max(400, min(1500, _env_int("SENSEX_BAND_SCAN_POINTS", 1000)))
+
+
 def resolve_sensex_bfo_product(plan: dict | None = None) -> str:
     """Product for V2 entry + GTT exit. Always NRML when exit is GTT_OCO."""
     if not plan:

@@ -11,7 +11,7 @@ from services.push.option_contract_resolver import (
     estimate_delta_from_spot,
     fetch_option_ltp,
 )
-from services.sensex_option_chain import resolve_sensex_contract
+from services.sensex_option_chain import build_sensex_options_universe, resolve_sensex_contract
 from services.sensex_live_indicators import get_sensex_bundle_for_v2, get_vix_snapshot, recalculate_from_ticker
 from services.sensex_constants import SENSEX_BFO_PRODUCT
 from services.sensex_entry_pricing import EntryAnalysis, compute_strategy_entry
@@ -26,6 +26,7 @@ from services.sensex_strike_pricing import (
     _pick_moneyness,
     refine_spot_levels_from_candles,
 )
+from services.sensex_strike_selection import resolve_sensex_strike_for_plan
 from utils.kite_order_utils import merge_quote_with_circuit, round_to_tick, validate_buy_limit_price
 from utils.kite_utils import get_kite_instance
 from utils.logger import log_warning
@@ -260,7 +261,36 @@ def build_indicator_trade_plan(
 
     contract: Optional[OptionContract] = None
     kite = get_kite_instance()
-    pick_strike = int(anchor_strike or round(nifty_spot / 100) * 100)
+    chain_oi: Dict[str, Any] = {}
+    try:
+        from services.sensex_realtime_checklist import _chain_live
+
+        universe = build_sensex_options_universe(kite)
+        if universe and nifty_spot > 0:
+            chain_oi = _chain_live(kite, nifty_spot, universe)
+    except Exception:
+        pass
+
+    resolved = resolve_sensex_strike_for_plan(
+        spot=nifty_spot,
+        option_kind=option_kind,
+        chain_oi=chain_oi,
+        strategy_id=sid,
+        moneyness=moneyness,
+        anchor_strike=int(anchor_strike) if anchor_strike else None,
+        band_low=rp.entry_band_low,
+        band_high=rp.entry_band_high,
+        prev_close=float(ind.get("prev_close") or 0),
+        day_open=float(ind.get("day_open") or 0),
+        direction=rp.direction,
+    )
+    if resolved.kind and resolved.kind != option_kind:
+        option_kind = resolved.kind
+    moneyness = resolved.moneyness or moneyness
+    anchor_strike = resolved.strike
+    pick_strike = int(resolved.strike)
+    if resolved.reason:
+        messages.append(f"Strike: {resolved.reason}")
     contract = resolve_sensex_contract(kite, strike=pick_strike, kind=option_kind)
     if contract is None:
         return None, ["Could not resolve Sensex BFO option contract for live strike"]
@@ -431,6 +461,8 @@ def build_indicator_trade_plan(
         "strike_moneyness": moneyness,
         "pattern_tag": pattern_tag,
         "anchor_strike": anchor_strike,
+        "strike_source": resolved.source,
+        "strike_offset": resolved.offset,
         "oi_change": sel.get("oi_change") if strategy_analysis and sid == TWENTY_RUPEES_ID else None,
         "delta_used": round(delta, 3),
         "atm_reference": int(round(nifty_spot / 100) * 100),

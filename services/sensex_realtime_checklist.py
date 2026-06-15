@@ -65,6 +65,7 @@ def enforce_step_dependencies(
     return updated, missing
 
 from schemas.sensex_trading import ChecklistStepStatus
+from services.sensex_constants import sensex_premium_band_scan_points
 from services.sensex_option_chain import build_sensex_options_universe, sensex_index_token
 from services.sensex_strategy_analysis import analyze_fno_strategies
 from services.sensex_run_params import SensexRunParams
@@ -190,7 +191,7 @@ def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, 
         u
         for u in universe
         if (u.get("expiry").isoformat() if hasattr(u.get("expiry"), "isoformat") else str(u.get("expiry"))) == str(expiry)
-        and abs(int(u.get("strike") or 0) - atm) <= 250
+        and abs(int(u.get("strike") or 0) - atm) <= max(500, sensex_premium_band_scan_points() // 2)
     ]
     keys = [f"BFO:{r['tradingsymbol']}" for r in rows if r.get("tradingsymbol")]
     quotes: Dict[str, Any] = {}
