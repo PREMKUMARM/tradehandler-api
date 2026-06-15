@@ -94,7 +94,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "strategy_analysis": lambda **kw: strategy_analysis(**normalize_sensex_trade_kwargs(kw)),
             "preview": _ws_preview_trade(
                 sensex_trade_service.preview_trade,
-                normalize=normalize_sensex_trade_kwargs,
+                normalize_fn=normalize_sensex_trade_kwargs,
             ),
             "place": lambda **kw: sensex_trade_service.place_trade(**normalize_sensex_trade_kwargs(kw)),
             "watch_status": get_watch_status,
