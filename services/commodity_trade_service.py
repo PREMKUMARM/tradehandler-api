@@ -559,11 +559,14 @@ def _preview_trade_impl(
                 f"Live Crude {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
             )
             if not validation or not validation.get("is_good_trade"):
-                reasons = (validation or {}).get("failure_reasons") or []
-                if reasons:
-                    messages.append("Validation: " + "; ".join(str(r) for r in reasons[:3]))
+                if validation and validation.get("preview_only"):
+                    messages.append("Preview only — risk/reward checks when market opens")
                 else:
-                    messages.append("Risk/reward validation failed — adjust size or levels")
+                    reasons = (validation or {}).get("failure_reasons") or []
+                    if reasons:
+                        messages.append("Validation: " + "; ".join(str(r) for r in reasons[:3]))
+                    else:
+                        messages.append("Risk/reward validation failed — adjust size or levels")
             elif validation.get("kite_affordable") is False:
                 km = validation.get("kite_margin_inr")
                 pc = validation.get("premium_cost")

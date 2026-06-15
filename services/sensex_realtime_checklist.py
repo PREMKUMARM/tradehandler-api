@@ -335,6 +335,14 @@ def _build_checklist_context(
         trade_plan = plan
         if trade_plan:
             validation = _validate_trade_plan(trade_plan, capital, risk_pct, reward_pct)
+            from services.validation_preview import soften_validation_for_closed_market
+            from services.sensex_trade_service import allow_offhours_sensex_place
+
+            validation = soften_validation_for_closed_market(
+                validation,
+                market_open=market_open,
+                allow_test_place=allow_offhours_sensex_place(),
+            )
     return ChecklistContext(
         direction=direction,
         margin=margin,

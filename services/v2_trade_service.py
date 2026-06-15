@@ -507,11 +507,14 @@ def preview_trade(
                 f"Live Nifty {live.get('nifty_spot')} via {live.get('data_source', 'quote')}"
             )
             if not validation or not validation.get("is_good_trade"):
-                reasons = (validation or {}).get("failure_reasons") or []
-                if reasons:
-                    messages.extend(reasons)
+                if validation and validation.get("preview_only"):
+                    messages.append("Preview only — risk/reward checks when market opens")
                 else:
-                    messages.append("Risk/reward validation failed — adjust size or levels")
+                    reasons = (validation or {}).get("failure_reasons") or []
+                    if reasons:
+                        messages.extend(reasons)
+                    else:
+                        messages.append("Risk/reward validation failed — adjust size or levels")
             elif not market_open and allow_offhours_v2_place():
                 messages.append(
                     "Test mode: off-hours place enabled (V2_ALLOW_OFFHOURS_PLACE)"
