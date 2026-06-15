@@ -63,6 +63,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             get_checklist_analyze as checklist_analyze,
             get_checklist_live as checklist_live,
             get_strategy_analysis as strategy_analysis,
+            normalize_sensex_trade_kwargs,
         )
         from services.sensex_strategy_watch import (
             arm_watch,
@@ -73,11 +74,13 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
         )
 
         return {
-            "checklist_live": checklist_live,
-            "checklist_analyze": checklist_analyze,
-            "strategy_analysis": strategy_analysis,
-            "preview": lambda **kw: sensex_trade_service.preview_trade(auto_execute=True, **kw),
-            "place": lambda **kw: sensex_trade_service.place_trade(**kw),
+            "checklist_live": lambda **kw: checklist_live(**normalize_sensex_trade_kwargs(kw)),
+            "checklist_analyze": lambda **kw: checklist_analyze(**normalize_sensex_trade_kwargs(kw)),
+            "strategy_analysis": lambda **kw: strategy_analysis(**normalize_sensex_trade_kwargs(kw)),
+            "preview": lambda **kw: sensex_trade_service.preview_trade(
+                auto_execute=True, **normalize_sensex_trade_kwargs(kw)
+            ),
+            "place": lambda **kw: sensex_trade_service.place_trade(**normalize_sensex_trade_kwargs(kw)),
             "watch_status": get_watch_status,
             "watch_events": get_watch_events,
             "arm": arm_watch,

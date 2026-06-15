@@ -2,8 +2,10 @@
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
 
+from schemas.sensex_run_params import SensexRunParamsIn
 
-class SensexTradePreviewRequest(BaseModel):
+
+class SensexTradePreviewRequest(SensexRunParamsIn):
     completed_steps: Optional[List[bool]] = Field(
         default=None,
         min_length=12,
@@ -112,10 +114,8 @@ class V2TradePlaceResponse(V2TradePreviewResponse):
     errors: List[str] = []
 
 
-class SensexWatchArmRequest(BaseModel):
+class SensexWatchArmRequest(SensexRunParamsIn):
     direction: str = Field(default="AUTO", description="CE, PE, or AUTO")
-    num_lots: Optional[int] = Field(default=1, ge=1, le=50)
-    risk_percentage: Optional[float] = Field(default=None, gt=0, le=100)
     reward_percentage: Optional[float] = Field(default=None, gt=0, le=100)
     mode: str = Field(
         default="autonomous",

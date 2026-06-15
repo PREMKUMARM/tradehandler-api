@@ -22,6 +22,7 @@ from services.sensex_strategy_analysis import (
     PREMIUM_BAND_LOW,
     STRATEGY_ID as TWENTY_RUPEES_ID,
 )
+from services.sensex_run_params import SensexRunParams
 from services.option_contract_indicators import contract_bb_is_active, contract_price_for_bb
 from utils.kite_order_utils import round_to_tick
 
@@ -431,25 +432,45 @@ def _analyze_green_bar_sentinel(
     return False, trigger, score, notes, msg
 
 
+def _run_params_from_intra(intra: Dict[str, Any]) -> SensexRunParams:
+    raw = intra.get("sensex_run_params")
+    if isinstance(raw, dict):
+        return SensexRunParams.from_mapping(raw)
+    if isinstance(raw, SensexRunParams):
+        return raw
+    return SensexRunParams.defaults()
+
+
 def _analyze_20rupees(
     quote: Dict[str, float],
     intra: Dict[str, Any],
     prev_close: float = 0.0,
 ) -> Tuple[bool, Optional[float], int, List[str], Optional[str], str]:
-    """Entry when contract premium is in ₹17–₹23 band (not after session entry cutoff)."""
+    """Entry when contract premium is in configured band (not after session entry cutoff)."""
+    rp = _run_params_from_intra(intra)
+    band_low = rp.entry_band_low
+    band_high = rp.entry_band_high
+    sl_prem = rp.sl_inr
     bid, ask, ltp, _, _ = _book(quote)
     ltp = float(intra.get("contract_ltp") or intra.get("option_ltp") or ltp or 0)
     day_open = float(intra.get("day_open") or 0)
     notes: List[str] = []
-    band = f"₹{PREMIUM_BAND_LOW:.0f}–{PREMIUM_BAND_HIGH:.0f}"
+    band = f"₹{band_low:.0f}–{band_high:.0f}"
 
-    if is_past_sensex_entry_cutoff():
+    bar_minutes = int(intra.get("bar_minutes") or intra.get("ist_minutes") or 0)
+    if bar_minutes > 0 and bar_minutes >= rp.scan_end_minutes():
+        msg = (
+            f"No new Sensex entries after {rp.entry_cutoff_label()} IST "
+            f"(avoid last-minute gamma and settlement decay)"
+        )
+        notes.append(msg)
+        return False, None, 0, notes, msg, "20rupees_cutoff"
+    if bar_minutes <= 0 and is_past_sensex_entry_cutoff():
         msg = sensex_entry_cutoff_message()
         notes.append(msg)
         return False, None, 0, notes, msg, "20rupees_cutoff"
 
-    bar_minutes = int(intra.get("bar_minutes") or intra.get("ist_minutes") or 0)
-    scan_start = sensex_entry_scan_start_minutes()
+    scan_start = rp.scan_start_minutes()
     if bar_minutes > 0 and bar_minutes < scan_start:
         msg = (
             f"Wait until {scan_start // 60:02d}:{scan_start % 60:02d} IST "
@@ -477,19 +498,19 @@ def _analyze_20rupees(
 
     notes.append(f"20rupees band {band} · LTP ₹{ltp:.2f}")
 
-    if PREMIUM_BAND_LOW <= ltp <= PREMIUM_BAND_HIGH:
-        center = (PREMIUM_BAND_LOW + PREMIUM_BAND_HIGH) / 2.0
+    if band_low <= ltp <= band_high:
+        center = (band_low + band_high) / 2.0
         score = max(75, min(95, int(92 - abs(ltp - center) * 4)))
         notes.append(
             f"Premium closed in band — entry at ₹{ltp:.2f} · "
-            f"SL ₹{FIXED_SL_PREMIUM:.2f} · target ₹{ltp + max(0.05, ltp - FIXED_SL_PREMIUM):.2f} (1:1)"
+            f"SL ₹{sl_prem:.2f} · target ₹{ltp + max(0.05, ltp - sl_prem):.2f} (1:1)"
         )
         return True, round(ltp, 2), score, notes, None, "20rupees_in_band"
 
-    if ltp > PREMIUM_BAND_HIGH:
+    if ltp > band_high:
         return (
             False,
-            PREMIUM_BAND_HIGH,
+            band_high,
             32,
             notes,
             f"Premium ₹{ltp:.2f} above {band} — wait for pullback into band",
@@ -498,7 +519,7 @@ def _analyze_20rupees(
 
     return (
         False,
-        PREMIUM_BAND_LOW,
+        band_low,
         28,
         notes,
         f"Premium ₹{ltp:.2f} below {band} — wait for price to reach band",

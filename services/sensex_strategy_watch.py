@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from agent.ws_manager import broadcast_agent_update
 from services import sensex_trade_service
+from services.sensex_run_params import SensexRunParams
 from services.push.push_service import push_service
 from services.watch_pending_invalidation import (
     is_filled_order_status,
@@ -113,6 +114,15 @@ class WatchConfig:
     auto_place_on_signal: bool = False
     auto_execute_checklist: bool = True
     disarm_after_place: bool = True
+    run_params: Optional[Dict[str, Any]] = None
+
+    def resolved_run_params(self) -> SensexRunParams:
+        return SensexRunParams.from_mapping(
+            self.run_params or {},
+            direction=self.direction,
+            risk_percentage=self.risk_percentage,
+            num_lots=self.num_lots,
+        )
 
 
 def _default_persisted() -> Dict[str, Any]:
@@ -238,6 +248,7 @@ class V2StrategyWatch:
                 auto_place_on_signal=bool(cfg_raw.get("auto_place_on_signal")),
                 auto_execute_checklist=bool(cfg_raw.get("auto_execute_checklist", True)),
                 disarm_after_place=bool(cfg_raw.get("disarm_after_place", True)),
+                run_params=cfg_raw.get("run_params") if isinstance(cfg_raw.get("run_params"), dict) else None,
             )
             self._armed = bool(data.get("armed"))
             self._placed_count_today = int(data.get("placed_count_today") or 0)
@@ -687,6 +698,7 @@ class V2StrategyWatch:
         auto_place_on_signal: bool = False,
         auto_execute_checklist: bool = True,
         disarm_after_place: bool = True,
+        run_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         mode, auto_place = _normalize_mode(mode, auto_place_on_signal)
         if mode == "autonomous" and watch_autonomous_globally_disabled():
@@ -695,17 +707,24 @@ class V2StrategyWatch:
             )
         if mode == "autonomous" and self._kill_switch_active():
             raise ValueError("Kill switch is ON — release it in Operations → Risk Control first")
+        rp = SensexRunParams.from_mapping(
+            run_params or {},
+            direction=direction,
+            risk_percentage=risk_percentage,
+            num_lots=num_lots,
+        )
         with _lock:
             self._reset_day_if_needed()
             self._cfg = WatchConfig(
-                direction=direction.upper() if direction else "AUTO",
-                num_lots=max(1, min(50, int(num_lots or 1))),
-                risk_percentage=risk_percentage,
+                direction=rp.direction,
+                num_lots=rp.num_lots,
+                risk_percentage=rp.risk_pct,
                 reward_percentage=reward_percentage,
                 mode=mode,
                 auto_place_on_signal=auto_place,
                 auto_execute_checklist=bool(auto_execute_checklist),
                 disarm_after_place=bool(disarm_after_place),
+                run_params=rp.to_dict(),
             )
             self._armed = True
         auto_suffix = ""
@@ -1047,13 +1066,15 @@ class V2StrategyWatch:
         from services.watch_execute import resolve_can_execute
 
         market_open = sensex_trade_service.is_market_session_open()
+        rp = cfg.resolved_run_params()
         preview = sensex_trade_service.preview_trade(
             completed_steps=None,
-            direction=cfg.direction,
-            risk_percentage=cfg.risk_percentage,
+            direction=rp.direction,
+            risk_percentage=rp.risk_pct,
             reward_percentage=cfg.reward_percentage,
-            num_lots=cfg.num_lots,
+            num_lots=rp.num_lots,
             auto_execute=cfg.auto_execute_checklist,
+            run_params=rp.to_dict(),
         )
         plan = preview.get("trade_plan") or {}
         strategy_analysis = preview.get("strategy_analysis") or {}

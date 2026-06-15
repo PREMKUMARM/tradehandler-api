@@ -16,6 +16,7 @@ from services.sensex_live_indicators import get_sensex_bundle_for_v2, get_vix_sn
 from services.sensex_constants import SENSEX_BFO_PRODUCT
 from services.sensex_entry_pricing import EntryAnalysis, compute_strategy_entry
 from services.sensex_constants import sensex_max_lots_per_trade
+from services.sensex_run_params import SensexRunParams
 from services.sensex_strategy_analysis import STRATEGY_ID as TWENTY_RUPEES_ID
 from services.option_contract_indicators import (
     merge_option_bb_into_intra,
@@ -162,11 +163,16 @@ def build_indicator_trade_plan(
     num_lots: int,
     capital: float,
     strategy_analysis: Optional[Dict[str, Any]] = None,
+    run_params: Optional[SensexRunParams] = None,
 ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     """
     Full plan: indicator spot levels → strike → live LTP → LIMIT entry + GTT SL/TP premiums → size.
     """
     messages: List[str] = []
+    rp = run_params or SensexRunParams.from_mapping(
+        {"risk_pct": risk_pct, "num_lots": num_lots, "capital": capital},
+        direction=direction,
+    )
     ind = fetch_realtime_indicators()
     spot = ind["nifty_spot"]
     if spot <= 0:
@@ -265,6 +271,7 @@ def build_indicator_trade_plan(
     intra_bb = merge_option_bb_into_intra(intra, opt_bb, contract.tradingsymbol)
     intra_bb["contract_ltp"] = float(entry_prem)
     intra_bb["option_ltp"] = quote.get("ltp") or opt_bb.get("option_ltp")
+    intra_bb["sensex_run_params"] = rp.to_dict()
     if opt_bb.get("bb_middle") is None:
         messages.append(
             f"Option 5m BB not ready on {contract.tradingsymbol} — "
@@ -278,17 +285,18 @@ def build_indicator_trade_plan(
     from services.option_contract_indicators import resolve_long_buy_exit_levels
 
     if sid == TWENTY_RUPEES_ID:
-        from services.sensex_strategy_analysis import FIXED_SL_PREMIUM
-
-        sl_prem = round_to_tick(float(FIXED_SL_PREMIUM))
+        sl_prem = round_to_tick(float(rp.sl_inr))
         r_dist = max(0.05, float(entry_prem) - sl_prem)
         tgt_prem = round_to_tick(float(entry_prem) + r_dist)
+        if rp.min_target_high > 0:
+            min_tgt = round_to_tick(float(entry_prem) + rp.min_target_high)
+            tgt_prem = max(tgt_prem, min_tgt)
         spot_sl = sl_prem
         spot_tgt = tgt_prem
         delta = estimate_delta_from_spot(nifty_spot, contract.strike, option_kind, vix=ind.get("vix"))
         exit_note = (
             f"20rupees-strategy: fixed SL ₹{sl_prem:.2f} premium, 1:1 target; "
-            f"trail after fill; no new entries after 15:00 IST"
+            f"trail after fill; no new entries after {rp.entry_cutoff_label()} IST"
         )
     else:
         sl_prem, tgt_prem, spot_sl, spot_tgt, delta, exit_note = resolve_long_buy_exit_levels(
@@ -332,10 +340,10 @@ def build_indicator_trade_plan(
     except Exception:
         pass
 
-    lot_cap = min(sensex_max_lots_per_trade(), max(1, num_lots))
+    lot_cap = min(sensex_max_lots_per_trade(), max(1, rp.num_lots))
     if sid == TWENTY_RUPEES_ID:
         qty_lots, quantity, risk_inr = size_from_allocation(
-            capital, risk_pct, float(entry_prem), lot_size, lot_cap
+            capital, rp.risk_pct, float(entry_prem), lot_size, lot_cap
         )
     elif capital > 0:
         qty_lots, quantity, risk_inr = size_from_risk(

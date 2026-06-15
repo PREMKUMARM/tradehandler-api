@@ -19,6 +19,7 @@ from services.sensex_constants import (
     sensex_gap_direction_kind,
     sensex_gap_pct,
 )
+from services.sensex_run_params import SensexRunParams
 from services.sensex_strike_selection import (
     moneyness_label,
     pick_smart_from_chain,
@@ -101,14 +102,22 @@ def _resolve_kind(ctx: MarketContext, bias: str) -> str:
     return sensex_gap_direction_kind(ctx.day_open or ctx.nifty_ltp, ctx.prev_close)
 
 
-def _in_premium_band(ltp: float) -> bool:
-    return PREMIUM_BAND_LOW <= ltp <= PREMIUM_BAND_HIGH
+def _in_premium_band(
+    ltp: float,
+    band_low: float = PREMIUM_BAND_LOW,
+    band_high: float = PREMIUM_BAND_HIGH,
+) -> bool:
+    return band_low <= ltp <= band_high
 
 
-def _band_score(ltp: float) -> int:
-    if not _in_premium_band(ltp):
+def _band_score(
+    ltp: float,
+    band_low: float = PREMIUM_BAND_LOW,
+    band_high: float = PREMIUM_BAND_HIGH,
+) -> int:
+    if not _in_premium_band(ltp, band_low, band_high):
         return 25
-    center = (PREMIUM_BAND_LOW + PREMIUM_BAND_HIGH) / 2.0
+    center = (band_low + band_high) / 2.0
     return max(72, min(95, int(92 - abs(ltp - center) * 4)))
 
 
@@ -124,6 +133,8 @@ def _pick_auto_strike_from_chain(
     *,
     prev_close: float = 0.0,
     day_open: float = 0.0,
+    band_low: float = PREMIUM_BAND_LOW,
+    band_high: float = PREMIUM_BAND_HIGH,
 ) -> Tuple[Optional[int], float, str, Optional[str], Optional[float], str]:
     """AUTO: gap direction leg + smart OI strike in premium band."""
     kind = sensex_gap_direction_kind(day_open or spot, prev_close)
@@ -131,8 +142,8 @@ def _pick_auto_strike_from_chain(
         chain_oi,
         spot,
         kinds=(kind,),
-        band_low=PREMIUM_BAND_LOW,
-        band_high=PREMIUM_BAND_HIGH,
+        band_low=band_low,
+        band_high=band_high,
         prev_close=prev_close,
     )
     if not picked:
@@ -148,14 +159,16 @@ def _pick_strike_from_chain(
     kind: str,
     spot: float,
     prev_close: float = 0.0,
+    band_low: float = PREMIUM_BAND_LOW,
+    band_high: float = PREMIUM_BAND_HIGH,
 ) -> Tuple[Optional[int], float, str, Optional[str], Optional[float]]:
     """CE/PE: smart strike in premium band on the chosen leg."""
     picked = pick_smart_from_chain(
         chain_oi,
         spot,
         kinds=(kind.upper(),),
-        band_low=PREMIUM_BAND_LOW,
-        band_high=PREMIUM_BAND_HIGH,
+        band_low=band_low,
+        band_high=band_high,
         prev_close=prev_close,
     )
     atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
@@ -190,7 +203,15 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
     return ctx
 
 
-def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> StrategyCandidate:
+def _score_20rupees(
+    ctx: MarketContext,
+    chain_oi: Optional[Dict[str, Any]],
+    run_params: Optional[SensexRunParams] = None,
+) -> StrategyCandidate:
+    rp = run_params or SensexRunParams.defaults()
+    band_low = rp.entry_band_low
+    band_high = rp.entry_band_high
+    sl_prem_fixed = rp.sl_inr
     chain = chain_oi or {}
     spot = ctx.nifty_ltp
     if spot <= 0:
@@ -217,7 +238,12 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
 
     if ctx.direction_pref == "AUTO":
         strike, ltp, moneyness, sym, oi, kind = _pick_auto_strike_from_chain(
-            chain, spot, prev_close=ctx.prev_close, day_open=ctx.day_open
+            chain,
+            spot,
+            prev_close=ctx.prev_close,
+            day_open=ctx.day_open,
+            band_low=band_low,
+            band_high=band_high,
         )
         gap_pct = sensex_gap_pct(ctx.day_open, ctx.prev_close)
         if ctx.prev_close > 0:
@@ -227,7 +253,12 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
     else:
         kind = ctx.direction_pref
         strike, ltp, moneyness, sym, oi = _pick_strike_from_chain(
-            chain, kind, spot, prev_close=ctx.prev_close
+            chain,
+            kind,
+            spot,
+            prev_close=ctx.prev_close,
+            band_low=band_low,
+            band_high=band_high,
         )
 
     if strike is None or ltp <= 0:
@@ -249,27 +280,27 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
         )
 
     entry_prem = round(ltp, 2)
-    sl_prem = round(FIXED_SL_PREMIUM, 2)
+    sl_prem = round(sl_prem_fixed, 2)
     r_dist = max(0.05, entry_prem - sl_prem)
     tgt_prem = round(entry_prem + r_dist, 2)
-    score = _band_score(entry_prem)
+    score = _band_score(entry_prem, band_low, band_high)
 
-    if _in_premium_band(entry_prem):
+    if _in_premium_band(entry_prem, band_low, band_high):
         reasons.append(
             f"{kind} {moneyness} strike {strike}: premium ₹{entry_prem:.2f} in "
-            f"₹{PREMIUM_BAND_LOW:.0f}–{PREMIUM_BAND_HIGH:.0f} band"
+            f"₹{band_low:.0f}–{band_high:.0f} band"
         )
         reasons.append(
             f"Plan: size to risk % of capital · SL ₹{sl_prem:.2f} · target ₹{tgt_prem:.2f} (1:1)"
         )
-    elif entry_prem > PREMIUM_BAND_HIGH:
+    elif entry_prem > band_high:
         warnings.append(
-            f"Premium ₹{entry_prem:.2f} above band — wait for ₹{PREMIUM_BAND_HIGH:.0f}–{PREMIUM_BAND_LOW:.0f}"
+            f"Premium ₹{entry_prem:.2f} above band — wait for ₹{band_high:.0f}–{band_low:.0f}"
         )
         score = min(score, 38)
     else:
         warnings.append(
-            f"Premium ₹{entry_prem:.2f} below band — wait for ₹{PREMIUM_BAND_HIGH:.0f}–{PREMIUM_BAND_LOW:.0f}"
+            f"Premium ₹{entry_prem:.2f} below band — wait for ₹{band_high:.0f}–{band_low:.0f}"
         )
         score = min(score, 32)
 
@@ -284,18 +315,26 @@ def _score_20rupees(ctx: MarketContext, chain_oi: Optional[Dict[str, Any]]) -> S
     if ctx.vix_ltp and 12 <= ctx.vix_ltp <= 28:
         score += 3
 
-    elif ctx.minutes > 0 and ctx.minutes < sensex_entry_scan_start_minutes():
-        scan = sensex_entry_scan_start_minutes()
+    scan_start = rp.scan_start_minutes()
+    scan_end = rp.scan_end_minutes()
+    if ctx.minutes > 0 and ctx.minutes < scan_start:
         warnings.append(
-            f"Before {scan // 60:02d}:{scan % 60:02d} IST — wait for afternoon 5m close in band"
+            f"Before {scan_start // 60:02d}:{scan_start % 60:02d} IST — wait for afternoon 5m close in band"
         )
         score = min(score, 28)
         pattern = "20rupees_open_bar_skip"
-    elif is_past_sensex_entry_cutoff():
+    elif ctx.minutes > 0 and ctx.minutes >= scan_end:
+        warnings.append(
+            f"No new Sensex entries after {rp.entry_cutoff_label()} IST "
+            f"(avoid last-minute gamma and settlement decay)"
+        )
+        score = min(score, 25)
+        pattern = "20rupees_cutoff"
+    elif is_past_sensex_entry_cutoff() and ctx.minutes <= 0:
         warnings.append(sensex_entry_cutoff_message())
         score = min(score, 25)
         pattern = "20rupees_cutoff"
-    elif _in_premium_band(entry_prem):
+    elif _in_premium_band(entry_prem, band_low, band_high):
         pattern = "20rupees_ready"
     else:
         pattern = "20rupees_wait"
@@ -330,10 +369,12 @@ def analyze_fno_strategies(
     margin: float = 0.0,
     hypothesis_note: Optional[str] = None,
     chain_oi: Optional[Dict[str, Any]] = None,
+    run_params: Optional[SensexRunParams] = None,
 ) -> Dict[str, Any]:
     """Single 20rupees-strategy for Sensex (paper + live)."""
-    ctx = _fetch_market_context(direction_pref, margin)
-    selected = _score_20rupees(ctx, chain_oi)
+    rp = run_params or SensexRunParams.from_mapping({"direction": direction_pref})
+    ctx = _fetch_market_context(rp.direction, margin)
+    selected = _score_20rupees(ctx, chain_oi, rp)
 
     ranked = [selected]
 
@@ -345,12 +386,19 @@ def analyze_fno_strategies(
         "direction_pref": ctx.direction_pref,
         "hypothesis_note": hypothesis_note,
         "strategy_mode": "20rupees_only",
-        "premium_band": [PREMIUM_BAND_LOW, PREMIUM_BAND_HIGH],
-        "fixed_sl_premium": FIXED_SL_PREMIUM,
-        "fixed_sl_inr": FIXED_SL_PREMIUM,
+        "premium_band": [rp.entry_band_low, rp.entry_band_high],
+        "fixed_sl_premium": rp.sl_inr,
+        "fixed_sl_inr": rp.sl_inr,
         "fixed_lots": FIXED_LOTS,
-        "entry_cutoff_ist": sensex_entry_cutoff_label(),
-        "entry_allowed": not is_past_sensex_entry_cutoff(),
+        "entry_cutoff_ist": rp.entry_cutoff_label(),
+        "entry_scan_start_ist": rp.entry_scan_start_ist,
+        "entry_scan_end_ist": rp.entry_scan_end_ist,
+        "capital": rp.capital,
+        "risk_pct": rp.risk_pct,
+        "entry_allowed": not (
+            (ctx.minutes > 0 and ctx.minutes >= rp.scan_end_minutes())
+            or is_past_sensex_entry_cutoff()
+        ),
     }
 
     def _to_dict(c: StrategyCandidate) -> Dict[str, Any]:
@@ -379,7 +427,7 @@ def analyze_fno_strategies(
             "fixed_lots": FIXED_LOTS,
         }
 
-    band = f"₹{PREMIUM_BAND_LOW:.0f}–{PREMIUM_BAND_HIGH:.0f}"
+    band = f"₹{rp.entry_band_low:.0f}–{rp.entry_band_high:.0f}"
     output_lines = [
         f"Selected: {selected.name} (score {selected.score}/100, {selected.fit})",
         f"Leg: BUY Sensex {selected.option_kind} · premium band {band}",

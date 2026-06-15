@@ -21,6 +21,7 @@ from services.sensex_constants import (
     resolve_sensex_bfo_product,
     sensex_entry_cutoff_message,
 )
+from services.sensex_run_params import SensexRunParams
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -90,10 +91,61 @@ def _resolve_v2_capital(margin: float = 0.0) -> float:
 
     cfg = get_agent_config()
     return resolve_capital_for_segment(
-        "nifty50",
+        "sensex",
         margin_fallback=margin,
         cfg_capital=float(cfg.trading_capital or 100000),
     )
+
+
+def _resolve_run_params(
+    run_params: Optional[Dict[str, Any]] = None,
+    *,
+    direction: str = "AUTO",
+    risk_percentage: Optional[float] = None,
+    num_lots: Optional[int] = None,
+) -> SensexRunParams:
+    merged = dict(run_params or {})
+    if risk_percentage is not None:
+        merged.setdefault("risk_pct", risk_percentage)
+    if num_lots is not None:
+        merged["num_lots"] = num_lots
+    return SensexRunParams.from_mapping(merged, direction=direction)
+
+
+def normalize_sensex_trade_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Move flat run-parameter fields into run_params for REST/WS callers."""
+    out = dict(kwargs)
+    rp_fields = (
+        "capital",
+        "risk_pct",
+        "risk_percentage",
+        "sl_inr",
+        "entry_band_low",
+        "entry_band_high",
+        "min_target_low",
+        "min_target_high",
+        "entry_scan_start_ist",
+        "entry_scan_end_ist",
+    )
+    run_params: Dict[str, Any] = {}
+    if isinstance(out.get("run_params"), dict):
+        run_params.update(out["run_params"])
+    for key in rp_fields:
+        if key in out and out[key] is not None:
+            run_params[key] = out.pop(key)
+    if run_params:
+        out["run_params"] = SensexRunParams.from_mapping(
+            run_params,
+            direction=str(out.get("direction") or "AUTO"),
+            num_lots=out.get("num_lots"),
+        ).to_dict()
+    return out
+
+
+def _resolve_sensex_capital(margin: float, rp: SensexRunParams) -> float:
+    if rp.capital >= 10_000:
+        return rp.capital
+    return _resolve_v2_capital(margin)
 
 
 def _check_kite_and_margin() -> Tuple[bool, float, str]:
@@ -130,11 +182,13 @@ def fetch_live_checklist(
     num_lots: int = 1,
     capital: float = 0.0,
     only_steps: Optional[List[int]] = None,
+    run_params: Optional[SensexRunParams] = None,
 ) -> Optional[Dict[str, Any]]:
     """Run checklist steps on live Kite data; None if not connected."""
     kite_ok, margin, _ = _check_kite_and_margin()
+    rp = run_params or SensexRunParams.from_mapping({"risk_pct": risk_pct, "num_lots": num_lots}, direction=direction)
     if capital <= 0:
-        capital = _resolve_v2_capital(margin)
+        capital = _resolve_sensex_capital(margin, rp)
     if not kite_ok or margin <= 0:
         return None
     from services.sensex_realtime_checklist import run_realtime_checklist
@@ -143,11 +197,12 @@ def fetch_live_checklist(
         direction,
         margin,
         market_open,
-        risk_pct,
+        rp.risk_pct,
         reward_pct,
-        num_lots,
+        rp.num_lots,
         capital,
         only_steps=only_steps,
+        run_params=rp,
     )
 
 
@@ -160,10 +215,21 @@ def validate_checklist(
     reward_pct: float = 2.0,
     num_lots: int = 1,
     capital: float = 0.0,
+    run_params: Optional[SensexRunParams] = None,
 ) -> Tuple[List[ChecklistStepStatus], List[int], bool, Optional[Dict[str, Any]]]:
     """All steps validated against live Kite ticker + quotes when connected."""
+    rp = run_params or SensexRunParams.from_mapping(
+        {"risk_pct": risk_pct, "num_lots": num_lots},
+        direction=direction,
+    )
     live = fetch_live_checklist(
-        direction, market_open, risk_pct, reward_pct, num_lots, capital
+        rp.direction,
+        market_open,
+        rp.risk_pct,
+        reward_pct,
+        rp.num_lots,
+        capital,
+        run_params=rp,
     )
 
     if live:
@@ -366,17 +432,23 @@ def build_trade_plan(
     num_lots: int,
     capital: float,
     strategy_analysis: Optional[Dict[str, Any]] = None,
+    run_params: Optional[SensexRunParams] = None,
 ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     """Plan from live indicators (OR/PDH/PDL/EMA/VIX) + live option quote — LIMIT entry, GTT exit."""
     from services.sensex_indicator_plan import build_indicator_trade_plan
 
+    rp = run_params or SensexRunParams.from_mapping(
+        {"risk_pct": risk_pct, "num_lots": num_lots, "capital": capital},
+        direction=direction,
+    )
     plan, messages = build_indicator_trade_plan(
         direction=direction,
-        risk_pct=risk_pct,
+        risk_pct=rp.risk_pct,
         reward_pct=reward_pct,
-        num_lots=num_lots,
+        num_lots=rp.num_lots,
         capital=capital,
         strategy_analysis=strategy_analysis,
+        run_params=rp,
     )
     if plan and plan.get("indicators"):
         plan["indicators"]["risk_pct"] = risk_pct
@@ -474,16 +546,23 @@ def preview_trade(
     reward_percentage: Optional[float] = None,
     num_lots: int = 1,
     auto_execute: bool = False,
+    run_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     cfg = get_agent_config()
-    risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
+    rp = _resolve_run_params(
+        run_params,
+        direction=direction,
+        risk_percentage=risk_percentage,
+        num_lots=num_lots,
+    )
+    risk_pct = float(rp.risk_pct or cfg.risk_per_trade_pct or 1.0)
     reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
     market_open = is_market_session_open()
     steps = _resolve_completed_steps(completed_steps, auto_execute)
 
     messages: List[str] = []
     _, margin, _ = _check_kite_and_margin()
-    capital = _resolve_v2_capital(margin)
+    capital = _resolve_sensex_capital(margin, rp)
 
     trade_plan = None
     validation = None
@@ -494,7 +573,13 @@ def preview_trade(
     strategy_analysis: Optional[Dict[str, Any]] = None
 
     live = fetch_live_checklist(
-        direction, market_open, risk_pct, reward_pct, num_lots, capital
+        rp.direction,
+        market_open,
+        risk_pct,
+        reward_pct,
+        rp.num_lots,
+        capital,
+        run_params=rp,
     )
 
     if auto_execute and live:
@@ -529,13 +614,14 @@ def preview_trade(
     else:
         statuses, missing, checklist_ready, live = validate_checklist(
             steps,
-            direction,
+            rp.direction,
             market_open,
             auto_execute=False,
             risk_pct=risk_pct,
             reward_pct=reward_pct,
-            num_lots=num_lots,
+            num_lots=rp.num_lots,
             capital=capital,
+            run_params=rp,
         )
         if live:
             trade_plan = live.get("trade_plan")
@@ -606,17 +692,24 @@ def _paper_funds_payload(paper_mode: bool) -> Optional[Dict[str, Any]]:
     try:
         from services.paper_funds import get_fund_snapshot
 
-        return get_fund_snapshot("nifty50")
+        return get_fund_snapshot("sensex")
     except Exception:
         return None
 
 
-def get_strategy_analysis(direction: str = "AUTO") -> Dict[str, Any]:
+def get_strategy_analysis(
+    direction: str = "AUTO",
+    run_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Standalone strategy analysis for wizard step 4 (uses steps 1–3 context)."""
     _, margin, _ = _check_kite_and_margin()
-    cfg = get_agent_config()
-    capital = margin if margin > 0 else float(cfg.trading_capital or 100000)
-    return analyze_fno_strategies(direction_pref=direction, margin=capital)
+    rp = _resolve_run_params(run_params, direction=direction)
+    capital = _resolve_sensex_capital(margin, rp)
+    return analyze_fno_strategies(
+        direction_pref=rp.direction,
+        margin=capital,
+        run_params=rp,
+    )
 
 
 def get_checklist_analyze(
@@ -625,25 +718,33 @@ def get_checklist_analyze(
     risk_percentage: Optional[float] = None,
     reward_percentage: Optional[float] = None,
     num_lots: int = 1,
+    run_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Realtime analysis for one checklist step and its prerequisite steps."""
     from services.sensex_realtime_checklist import step_indices_for_analysis
 
     cfg = get_agent_config()
-    risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
+    rp = _resolve_run_params(
+        run_params,
+        direction=direction,
+        risk_percentage=risk_percentage,
+        num_lots=num_lots,
+    )
+    risk_pct = float(rp.risk_pct or cfg.risk_per_trade_pct or 1.0)
     reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
     market_open = is_market_session_open()
     indices = step_indices_for_analysis(step)
     _, margin, kite_msg = _check_kite_and_margin()
-    capital = _resolve_v2_capital(margin)
+    capital = _resolve_sensex_capital(margin, rp)
     live = fetch_live_checklist(
-        direction,
+        rp.direction,
         market_open,
         risk_pct,
         reward_pct,
-        num_lots,
+        rp.num_lots,
         capital,
         only_steps=indices,
+        run_params=rp,
     )
     if not live:
         return {
@@ -685,16 +786,29 @@ def get_checklist_live(
     risk_percentage: Optional[float] = None,
     reward_percentage: Optional[float] = None,
     num_lots: int = 1,
+    run_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Refresh all 12 checklist steps from live Kite data (for wizard step navigation)."""
     cfg = get_agent_config()
-    risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
+    rp = _resolve_run_params(
+        run_params,
+        direction=direction,
+        risk_percentage=risk_percentage,
+        num_lots=num_lots,
+    )
+    risk_pct = float(rp.risk_pct or cfg.risk_per_trade_pct or 1.0)
     reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
     market_open = is_market_session_open()
     _, margin, kite_msg = _check_kite_and_margin()
-    capital = _resolve_v2_capital(margin)
+    capital = _resolve_sensex_capital(margin, rp)
     live = fetch_live_checklist(
-        direction, market_open, risk_pct, reward_pct, num_lots, capital
+        rp.direction,
+        market_open,
+        risk_pct,
+        reward_pct,
+        rp.num_lots,
+        capital,
+        run_params=rp,
     )
     if not live:
         return {
@@ -834,6 +948,7 @@ def place_trade(
     auto_execute: bool = False,
     trade_plan_snapshot: Optional[Dict[str, Any]] = None,
     defer_gtt_until_fill: bool = False,
+    run_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     preview = preview_trade(
         completed_steps,
@@ -842,6 +957,7 @@ def place_trade(
         reward_percentage,
         num_lots,
         auto_execute=auto_execute,
+        run_params=run_params,
     )
     result = {
         **preview,

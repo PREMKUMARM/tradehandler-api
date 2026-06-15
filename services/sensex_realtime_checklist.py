@@ -67,6 +67,7 @@ def enforce_step_dependencies(
 from schemas.sensex_trading import ChecklistStepStatus
 from services.sensex_option_chain import build_sensex_options_universe, sensex_index_token
 from services.sensex_strategy_analysis import analyze_fno_strategies
+from services.sensex_run_params import SensexRunParams
 from utils.kite_utils import get_kite_instance
 from utils.logger import log_warning
 
@@ -280,9 +281,15 @@ def _build_checklist_context(
     reward_pct: float,
     num_lots: int,
     capital: float,
+    run_params: Optional[SensexRunParams] = None,
 ) -> ChecklistContext:
     from services.sensex_trade_service import _validate_trade_plan, build_trade_plan
     from services.sensex_live_indicators import recalculate_from_ticker
+
+    rp = run_params or SensexRunParams.from_mapping(
+        {"risk_pct": risk_pct, "num_lots": num_lots, "capital": capital},
+        direction=direction,
+    )
 
     live = recalculate_from_ticker()
     spot = float(live.get("nifty_spot") or 0)
@@ -306,17 +313,23 @@ def _build_checklist_context(
     kite = get_kite_instance()
     universe = build_sensex_options_universe(kite)
     chain = _chain_live(kite, spot, universe)
-    strategy_analysis = analyze_fno_strategies(direction_pref=direction, margin=margin, chain_oi=chain)
+    strategy_analysis = analyze_fno_strategies(
+        direction_pref=rp.direction,
+        margin=margin,
+        chain_oi=chain,
+        run_params=rp,
+    )
     trade_plan = None
     validation = None
     if spot > 0:
         plan, _ = build_trade_plan(
-            direction,
-            risk_pct,
+            rp.direction,
+            rp.risk_pct,
             reward_pct,
-            num_lots,
+            rp.num_lots,
             capital,
             strategy_analysis=strategy_analysis,
+            run_params=rp,
         )
         trade_plan = plan
         if trade_plan:
@@ -567,6 +580,7 @@ def run_realtime_checklist(
     num_lots: int,
     capital: float,
     only_steps: Optional[List[int]] = None,
+    run_params: Optional[SensexRunParams] = None,
 ) -> Dict[str, Any]:
     """
     Execute checklist steps with live Kite data.
@@ -575,7 +589,14 @@ def run_realtime_checklist(
     from services.sensex_trade_service import STEP_TITLES
 
     ctx = _build_checklist_context(
-        direction, margin, market_open, risk_pct, reward_pct, num_lots, capital
+        direction,
+        margin,
+        market_open,
+        risk_pct,
+        reward_pct,
+        num_lots,
+        capital,
+        run_params=run_params,
     )
     emit = only_steps if only_steps is not None else list(range(len(STEP_TITLES)))
     emit = sorted(set(emit))

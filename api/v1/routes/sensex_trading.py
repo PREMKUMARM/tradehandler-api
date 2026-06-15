@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 from core.responses import SuccessResponse
 from schemas.sensex_trading import SensexTradePlaceRequest, SensexTradePreviewRequest, SensexWatchArmRequest
 from services import sensex_trade_service
+from services.sensex_run_params import SensexRunParams
 from services.sensex_strategy_watch import (
     arm_watch,
     disarm_watch,
@@ -16,6 +17,10 @@ from services.sensex_strategy_watch import (
 router = APIRouter(prefix="/sensex/trade", tags=["Sensex Trading"])
 
 
+def _run_params_kwargs(**kwargs) -> dict:
+    return SensexRunParams.from_mapping(kwargs, direction=kwargs.get("direction")).to_dict()
+
+
 @router.get("/checklist-live")
 async def checklist_live_sensex(
     request: Request,
@@ -23,6 +28,15 @@ async def checklist_live_sensex(
     risk_percentage: float | None = None,
     reward_percentage: float | None = None,
     num_lots: int = 1,
+    capital: float | None = None,
+    risk_pct: float | None = None,
+    sl_inr: float | None = None,
+    entry_band_low: float | None = None,
+    entry_band_high: float | None = None,
+    min_target_low: float | None = None,
+    min_target_high: float | None = None,
+    entry_scan_start_ist: str | None = None,
+    entry_scan_end_ist: str | None = None,
 ):
     """All 12 checklist steps from live Kite ticker + quotes + chain OI."""
     data = sensex_trade_service.get_checklist_live(
@@ -30,6 +44,20 @@ async def checklist_live_sensex(
         risk_percentage=risk_percentage,
         reward_percentage=reward_percentage,
         num_lots=num_lots,
+        run_params=_run_params_kwargs(
+            direction=direction,
+            capital=capital,
+            risk_pct=risk_pct,
+            risk_percentage=risk_percentage,
+            sl_inr=sl_inr,
+            entry_band_low=entry_band_low,
+            entry_band_high=entry_band_high,
+            min_target_low=min_target_low,
+            min_target_high=min_target_high,
+            entry_scan_start_ist=entry_scan_start_ist,
+            entry_scan_end_ist=entry_scan_end_ist,
+            num_lots=num_lots,
+        ),
     )
     return SuccessResponse(data=data, message="Live checklist refreshed")
 
@@ -42,6 +70,15 @@ async def checklist_analyze_sensex(
     risk_percentage: float | None = None,
     reward_percentage: float | None = None,
     num_lots: int = 1,
+    capital: float | None = None,
+    risk_pct: float | None = None,
+    sl_inr: float | None = None,
+    entry_band_low: float | None = None,
+    entry_band_high: float | None = None,
+    min_target_low: float | None = None,
+    min_target_high: float | None = None,
+    entry_scan_start_ist: str | None = None,
+    entry_scan_end_ist: str | None = None,
 ):
     """Realtime analysis for one step and its prerequisite steps (0-based index)."""
     data = sensex_trade_service.get_checklist_analyze(
@@ -50,14 +87,54 @@ async def checklist_analyze_sensex(
         risk_percentage=risk_percentage,
         reward_percentage=reward_percentage,
         num_lots=num_lots,
+        run_params=_run_params_kwargs(
+            direction=direction,
+            capital=capital,
+            risk_pct=risk_pct,
+            risk_percentage=risk_percentage,
+            sl_inr=sl_inr,
+            entry_band_low=entry_band_low,
+            entry_band_high=entry_band_high,
+            min_target_low=min_target_low,
+            min_target_high=min_target_high,
+            entry_scan_start_ist=entry_scan_start_ist,
+            entry_scan_end_ist=entry_scan_end_ist,
+            num_lots=num_lots,
+        ),
     )
     return SuccessResponse(data=data, message="Step analysis ready")
 
 
 @router.get("/strategy-analysis")
-async def strategy_analysis_sensex(request: Request, direction: str = "AUTO"):
+async def strategy_analysis_sensex(
+    request: Request,
+    direction: str = "AUTO",
+    capital: float | None = None,
+    risk_pct: float | None = None,
+    sl_inr: float | None = None,
+    entry_band_low: float | None = None,
+    entry_band_high: float | None = None,
+    min_target_low: float | None = None,
+    min_target_high: float | None = None,
+    entry_scan_start_ist: str | None = None,
+    entry_scan_end_ist: str | None = None,
+):
     """Rank top 4 Sensex F&O strategies using session data from prior checklist steps."""
-    data = sensex_trade_service.get_strategy_analysis(direction=direction)
+    data = sensex_trade_service.get_strategy_analysis(
+        direction=direction,
+        run_params=_run_params_kwargs(
+            direction=direction,
+            capital=capital,
+            risk_pct=risk_pct,
+            sl_inr=sl_inr,
+            entry_band_low=entry_band_low,
+            entry_band_high=entry_band_high,
+            min_target_low=min_target_low,
+            min_target_high=min_target_high,
+            entry_scan_start_ist=entry_scan_start_ist,
+            entry_scan_end_ist=entry_scan_end_ist,
+        ),
+    )
     return SuccessResponse(data=data, message="Strategy analysis ready")
 
 
@@ -71,6 +148,7 @@ async def preview_sensex_trade(request: Request, body: SensexTradePreviewRequest
         reward_percentage=body.reward_percentage,
         num_lots=body.num_lots or 1,
         auto_execute=body.auto_execute,
+        run_params=SensexRunParams.from_mapping(body.to_resolve_kwargs(), direction=body.direction).to_dict(),
     )
     return SuccessResponse(data=data, message="Trade preview ready")
 
@@ -87,6 +165,7 @@ async def place_sensex_trade(request: Request, body: SensexTradePlaceRequest):
         confirm=body.confirm,
         auto_execute=body.auto_execute,
         trade_plan_snapshot=body.trade_plan,
+        run_params=SensexRunParams.from_mapping(body.to_resolve_kwargs(), direction=body.direction).to_dict(),
     )
     msg = "Order placed" if data.get("placed") else "Trade not placed"
     return SuccessResponse(data=data, message=msg)
@@ -100,15 +179,17 @@ async def arm_sensex_watch(request: Request, body: SensexWatchArmRequest):
     Polls live entry_ready every few seconds; fires push + WebSocket on signal.
     """
     try:
+        rp = SensexRunParams.from_mapping(body.to_resolve_kwargs(), direction=body.direction)
         data = arm_watch(
             direction=body.direction,
-            num_lots=body.num_lots or 1,
-            risk_percentage=body.risk_percentage,
+            num_lots=body.num_lots or rp.num_lots,
+            risk_percentage=body.risk_percentage or rp.risk_pct,
             reward_percentage=body.reward_percentage,
             mode=body.mode,
             auto_place_on_signal=body.auto_place_on_signal,
             auto_execute_checklist=body.auto_execute_checklist,
             disarm_after_place=body.disarm_after_place,
+            run_params=rp.to_dict(),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
