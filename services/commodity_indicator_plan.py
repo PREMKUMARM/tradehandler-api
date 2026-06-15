@@ -31,9 +31,13 @@ def fetch_realtime_indicators() -> Dict[str, Any]:
 
 def live_option_quote(tradingsymbol: str, exchange: str = "MCX") -> Dict[str, float]:
     """Bid/ask/LTP for precise LIMIT entry."""
-    kite = get_kite_instance()
-    key = f"{exchange}:{tradingsymbol}"
-    row = (kite.quote(key) or {}).get(key, {}) or {}
+    try:
+        kite = get_kite_instance()
+        key = f"{exchange}:{tradingsymbol}"
+        row = (kite.quote(key) or {}).get(key, {}) or {}
+    except Exception as exc:
+        log_warning(f"[Commodity] quote {tradingsymbol}: {exc}")
+        return {"bid": 0.0, "ask": 0.0, "ltp": 0.0}
     depth = row.get("depth") or {}
     bid = float((depth.get("buy") or [{}])[0].get("price") or 0)
     ask = float((depth.get("sell") or [{}])[0].get("price") or 0)

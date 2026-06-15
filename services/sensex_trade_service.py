@@ -896,10 +896,11 @@ def place_gtt_for_plan(
     if fill_price is not None and fill_price > 0:
         last_price = fill_price
 
+    exchange = str(plan.get("exchange") or "BFO")
     gtt = place_gtt_tool.invoke(
         {
             "tradingsymbol": symbol,
-            "exchange": "NFO",
+            "exchange": exchange,
             "trigger_type": "two-leg",
             "trigger_prices": [sl_trigger, tp_trigger],
             "last_price": last_price,
@@ -1107,17 +1108,18 @@ def place_trade(
         if limit_msg:
             result["messages"] = list(result.get("messages", [])) + [limit_msg]
 
+        exchange = str(plan.get("exchange") or "BFO")
         entry = place_order_tool.invoke(
             {
                 "tradingsymbol": symbol,
-                "exchange": "NFO",
+                "exchange": exchange,
                 "transaction_type": "BUY",
                 "quantity": qty,
                 "order_type": "LIMIT",
                 "price": entry_limit,
                 "product": product,
                 "skip_session_check": skip_session,
-                "segment": "nifty50",
+                "segment": "sensex",
                 "stoploss": sl_prem,
                 "target": tgt_prem,
                 "paper_trade_plan": plan,
