@@ -48,6 +48,7 @@ from services.commodity_watch_pending import (
     migrate_pending_entries,
     migrate_trade_plans_by_symbol,
     pending_needing_gtt,
+    prune_stale_commodity_pending,
     register_pending_entry,
     remove_pending_entry,
     sync_legacy_pending_fields,
@@ -1313,6 +1314,22 @@ class CommodityStrategyWatch:
                 session_open = commodity_trade_service.is_mcx_session_open()
 
                 if session_open or paper_active or self._last_paper_mode:
+                    with _lock:
+                        open_syms = {
+                            str(p.get("tradingsymbol") or "").upper()
+                            for p in list_mcx_long_positions()
+                        }
+                        pruned = prune_stale_commodity_pending(
+                            self._pending_entries,
+                            self._trade_plans_by_symbol,
+                            order_status=self._order_status,
+                            open_mcx_symbols=open_syms,
+                        )
+                        if pruned:
+                            self._sync_legacy_pending()
+                            log_info(
+                                f"[CommodityWatch] Pruned stale pending entries: {', '.join(pruned)}"
+                            )
                     fire_signal, try_autonomous, preview, plan, can_place = await asyncio.to_thread(
                         self._evaluate_sync
                     )

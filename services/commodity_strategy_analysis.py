@@ -63,7 +63,7 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
     ctx = MarketContext(margin=margin, direction_pref=(direction_pref or "AUTO").upper())
     now = datetime.now(IST)
     ctx.minutes = now.hour * 60 + now.minute
-    ctx.is_weekday = 1 <= now.weekday() <= 5
+    ctx.is_weekday = now.weekday() <= 4  # Mon–Fri
 
     try:
         from services.commodity_live_indicators import recalculate_from_ticker

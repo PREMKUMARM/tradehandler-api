@@ -46,7 +46,7 @@ def _ist_clock() -> Tuple[int, bool]:
     now = datetime.now(IST)
     day = now.weekday()
     minutes = now.hour * 60 + now.minute
-    return minutes, 1 <= day <= 5
+    return minutes, day <= 4  # Mon–Fri (Monday=0)
 
 
 def is_market_session_open() -> bool:

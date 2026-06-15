@@ -42,7 +42,7 @@ def sensex_entry_cutoff_label() -> str:
 
 def _ist_minutes_now() -> tuple[int, bool]:
     now = datetime.now(IST)
-    return now.hour * 60 + now.minute, 1 <= now.weekday() <= 5
+    return now.hour * 60 + now.minute, now.weekday() <= 4  # Mon–Fri
 
 
 def is_past_sensex_entry_cutoff() -> bool:

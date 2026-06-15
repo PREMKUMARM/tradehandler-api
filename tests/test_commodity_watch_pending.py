@@ -2,6 +2,7 @@
 from services.commodity_watch_pending import (
     migrate_pending_entries,
     pending_needing_gtt,
+    prune_stale_commodity_pending,
     register_pending_entry,
     sync_legacy_pending_fields,
 )
@@ -40,6 +41,28 @@ def test_two_pending_entries_sync_legacy_oldest_needing_gtt():
     assert pending_needing_gtt(entries)
     oid, *_ = sync_legacy_pending_fields(entries)
     assert oid == "A1"
+
+
+def test_prune_stale_pending_when_order_gone():
+    entries = {
+        "99": {
+            "order_id": "99",
+            "symbol": "CRUDEOILM26JUN7600PE",
+            "placed_at": "t0",
+            "trade_plan": {"tradingsymbol": "CRUDEOILM26JUN7600PE"},
+            "gtt_trigger_id": None,
+        }
+    }
+    plans = {"CRUDEOILM26JUN7600PE": {"tradingsymbol": "CRUDEOILM26JUN7600PE"}}
+    removed = prune_stale_commodity_pending(
+        entries,
+        plans,
+        order_status=lambda _oid: None,
+        open_mcx_symbols=set(),
+    )
+    assert removed == ["99"]
+    assert not entries
+    assert not plans
 
 
 def test_has_any_exchange_position_no_kite(monkeypatch):

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 
 def migrate_pending_entries(data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -75,6 +75,40 @@ def pending_needing_gtt(pending_entries: Dict[str, Dict[str, Any]]) -> bool:
         if pe.get("trade_plan") and not pe.get("gtt_trigger_id"):
             return True
     return False
+
+
+def prune_stale_commodity_pending(
+    pending_entries: Dict[str, Dict[str, Any]],
+    plans_by_symbol: Dict[str, Dict[str, Any]],
+    *,
+    order_status: Callable[[str], Optional[str]],
+    open_mcx_symbols: Optional[Set[str]] = None,
+) -> List[str]:
+    """
+    Remove pending rows left from a prior session when Kite has no matching
+    open order or MCX position (unblocks autonomous placement).
+    """
+    removed: List[str] = []
+    open_syms = {s.upper() for s in (open_mcx_symbols or set()) if s}
+    terminal = frozenset({"CANCELLED", "REJECTED", "CANCELLED AMO"})
+    for oid in list(pending_entries.keys()):
+        pe = pending_entries.get(oid) or {}
+        sym = str(pe.get("symbol") or "").upper()
+        if sym and sym in open_syms:
+            continue
+        st = (order_status(oid) or "").upper()
+        drop = False
+        if not st or st in terminal:
+            drop = True
+        elif st in ("COMPLETE", "EXECUTED") and not pe.get("gtt_trigger_id"):
+            # Filled ghost with no live position — prior day carry-over
+            drop = True
+        if drop:
+            if pending_entries.pop(oid, None) is not None:
+                removed.append(oid)
+            if sym:
+                plans_by_symbol.pop(sym, None)
+    return removed
 
 
 def get_pending_entry(
