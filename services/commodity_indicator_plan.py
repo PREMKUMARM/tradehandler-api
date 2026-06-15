@@ -263,8 +263,10 @@ def size_from_risk(
     limits = [x for x in (max_from_risk, max_from_capital) if x > 0]
     qty = min(limits) if limits else 1
 
-    # Premium R:R vs policy (reward_pct : risk_pct); scale down if TP is too tight.
-    rr_policy = (float(reward_pct) / float(risk_pct)) if risk_pct > 0 else 2.0
+    # Premium R:R vs entry policy (1:1 default); scale down only if TP is tighter than policy.
+    from services.premium_exit_policy import entry_initial_rr
+
+    rr_policy = entry_initial_rr()
     prem_rr = prem_reward / prem_risk if prem_risk > 0 else rr_policy
     if prem_rr > 0 and prem_rr < rr_policy * 0.85 and max_from_risk > 1:
         qty = max(1, int(qty * (prem_rr / rr_policy)))

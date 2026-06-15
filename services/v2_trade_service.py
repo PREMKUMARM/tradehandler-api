@@ -17,6 +17,7 @@ from services.v2_strategy_analysis import analyze_fno_strategies
 from utils.kite_utils import get_kite_instance, get_access_token
 from utils.logger import log_error, log_info, log_warning
 from services.v2_constants import resolve_v2_nfo_product
+from services.premium_exit_policy import default_reward_pct
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -473,7 +474,7 @@ def preview_trade(
 ) -> Dict[str, Any]:
     cfg = get_agent_config()
     risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
-    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    reward_pct = default_reward_pct(risk_pct, reward_percentage)
     market_open = is_market_session_open()
     steps = _resolve_completed_steps(completed_steps, auto_execute)
 
@@ -627,7 +628,7 @@ def get_checklist_analyze(
 
     cfg = get_agent_config()
     risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
-    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    reward_pct = default_reward_pct(risk_pct, reward_percentage)
     market_open = is_market_session_open()
     indices = step_indices_for_analysis(step)
     _, margin, kite_msg = _check_kite_and_margin()
@@ -685,7 +686,7 @@ def get_checklist_live(
     """Refresh all 12 checklist steps from live Kite data (for wizard step navigation)."""
     cfg = get_agent_config()
     risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
-    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    reward_pct = default_reward_pct(risk_pct, reward_percentage)
     market_open = is_market_session_open()
     _, margin, kite_msg = _check_kite_and_margin()
     capital = _resolve_v2_capital(margin)

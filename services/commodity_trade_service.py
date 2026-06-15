@@ -22,6 +22,7 @@ from services.commodity_config import (
     is_mcx_session_open,
     resolve_commodity_product,
 )
+from services.premium_exit_policy import default_reward_pct
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -525,7 +526,7 @@ def _preview_trade_impl(
 
     cfg = get_agent_config()
     risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
-    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    reward_pct = default_reward_pct(risk_pct, reward_percentage)
     market_open = is_mcx_session_open()
     steps = _resolve_completed_steps(completed_steps, auto_execute)
 
@@ -681,7 +682,7 @@ def get_checklist_analyze(
 
     cfg = get_agent_config()
     risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
-    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    reward_pct = default_reward_pct(risk_pct, reward_percentage)
     market_open = is_mcx_session_open()
     indices = step_indices_for_analysis(step)
     _, margin, kite_msg = _check_kite_and_margin()
@@ -739,7 +740,7 @@ def get_checklist_live(
     """Refresh all 12 checklist steps from live Kite data (for wizard step navigation)."""
     cfg = get_agent_config()
     risk_pct = float(risk_percentage or cfg.risk_per_trade_pct or 1.0)
-    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    reward_pct = default_reward_pct(risk_pct, reward_percentage)
     market_open = is_mcx_session_open()
     _, margin, kite_msg = _check_kite_and_margin()
     capital = _commodity_risk_capital(margin, float(cfg.trading_capital or 100000))

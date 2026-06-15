@@ -53,7 +53,7 @@ def order_exit_levels_from_contract_bb(
     option_kind: str,
     intra: Dict[str, Any],
     *,
-    reward_ratio: float = 1.5,
+    reward_ratio: float = 1.0,
 ) -> Tuple[float, float, float, float, str]:
     """
     GTT stop-loss and target (option premium) from contract 5m Bollinger bands.
@@ -82,7 +82,7 @@ def order_exit_levels_from_contract_bb(
     # Long-only (buy CE / buy PE): loss when premium falls, profit when premium rises.
     sl = float(lower) - buf
     risk = max(0.05, prem - sl)
-    tgt = prem + rr * risk * 0.85
+    tgt = prem + rr * risk
 
     sl_p = round_to_tick(max(0.05, sl))
     tgt_p = round_to_tick(max(0.05, tgt))
@@ -116,7 +116,7 @@ def resolve_long_buy_exit_levels(
     underlying_tgt: float,
     strike: int,
     vix: Optional[float] = None,
-    reward_ratio: float = 1.5,
+    reward_ratio: float = 1.0,
     normalize_exits: Optional[
         Callable[[float, float, float], Tuple[float, float]]
     ] = None,

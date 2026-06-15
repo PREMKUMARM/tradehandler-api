@@ -28,6 +28,13 @@ def entry_initial_rr() -> float:
     return max(1.0, min(5.0, _env_float("ENTRY_INITIAL_RR", 1.0)))
 
 
+def default_reward_pct(risk_pct: float, reward_percentage: Optional[float] = None) -> float:
+    """Default reward % aligned with entry RR (1:1 unless caller overrides)."""
+    if reward_percentage is not None:
+        return float(reward_percentage)
+    return float(risk_pct) * entry_initial_rr()
+
+
 def entry_validation_skips_reward() -> bool:
     """When true, entry validation only checks risk cap — not reward ratio."""
     return _env_bool("ENTRY_VALIDATION_SKIP_REWARD", True)

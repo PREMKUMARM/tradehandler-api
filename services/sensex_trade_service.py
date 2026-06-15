@@ -22,6 +22,7 @@ from services.sensex_constants import (
     sensex_entry_cutoff_message,
 )
 from services.sensex_run_params import SensexRunParams
+from services.premium_exit_policy import default_reward_pct
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -556,7 +557,7 @@ def preview_trade(
         num_lots=num_lots,
     )
     risk_pct = float(rp.risk_pct or cfg.risk_per_trade_pct or 1.0)
-    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    reward_pct = default_reward_pct(risk_pct, reward_percentage)
     market_open = is_market_session_open()
     steps = _resolve_completed_steps(completed_steps, auto_execute)
 
@@ -731,7 +732,7 @@ def get_checklist_analyze(
         num_lots=num_lots,
     )
     risk_pct = float(rp.risk_pct or cfg.risk_per_trade_pct or 1.0)
-    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    reward_pct = default_reward_pct(risk_pct, reward_percentage)
     market_open = is_market_session_open()
     indices = step_indices_for_analysis(step)
     _, margin, kite_msg = _check_kite_and_margin()
@@ -797,7 +798,7 @@ def get_checklist_live(
         num_lots=num_lots,
     )
     risk_pct = float(rp.risk_pct or cfg.risk_per_trade_pct or 1.0)
-    reward_pct = float(reward_percentage or cfg.reward_per_trade_pct or 2.0)
+    reward_pct = default_reward_pct(risk_pct, reward_percentage)
     market_open = is_market_session_open()
     _, margin, kite_msg = _check_kite_and_margin()
     capital = _resolve_sensex_capital(margin, rp)
