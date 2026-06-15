@@ -27,6 +27,21 @@ router = APIRouter(prefix="/ws", tags=["WebSocket"])
 BALANCE_PUSH_SEC = 8.0
 
 
+def _ws_preview_trade(
+    preview_fn: Callable[..., Any],
+    normalize_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+) -> Callable[..., Any]:
+    """WebSocket preview: default auto_execute=True without duplicating client kw."""
+
+    def _call(**kw: Any) -> Any:
+        if normalize_fn:
+            kw = normalize_fn(kw)
+        kw.setdefault("auto_execute", True)
+        return preview_fn(**kw)
+
+    return _call
+
+
 def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
     seg = (segment or "").strip().lower()
     if seg in ("nifty", "nifty50", "v2"):
@@ -48,7 +63,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "checklist_live": checklist_live,
             "checklist_analyze": checklist_analyze,
             "strategy_analysis": strategy_analysis,
-            "preview": lambda **kw: v2_trade_service.preview_trade(auto_execute=True, **kw),
+            "preview": _ws_preview_trade(v2_trade_service.preview_trade),
             "place": lambda **kw: v2_trade_service.place_trade(**kw),
             "watch_status": get_watch_status,
             "watch_events": get_watch_events,
@@ -77,8 +92,9 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "checklist_live": lambda **kw: checklist_live(**normalize_sensex_trade_kwargs(kw)),
             "checklist_analyze": lambda **kw: checklist_analyze(**normalize_sensex_trade_kwargs(kw)),
             "strategy_analysis": lambda **kw: strategy_analysis(**normalize_sensex_trade_kwargs(kw)),
-            "preview": lambda **kw: sensex_trade_service.preview_trade(
-                auto_execute=True, **normalize_sensex_trade_kwargs(kw)
+            "preview": _ws_preview_trade(
+                sensex_trade_service.preview_trade,
+                normalize=normalize_sensex_trade_kwargs,
             ),
             "place": lambda **kw: sensex_trade_service.place_trade(**normalize_sensex_trade_kwargs(kw)),
             "watch_status": get_watch_status,
@@ -107,7 +123,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "checklist_live": checklist_live,
             "checklist_analyze": checklist_analyze,
             "strategy_analysis": strategy_analysis,
-            "preview": lambda **kw: commodity_trade_service.preview_trade(auto_execute=True, **kw),
+            "preview": _ws_preview_trade(commodity_trade_service.preview_trade),
             "place": lambda **kw: commodity_trade_service.place_trade(**kw),
             "watch_status": get_watch_status,
             "watch_events": get_watch_events,
@@ -133,7 +149,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "checklist_live": checklist_live,
             "checklist_analyze": checklist_analyze,
             "strategy_analysis": strategy_analysis,
-            "preview": lambda **kw: crypto_trade_service.preview_trade(auto_execute=True, **kw),
+            "preview": _ws_preview_trade(crypto_trade_service.preview_trade),
             "place": lambda **kw: crypto_trade_service.place_trade(**kw),
             "watch_status": get_watch_status,
             "watch_events": get_watch_events,
