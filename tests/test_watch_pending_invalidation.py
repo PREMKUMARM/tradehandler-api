@@ -83,6 +83,56 @@ def test_adjacent_strike_change_does_not_cancel_by_default():
     assert invalid is False
 
 
+def test_adjacent_strike_block_reason_does_not_invalidate_pending():
+    """Live preview on 3950PE must not abort open/filled 4000PE."""
+    pending = {
+        "tradingsymbol": "NIFTY2661624000PE",
+        "option_type": "PE",
+        "strategy_id": "bb_5m_mean_reversion",
+        "spot_stop_loss": 57.0,
+        "indicators": {"nifty_spot": 23970.0},
+    }
+    current = {
+        "tradingsymbol": "NIFTY2661623950PE",
+        "entry_ready": False,
+        "entry_confirmation_score": 28,
+        "entry_block_reason": (
+            "Wait for rally to BB middle (56.40) or upper (81.73) — price 34.10 at lower"
+        ),
+        "indicators": {"nifty_spot": 23970.0},
+    }
+    invalid, reason = pending_entry_invalidated(
+        pending_plan=pending,
+        pending_symbol="NIFTY2661624000PE",
+        current_plan=current,
+        min_score=65,
+    )
+    assert invalid is False, reason
+
+
+def test_post_fill_skips_unrelated_live_preview():
+    pending = {
+        "tradingsymbol": "NIFTY2661624000PE",
+        "option_type": "PE",
+        "strategy_id": "bb_5m_mean_reversion",
+        "spot_stop_loss": 57.0,
+        "indicators": {"nifty_spot": 23970.0},
+    }
+    live = {
+        "tradingsymbol": "NIFTY2661623950PE",
+        "entry_ready": False,
+        "entry_block_reason": "Wait for rally",
+    }
+    invalid, _ = pending_entry_invalidated(
+        pending_plan=pending,
+        pending_symbol="NIFTY2661624000PE",
+        current_plan=live,
+        min_score=65,
+        post_fill=True,
+    )
+    assert invalid is False
+
+
 def test_large_strike_drift_cancels_when_enabled(monkeypatch):
     monkeypatch.setenv("COMMODITY_WATCH_CANCEL_ON_SYMBOL_DRIFT", "1")
     monkeypatch.setenv("COMMODITY_WATCH_SYMBOL_DRIFT_MIN_STRIKES", "2")

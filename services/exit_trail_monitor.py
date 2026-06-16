@@ -149,6 +149,10 @@ class ExitTrailMonitor:
                 close_exit_trail(tid, reason="gtt_triggered")
                 continue
 
+            if not bool(t.get("paper")) and self._live_position_qty(sym) <= 0:
+                close_exit_trail(tid, reason="position_closed")
+                continue
+
             if ltp <= sl and sl > 0:
                 self._close_trail(t, ltp, "SL")
                 continue
@@ -188,7 +192,13 @@ class ExitTrailMonitor:
                         qty = remaining
                         t = {**t, "quantity": remaining, "partial_exit_done": 1}
                         if gtt_id and not bool(t.get("paper")):
-                            self._sync_live_gtt(t, gtt_id, sl, tp, ltp, qty_override=remaining)
+                            init_tgt = float(t.get("initial_target") or activation_target or tp)
+                            broker_tp = gtt_tp_cap_for_trail(
+                                float(t.get("entry_price") or entry), init_tgt
+                            )
+                            self._sync_live_gtt(
+                                t, gtt_id, sl, broker_tp, ltp, qty_override=remaining
+                            )
                 elif qty <= 1:
                     log_info(
                         f"[ExitTrailMonitor] {sym} single lot — breakeven trail at 1R (no partial exit)"
@@ -278,6 +288,21 @@ class ExitTrailMonitor:
         if sym:
             alert_stale_trail(sym, stale_min)
             mark_trail_alert_sent(tid)
+
+    def _live_position_qty(self, tradingsymbol: str) -> int:
+        sym = (tradingsymbol or "").strip()
+        if not sym:
+            return 0
+        try:
+            from utils.kite_utils import get_kite_instance
+
+            kite = get_kite_instance(skip_validation=True)
+            for p in kite.positions().get("net", []) or []:
+                if str(p.get("tradingsymbol") or "") == sym:
+                    return int(p.get("quantity") or 0)
+        except Exception:
+            pass
+        return 0
 
     def _fetch_quotes(self, keys: List[str]) -> Dict[str, Optional[float]]:
         out: Dict[str, Optional[float]] = {}

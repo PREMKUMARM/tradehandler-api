@@ -544,6 +544,7 @@ class CommodityStrategyWatch:
             current_plan=live_plan,
             min_score=min_entry_confirmation_score(),
             paper_mode=False,
+            post_fill=True,
         )
         if invalid:
             await self._abort_stale_fill(

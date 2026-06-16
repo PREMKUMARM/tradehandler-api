@@ -66,22 +66,32 @@ def pending_entry_invalidated(
     current_plan: Optional[Dict[str, Any]],
     min_score: int,
     paper_mode: bool = False,
+    post_fill: bool = False,
 ) -> Tuple[bool, str]:
     """
     Return (True, reason) when an unfilled or just-filled entry should not proceed.
 
     Uses the plan snapshot from placement plus the live preview plan for spot/score.
+    When the live preview is for a different contract (adjacent strike flicker), entry
+    gates from the preview are ignored — only structural pending-plan rules apply.
+
+    post_fill=True: after a fill, never abort GTT attach based on unrelated live preview
+    entry gates (score / entry_block_reason on a different symbol).
     """
     if paper_mode:
         return False, ""
 
     pending = pending_plan or {}
-    current = current_plan or {}
+    current = {} if post_fill else (current_plan or {})
 
-    if current and current.get("entry_ready") is not True:
+    pend_sym = (pending_symbol or pending.get("tradingsymbol") or "").upper()
+    curr_sym = (current.get("tradingsymbol") or "").upper()
+    same_contract = not pend_sym or not curr_sym or pend_sym == curr_sym
+
+    if same_contract and current and current.get("entry_ready") is not True:
         return True, str(current.get("entry_block_reason") or "Entry no longer confirmed")
 
-    if current:
+    if same_contract and current:
         score = int(current.get("entry_confirmation_score") or 0)
         if score < min_score:
             return True, f"Score dropped to {score} (<{min_score})"
@@ -93,9 +103,6 @@ def pending_entry_invalidated(
         if not current:
             return True, "No plan (setup invalidated)"
         return False, ""
-
-    pend_sym = (pending_symbol or pending.get("tradingsymbol") or "").upper()
-    curr_sym = (current.get("tradingsymbol") or "").upper()
     if pend_sym and curr_sym and pend_sym != curr_sym:
         if _cancel_on_symbol_drift():
             pend_kind = str(pending.get("option_type") or ("PE" if "PE" in pend_sym else "CE")).upper()
@@ -116,7 +123,11 @@ def pending_entry_invalidated(
                 )
         # Adjacent-strike flicker (8200↔8250↔8300) — keep pending LIMIT; real invalidation below.
 
-    spot = spot_from_plan(current) or spot_from_plan(pending)
+    spot = (
+        (spot_from_plan(current) or spot_from_plan(pending))
+        if same_contract
+        else spot_from_plan(pending)
+    )
     if spot is None:
         return False, ""
 
@@ -136,7 +147,10 @@ def pending_entry_invalidated(
 
     strategy_id = str(pending.get("strategy_id") or "").lower()
     strat_name = str(pending.get("strategy_name") or "").lower()
-    ind = (current.get("indicators") or pending.get("indicators") or {})
+    if same_contract:
+        ind = (current.get("indicators") or pending.get("indicators") or {})
+    else:
+        ind = pending.get("indicators") or {}
 
     if "orb" in strategy_id or "orb" in strat_name or "opening range" in strat_name:
         or_l, or_h = ind.get("or_low"), ind.get("or_high")
