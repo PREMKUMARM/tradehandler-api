@@ -23,6 +23,7 @@ from services.sensex_strategy_analysis import (
     STRATEGY_ID as TWENTY_RUPEES_ID,
 )
 from services.sensex_run_params import SensexRunParams
+from services.sensex_live_indicators import bollinger_zone
 from services.option_contract_indicators import contract_bb_is_active, contract_price_for_bb
 from utils.kite_order_utils import round_to_tick
 

@@ -571,7 +571,11 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     lot_size = int(plan.get("lot_size") or 20)
     num_lots = int(plan.get("num_lots") or 1)
     lot_cap = min(sensex_max_lots_per_trade(), max(1, num_lots))
-    if capital > 0:
+    if sid == TWENTY_RUPEES_ID and capital > 0:
+        qty_lots, quantity, risk_inr = size_from_allocation(
+            capital, risk_pct, float(entry_prem), lot_size, lot_cap
+        )
+    elif capital > 0:
         qty_lots, quantity, risk_inr = size_from_risk(
             capital,
             risk_pct,

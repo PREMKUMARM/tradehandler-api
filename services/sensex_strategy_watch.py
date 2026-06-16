@@ -703,6 +703,7 @@ class V2StrategyWatch:
         auto_execute_checklist: bool = True,
         disarm_after_place: bool = True,
         run_params: Optional[Dict[str, Any]] = None,
+        **flat_run_fields: Any,
     ) -> Dict[str, Any]:
         mode, auto_place = _normalize_mode(mode, auto_place_on_signal)
         if mode == "autonomous" and watch_autonomous_globally_disabled():
@@ -711,8 +712,23 @@ class V2StrategyWatch:
             )
         if mode == "autonomous" and self._kill_switch_active():
             raise ValueError("Kill switch is ON — release it in Operations → Risk Control first")
+        merged_run: Dict[str, Any] = {}
+        if isinstance(run_params, dict):
+            merged_run.update(run_params)
+        for key, value in flat_run_fields.items():
+            if value is not None and key not in (
+                "direction",
+                "num_lots",
+                "risk_percentage",
+                "reward_percentage",
+                "mode",
+                "auto_place_on_signal",
+                "auto_execute_checklist",
+                "disarm_after_place",
+            ):
+                merged_run[key] = value
         rp = SensexRunParams.from_mapping(
-            run_params or {},
+            merged_run,
             direction=direction,
             risk_percentage=risk_percentage,
             num_lots=num_lots,
@@ -1465,7 +1481,9 @@ _watch = V2StrategyWatch()
 
 
 def arm_watch(**kwargs: Any) -> Dict[str, Any]:
-    return _watch.arm(**kwargs)
+    from services.sensex_trade_service import normalize_sensex_trade_kwargs
+
+    return _watch.arm(**normalize_sensex_trade_kwargs(kwargs))
 
 
 def disarm_watch() -> Dict[str, Any]:

@@ -99,7 +99,7 @@ def _segment_handlers(segment: str) -> Dict[str, Callable[..., Any]]:
             "place": lambda **kw: sensex_trade_service.place_trade(**normalize_sensex_trade_kwargs(kw)),
             "watch_status": get_watch_status,
             "watch_events": get_watch_events,
-            "arm": arm_watch,
+            "arm": lambda **kw: arm_watch(**normalize_sensex_trade_kwargs(kw)),
             "disarm": disarm_watch,
             "nuclear_reset": nuclear_reset_watch,
             "balance": lambda: get_segment_balance(seg),
