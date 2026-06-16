@@ -59,6 +59,15 @@ def _symbol_drift_min_strike_steps() -> int:
         return 2
 
 
+def _index_spot_level(level: float, index_spot: float) -> bool:
+    """True when level is on index/underlying scale (not option premium)."""
+    if level <= 0 or index_spot <= 0:
+        return False
+    if index_spot > 1000 and level < min(1000.0, index_spot * 0.2):
+        return False
+    return True
+
+
 def pending_entry_invalidated(
     *,
     pending_plan: Optional[Dict[str, Any]],
@@ -81,8 +90,11 @@ def pending_entry_invalidated(
     if paper_mode:
         return False, ""
 
+    if post_fill:
+        return False, ""
+
     pending = pending_plan or {}
-    current = {} if post_fill else (current_plan or {})
+    current = current_plan or {}
 
     pend_sym = (pending_symbol or pending.get("tradingsymbol") or "").upper()
     curr_sym = (current.get("tradingsymbol") or "").upper()
@@ -133,17 +145,28 @@ def pending_entry_invalidated(
 
     kind = str(pending.get("option_type") or "CE").upper()
     spot_sl = _float(pending.get("spot_stop_loss"))
-    if spot_sl is not None:
-        if kind == "PE" and spot >= spot_sl:
-            return (
-                True,
-                f"Spot {spot:.0f} at/above setup SL {spot_sl:.0f} — pending entry no longer valid",
-            )
-        if kind == "CE" and spot <= spot_sl:
-            return (
-                True,
-                f"Spot {spot:.0f} at/below setup SL {spot_sl:.0f} — pending entry no longer valid",
-            )
+    sl_prem = _float(pending.get("stop_loss_premium"))
+    ind_pending = pending.get("indicators") or {}
+    prem_ltp = _float(ind_pending.get("option_ltp") or pending.get("entry_premium"))
+
+    if spot is not None and spot_sl is not None:
+        if prem_ltp is not None and sl_prem is not None and not _index_spot_level(spot_sl, spot):
+            if prem_ltp <= sl_prem:
+                return (
+                    True,
+                    f"Premium {prem_ltp:.2f} at/below SL {sl_prem:.2f} — pending entry no longer valid",
+                )
+        elif _index_spot_level(spot_sl, spot):
+            if kind == "PE" and spot >= spot_sl:
+                return (
+                    True,
+                    f"Spot {spot:.0f} at/above setup SL {spot_sl:.0f} — pending entry no longer valid",
+                )
+            if kind == "CE" and spot <= spot_sl:
+                return (
+                    True,
+                    f"Spot {spot:.0f} at/below setup SL {spot_sl:.0f} — pending entry no longer valid",
+                )
 
     strategy_id = str(pending.get("strategy_id") or "").lower()
     strat_name = str(pending.get("strategy_name") or "").lower()

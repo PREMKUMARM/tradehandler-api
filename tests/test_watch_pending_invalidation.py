@@ -89,8 +89,10 @@ def test_adjacent_strike_block_reason_does_not_invalidate_pending():
         "tradingsymbol": "NIFTY2661624000PE",
         "option_type": "PE",
         "strategy_id": "bb_5m_mean_reversion",
-        "spot_stop_loss": 57.0,
-        "indicators": {"nifty_spot": 23970.0},
+        "stop_loss_premium": 57.0,
+        "spot_stop_loss": 56.0,
+        "entry_premium": 62.3,
+        "indicators": {"nifty_spot": 23970.0, "option_ltp": 62.3},
     }
     current = {
         "tradingsymbol": "NIFTY2661623950PE",
@@ -115,8 +117,10 @@ def test_post_fill_skips_unrelated_live_preview():
         "tradingsymbol": "NIFTY2661624000PE",
         "option_type": "PE",
         "strategy_id": "bb_5m_mean_reversion",
-        "spot_stop_loss": 57.0,
-        "indicators": {"nifty_spot": 23970.0},
+        "stop_loss_premium": 57.0,
+        "spot_stop_loss": 56.0,
+        "entry_premium": 62.3,
+        "indicators": {"nifty_spot": 23970.0, "option_ltp": 62.3},
     }
     live = {
         "tradingsymbol": "NIFTY2661623950PE",
