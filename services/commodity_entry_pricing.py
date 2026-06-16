@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.kite_live_indicators import bollinger_zone
+from services.option_contract_indicators import contract_bb_is_active, contract_price_for_bb
 from utils.kite_order_utils import round_to_tick
 
 ORB_BREAK_BUFFER = 5.0
@@ -51,6 +52,17 @@ def _book(quote: Dict[str, float]) -> Tuple[float, float, float, float, float]:
     return bid, ask, ltp, mid, spread_pct
 
 
+def _trigger_is_premium_scale(spot: float, trigger: float, ltp: float) -> bool:
+    """BB / contract triggers are option premium, not underlying (e.g. crude 7600 vs prem 70)."""
+    if trigger <= 0:
+        return False
+    if spot > 0 and trigger < spot * 0.25:
+        return True
+    if ltp > 0 and trigger <= max(ltp * 3.0, 500.0):
+        return True
+    return False
+
+
 def _structure_fair_premium(
     ltp: float,
     spot: float,
@@ -58,14 +70,17 @@ def _structure_fair_premium(
     kind: str,
     delta: float,
 ) -> float:
-    """Fair option premium if entry were at the structural spot trigger (not current chase)."""
+    """Fair option premium if entry were at the structural trigger (spot or contract BB)."""
     if ltp <= 0:
         return max(TICK, 0.007 * spot)
+    trig = float(spot_trigger or spot)
+    if _trigger_is_premium_scale(spot, trig, ltp):
+        return round_to_tick(max(TICK, min(float(ltp), trig)))
     k = (kind or "CE").upper()
     if k == "CE":
-        inflation = max(0.0, spot - spot_trigger) * delta
+        inflation = max(0.0, spot - trig) * delta
     else:
-        inflation = max(0.0, spot_trigger - spot) * delta
+        inflation = max(0.0, trig - spot) * delta
     return round_to_tick(max(TICK, ltp - inflation))
 
 
@@ -361,13 +376,16 @@ def _apply_bollinger_entry_gate(
             + (f" ({bb_src})" if bb_src else "")
         )
 
-    bb = bollinger_zone(float(spot), float(mid), float(upper), float(lower), kind)
+    px = contract_price_for_bb(spot, intra)
+    bb = bollinger_zone(px, float(mid), float(upper), float(lower), kind)
     zone = bb["zone"]
     style_suffix = f"bb_{zone}"
+    on_contract = contract_bb_is_active(intra)
+    fmt = ".2f" if on_contract or px < 5000 else ".0f"
 
     if bb["extended"]:
         notes.append(
-            f"BB {zone}: spot extended — prefer middle ({mid:.0f}) not band chase"
+            f"BB {zone}: contract LTP extended — prefer middle ({mid:{fmt}}) not band chase"
         )
         if ready:
             return False, bb["trigger"], score, notes, bb["wait_msg"], style_suffix
@@ -375,7 +393,7 @@ def _apply_bollinger_entry_gate(
 
     if bb["preferred"]:
         notes.append(
-            f"BB {zone} touch (mid {mid:.0f}, L {lower:.0f}, U {upper:.0f}) — preferred entry zone"
+            f"BB {zone} touch (mid {mid:{fmt}}, L {lower:{fmt}}, U {upper:{fmt}}) — preferred entry zone"
         )
         new_trigger = float(bb["trigger"])
         if ready:

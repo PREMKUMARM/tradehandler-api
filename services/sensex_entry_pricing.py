@@ -57,6 +57,17 @@ def _book(quote: Dict[str, float]) -> Tuple[float, float, float, float, float]:
     return bid, ask, ltp, mid, spread_pct
 
 
+def _trigger_is_premium_scale(spot: float, trigger: float, ltp: float) -> bool:
+    """BB / contract triggers are option premium, not underlying."""
+    if trigger <= 0:
+        return False
+    if spot > 0 and trigger < spot * 0.25:
+        return True
+    if ltp > 0 and trigger <= max(ltp * 3.0, 500.0):
+        return True
+    return False
+
+
 def _structure_fair_premium(
     ltp: float,
     spot: float,
@@ -64,14 +75,17 @@ def _structure_fair_premium(
     kind: str,
     delta: float,
 ) -> float:
-    """Fair option premium if entry were at the structural spot trigger (not current chase)."""
+    """Fair option premium if entry were at the structural trigger (spot or contract BB)."""
     if ltp <= 0:
         return max(TICK, 0.007 * spot)
+    trig = float(spot_trigger or spot)
+    if _trigger_is_premium_scale(spot, trig, ltp):
+        return round_to_tick(max(TICK, min(float(ltp), trig)))
     k = (kind or "CE").upper()
     if k == "CE":
-        inflation = max(0.0, spot - spot_trigger) * delta
+        inflation = max(0.0, spot - trig) * delta
     else:
-        inflation = max(0.0, spot_trigger - spot) * delta
+        inflation = max(0.0, trig - spot) * delta
     return round_to_tick(max(TICK, ltp - inflation))
 
 
