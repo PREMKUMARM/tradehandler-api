@@ -82,27 +82,35 @@ def _patient_buy_limit(
     max_chase_pct: float = MAX_CHASE_ABOVE_FAIR_PCT,
 ) -> Tuple[float, str]:
     bid, ask, ltp, mid, spread_pct = _book(quote)
+    ref = fair if fair > 0 else (ltp if ltp > 0 else 0)
+    min_px = max(TICK, ref * 0.5) if ref >= 2.0 else max(TICK, ref * 0.85 if ref > 0 else TICK)
     cap = fair * (1.0 + max_chase_pct / 100.0) if fair > 0 else (ask or ltp)
 
-    if spread_pct >= WIDE_SPREAD_PCT and bid > 0:
+    if spread_pct >= WIDE_SPREAD_PCT and bid >= min_px:
         base = round_to_tick(bid + TICK)
         style = "bid_plus_tick_wide_spread"
-    elif mid > 0:
+    elif mid >= min_px:
         base = round_to_tick(mid)
         style = "mid_patient"
-    elif bid > 0:
+    elif bid >= min_px:
         base = round_to_tick(bid + TICK)
         style = "bid_plus_tick"
-    else:
-        base = round_to_tick(max(TICK, ltp * 0.995))
+    elif ltp >= min_px:
+        base = round_to_tick(max(min_px, ltp * 0.995))
         style = "ltp_discount"
+    elif ref >= min_px:
+        base = round_to_tick(ref)
+        style = "fair_ref"
+    else:
+        base = round_to_tick(min_px)
+        style = "min_floor"
 
     limit = base
     if ask > 0:
         limit = min(limit, ask)
     if cap > 0:
         limit = min(limit, round_to_tick(cap))
-    return round_to_tick(max(TICK, limit)), style
+    return round_to_tick(max(min_px, limit)), style
 
 
 def _candle_confirms_break(

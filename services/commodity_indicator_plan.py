@@ -433,6 +433,20 @@ def build_indicator_trade_plan(
         prev_close=float(ind.get("prev_close") or 0),
     )
     entry_limit = entry_analysis.entry_limit_price
+    entry_limit, limit_ok, limit_msg = validate_buy_limit_price(entry_limit, quote=quote)
+    if not limit_ok:
+        entry_analysis = EntryAnalysis(
+            entry_ready=False,
+            entry_limit_price=entry_limit,
+            fair_premium=entry_analysis.fair_premium,
+            entry_style="circuit_blocked",
+            spot_trigger=entry_analysis.spot_trigger,
+            confirmation_score=entry_analysis.confirmation_score,
+            notes=list(entry_analysis.notes) + ([limit_msg] if limit_msg else []),
+            block_reason=limit_msg,
+        )
+    elif limit_msg:
+        entry_analysis.notes.append(limit_msg)
     if not entry_analysis.entry_ready:
         messages.append(
             entry_analysis.block_reason or "Entry not confirmed — wait for setup"
