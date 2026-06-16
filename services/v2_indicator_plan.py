@@ -200,6 +200,10 @@ def build_indicator_trade_plan(
         "indicator_sources": ind.get("indicator_sources") or {},
         "anchor_strike": anchor_strike,
         "nifty_spot": nifty_spot,
+        "index_bb_lower": ind.get("bb_lower"),
+        "index_bb_middle": ind.get("bb_middle"),
+        "index_bb_upper": ind.get("bb_upper"),
+        "prev_close": float(ind.get("prev_close") or 0),
         "oi_baseline_ready": bool(
             sid == "green_bar_sentinel_2nd_oi"
             and anchor_strike

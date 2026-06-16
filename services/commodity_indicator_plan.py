@@ -343,7 +343,14 @@ def build_indicator_trade_plan(
         "or_high": ind.get("or_high"),
         "or_low": ind.get("or_low"),
         "ema9": ind.get("ema9"),
+        "day_open": ind.get("day_open"),
+        "crude_spot": spot,
     }
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    _now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    intra["session_minutes"] = _now.hour * 60 + _now.minute
     sid = strategy_id or "long_atm_directional"
     spot_entry, spot_sl, spot_tgt, level_note = refine_spot_levels_from_candles(
         sid, spot, option_kind, spot_sl, spot_tgt, intra

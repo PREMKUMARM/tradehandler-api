@@ -209,11 +209,19 @@ def _score_orb(ctx: MarketContext) -> StrategyCandidate:
         reasons.append(f"Price below OR low {ctx.or_low:.0f} — short breakout")
     else:
         warnings.append(f"Inside OR ({ctx.or_low:.0f}–{ctx.or_high:.0f}) — no breakout yet")
+        score = min(score, 35)
         kind = _resolve_kind(ctx, "AUTO")
         if kind == "CE":
             sl, tgt = ctx.or_low - 2, ctx.or_high + or_range * 0.5
         else:
             sl, tgt = ctx.or_high + 2, ctx.or_low - or_range * 0.5
+
+    if kind == "PE" and ctx.day_open > 0 and entry > ctx.day_open:
+        score = min(score, 45)
+        warnings.append("ORB PE weak: spot above day open — bullish session")
+    if kind == "CE" and ctx.day_open > 0 and entry < ctx.day_open:
+        score = min(score, 45)
+        warnings.append("ORB CE weak: spot below day open — bearish session")
 
     if 25 <= or_range <= 180:
         score += 25

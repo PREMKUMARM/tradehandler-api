@@ -72,6 +72,21 @@ def _resolve_kind(ctx: MarketContext, bias: str) -> str:
         return bias
     if ctx.direction_pref in ("CE", "PE"):
         return ctx.direction_pref
+    if (
+        ctx.bb_lower is not None
+        and ctx.bb_middle is not None
+        and ctx.bb_upper is not None
+        and ctx.nifty_ltp > 0
+    ):
+        from services.kite_live_indicators import bb_auto_option_kind
+
+        return bb_auto_option_kind(
+            ctx.nifty_ltp,
+            ctx.bb_lower,
+            ctx.bb_middle,
+            ctx.bb_upper,
+            prev_close=ctx.prev_close,
+        )
     if ctx.prev_close > 0:
         return "CE" if ctx.nifty_ltp >= ctx.prev_close else "PE"
     return "CE"
@@ -90,6 +105,12 @@ def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
         ctx.nifty_ltp = float(live.get("nifty_spot") or 0)
         ctx.prev_close = float(live.get("prev_close") or ctx.nifty_ltp)
         ctx.day_open = float(live.get("day_open") or ctx.nifty_ltp)
+        if live.get("bb_lower") is not None:
+            ctx.bb_lower = float(live["bb_lower"])
+        if live.get("bb_middle") is not None:
+            ctx.bb_middle = float(live["bb_middle"])
+        if live.get("bb_upper") is not None:
+            ctx.bb_upper = float(live["bb_upper"])
         if live.get("vix"):
             ctx.vix_ltp = float(live["vix"])
     except Exception as exc:
@@ -221,6 +242,19 @@ def _score_bb_5m(ctx: MarketContext) -> StrategyCandidate:
         else:
             score = 45
             warnings.append(bb["wait_msg"])
+
+    from services.kite_live_indicators import bb_mean_reversion_index_gate
+
+    index_block = bb_mean_reversion_index_gate(
+        kind,
+        spot=nifty,
+        lower=ctx.bb_lower,
+        middle=ctx.bb_middle,
+        upper=ctx.bb_upper,
+    )
+    if index_block:
+        warnings.append(index_block)
+        score = min(score, 25)
 
     if ctx.margin > 5000:
         score += 8

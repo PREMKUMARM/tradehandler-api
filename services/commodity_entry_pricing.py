@@ -124,10 +124,25 @@ def _analyze_orb(
     if not or_h or not or_l:
         return False, None, 0, notes, "Opening range not formed yet (wait until 9:30 AM)"
 
+    or_h_f, or_l_f = float(or_h), float(or_l)
+    or_range = or_h_f - or_l_f
+    if or_range < 25:
+        return (
+            False,
+            None,
+            20,
+            notes,
+            f"ORB: opening range too tight ({or_range:.0f} pts) — skip false breaks",
+        )
+
+    minutes = int(intra.get("session_minutes") or 0)
+    if minutes >= 13 * 60 + 30:
+        return False, None, 20, notes, "ORB entry window closed after 13:30 IST"
+
+    day_open = float(intra.get("day_open") or 0)
+
     if kind == "CE":
-        trigger = float(or_h)
-        confirmed = _candle_confirms_break(trigger, "CE", spot, last_5m)
-        fresh = spot > trigger + ORB_BREAK_BUFFER
+        trigger = or_h_f
         inside = spot <= trigger
         if inside:
             return (
@@ -137,16 +152,36 @@ def _analyze_orb(
                 notes,
                 f"ORB CE: wait for close above OR high {trigger:.0f} (spot {spot:.0f})",
             )
-        score = 85 if confirmed and fresh else (60 if fresh else 40)
-        if confirmed:
-            notes.append(f"ORB CE breakout confirmed (5m close > {trigger:.0f})")
-        elif fresh:
-            notes.append(f"ORB CE above OR high +{spot - trigger:.0f} pts — prefer 5m close confirm")
-        return True, trigger, score, notes, None
+        confirmed = _candle_confirms_break(trigger, "CE", spot, last_5m)
+        fresh = spot > trigger + ORB_BREAK_BUFFER
+        if not fresh:
+            return (
+                False,
+                trigger,
+                25,
+                notes,
+                f"ORB CE: need break above OR high +{ORB_BREAK_BUFFER:.0f} pts buffer",
+            )
+        if not confirmed:
+            return (
+                False,
+                trigger,
+                45,
+                notes,
+                f"ORB CE: above OR high but 5m close not confirmed — wait",
+            )
+        if day_open > 0 and spot < day_open - ORB_BREAK_BUFFER:
+            return (
+                False,
+                trigger,
+                30,
+                notes,
+                "ORB CE blocked: spot below day open — bearish session, not CE breakout",
+            )
+        notes.append(f"ORB CE breakout confirmed (5m close > {trigger:.0f})")
+        return True, trigger, 85, notes, None
 
-    trigger = float(or_l)
-    confirmed = _candle_confirms_break(trigger, "PE", spot, last_5m)
-    fresh = spot < trigger - ORB_BREAK_BUFFER
+    trigger = or_l_f
     inside = spot >= trigger
     if inside:
         return (
@@ -156,12 +191,34 @@ def _analyze_orb(
             notes,
             f"ORB PE: wait for close below OR low {trigger:.0f} (spot {spot:.0f})",
         )
-    score = 85 if confirmed and fresh else (60 if fresh else 40)
-    if confirmed:
-        notes.append(f"ORB PE breakdown confirmed (5m close < {trigger:.0f})")
-    elif fresh:
-        notes.append(f"ORB PE below OR low — prefer 5m close confirm")
-    return True, trigger, score, notes, None
+    confirmed = _candle_confirms_break(trigger, "PE", spot, last_5m)
+    fresh = spot < trigger - ORB_BREAK_BUFFER
+    if not fresh:
+        return (
+            False,
+            trigger,
+            25,
+            notes,
+            f"ORB PE: need break below OR low −{ORB_BREAK_BUFFER:.0f} pts buffer",
+        )
+    if not confirmed:
+        return (
+            False,
+            trigger,
+            45,
+            notes,
+            f"ORB PE: below OR low but 5m close not confirmed — wait",
+        )
+    if day_open > 0 and spot > day_open + ORB_BREAK_BUFFER:
+        return (
+            False,
+            trigger,
+            30,
+            notes,
+            "ORB PE blocked: spot above day open — bullish session, not PE breakdown",
+        )
+    notes.append(f"ORB PE breakdown confirmed (5m close < {trigger:.0f})")
+    return True, trigger, 85, notes, None
 
 
 def _analyze_pdh_pdl(

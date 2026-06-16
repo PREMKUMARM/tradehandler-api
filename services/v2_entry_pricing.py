@@ -10,7 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.kite_live_indicators import bollinger_zone
+from services.kite_live_indicators import (
+    bb_index_preferred_override,
+    bb_mean_reversion_index_gate,
+    bb_session_bias_gate,
+    bollinger_zone,
+)
 from services.option_contract_indicators import contract_bb_is_active, contract_price_for_bb
 from utils.kite_order_utils import round_to_tick
 
@@ -420,6 +425,21 @@ def _analyze_green_bar_sentinel(
     return False, trigger, score, notes, msg
 
 
+def _index_bb_from_intra(intra: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """Index Nifty BB levels (separate from contract BB on intra)."""
+    idx_spot = intra.get("nifty_spot") or intra.get("underlying_spot")
+    lo = intra.get("index_bb_lower")
+    mid = intra.get("index_bb_middle")
+    hi = intra.get("index_bb_upper")
+    try:
+        spot_f = float(idx_spot) if idx_spot is not None else None
+    except (TypeError, ValueError):
+        spot_f = None
+    if lo is None or mid is None or hi is None:
+        return spot_f, None, None, None
+    return spot_f, float(lo), float(mid), float(hi)
+
+
 def _analyze_bb_5m(
     spot: float,
     kind: str,
@@ -440,6 +460,27 @@ def _analyze_bb_5m(
             "",
         )
 
+    idx_spot, idx_lo, idx_mid, idx_hi = _index_bb_from_intra(intra)
+    index_override = None
+    if idx_spot and idx_lo is not None and idx_mid is not None and idx_hi is not None:
+        index_block = bb_mean_reversion_index_gate(
+            kind,
+            spot=float(idx_spot),
+            lower=idx_lo,
+            middle=idx_mid,
+            upper=idx_hi,
+        )
+        index_override = bb_index_preferred_override(
+            kind,
+            spot=float(idx_spot),
+            lower=idx_lo,
+            middle=idx_mid,
+            upper=idx_hi,
+        )
+        if index_block and not index_override:
+            notes.append(index_block)
+            return False, float(idx_mid), 28, notes, index_block, "bb5m_index_block"
+
     px = contract_price_for_bb(spot, intra)
     bb = bollinger_zone(px, float(mid), float(upper), float(lower), kind)
     zone = bb["zone"]
@@ -454,16 +495,36 @@ def _analyze_bb_5m(
         f"5m BB (contract) L {lower:.2f} M {mid:.2f} U {upper:.2f} · LTP {px:.2f} · {zone}"
     )
 
+    if index_override:
+        trigger = float(idx_hi if kind == "PE" else idx_lo)
+        notes.append(f"Index BB override — {index_override}")
+        return True, trigger, 88, notes, None, f"bb5m_{index_override}"
+
     if bb["extended"]:
         return False, float(bb["trigger"]), 28, notes, bb["wait_msg"], style
+
+    prev_close = float(intra.get("prev_close") or 0)
+    session_block = bb_session_bias_gate(
+        kind, spot=float(idx_spot or spot), prev_close=prev_close, contract_zone=zone
+    )
+    if session_block:
+        notes.append(session_block)
+        return False, float(bb["trigger"]), 28, notes, session_block, style
 
     if bb["preferred"]:
         notes.append("BB preferred touch — entry confirmed")
         return True, float(bb["trigger"]), 88, notes, None, style
 
     if zone == "between":
-        notes.append("Between bands — patient entry toward middle band")
-        return True, float(mid), 58, notes, None, style
+        notes.append("Between contract bands — wait for preferred touch")
+        return (
+            False,
+            float(mid),
+            52,
+            notes,
+            "Between contract bands — wait for lower/middle (CE) or upper/middle (PE) touch",
+            style,
+        )
 
     return False, float(bb["trigger"]), 38, notes, bb["wait_msg"], style
 

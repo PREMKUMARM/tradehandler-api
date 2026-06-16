@@ -124,6 +124,109 @@ def bollinger_zone(
     }
 
 
+def bb_mean_reversion_index_gate(
+    kind: str,
+    *,
+    spot: float,
+    lower: float,
+    middle: float,
+    upper: float,
+) -> Optional[str]:
+    """
+    Block mean-reversion entries that fight index placement.
+
+    CE: only when Nifty is not extended at the upper band / above middle.
+    PE: only when Nifty is not extended at the lower band / below middle.
+    """
+    if spot <= 0:
+        return None
+    k = (kind or "CE").upper()
+    bb = bollinger_zone(float(spot), float(middle), float(upper), float(lower), k)
+    if k == "CE":
+        if bb["extended"] or bb["zone"] == "upper":
+            return (
+                f"CE blocked: Nifty at upper BB ({upper:.0f}) — "
+                "wait for index pullback to lower/middle"
+            )
+    else:
+        if bb["extended"] or bb["zone"] == "lower":
+            return (
+                f"PE blocked: Nifty at lower BB ({lower:.0f}) — "
+                "wait for index rally to upper/middle"
+            )
+    return None
+
+
+def bb_index_preferred_override(
+    kind: str,
+    *,
+    spot: float,
+    lower: float,
+    middle: float,
+    upper: float,
+) -> Optional[str]:
+    """When index is at the mean-reversion band, allow entry even if contract BB differs."""
+    if spot <= 0:
+        return None
+    k = (kind or "CE").upper()
+    bb = bollinger_zone(float(spot), float(middle), float(upper), float(lower), k)
+    if k == "PE" and bb["zone"] == "upper":
+        return "index_upper_pe"
+    if k == "CE" and bb["zone"] == "lower":
+        return "index_lower_ce"
+    return None
+
+
+def bb_auto_option_kind(
+    spot: float,
+    lower: float,
+    middle: float,
+    upper: float,
+    *,
+    prev_close: float = 0.0,
+) -> str:
+    """Pick CE/PE from index BB zone; fallback to prior-close bias."""
+    if spot > 0 and lower and middle and upper:
+        zone = bollinger_zone(
+            float(spot), float(middle), float(upper), float(lower), "CE"
+        )["zone"]
+        if zone == "upper":
+            return "PE"
+        if zone == "lower":
+            return "CE"
+    if prev_close > 0 and spot > 0:
+        return "CE" if spot >= prev_close else "PE"
+    return "CE"
+
+
+def bb_session_bias_gate(
+    kind: str,
+    *,
+    spot: float,
+    prev_close: float,
+    contract_zone: str,
+) -> Optional[str]:
+    """
+    On bullish days (spot > prev close), only allow CE at contract lower band.
+    On bearish days, only allow PE at contract upper band.
+    """
+    if prev_close <= 0 or spot <= 0:
+        return None
+    zone = (contract_zone or "").lower()
+    k = (kind or "CE").upper()
+    if k == "CE" and float(spot) > float(prev_close) and zone != "lower":
+        return (
+            "CE blocked: spot above prior close — "
+            "only CE at contract lower band on bullish sessions"
+        )
+    if k == "PE" and float(spot) < float(prev_close) and zone != "upper":
+        return (
+            "PE blocked: spot below prior close — "
+            "only PE at contract upper band on bearish sessions"
+        )
+    return None
+
+
 @dataclass
 class CandleBar:
     start: datetime

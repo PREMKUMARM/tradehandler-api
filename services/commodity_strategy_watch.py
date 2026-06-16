@@ -359,6 +359,10 @@ class CommodityStrategyWatch:
     def _reset_day_if_needed(self) -> None:
         today = _today()
         if self._session_date != today:
+            from services.gate_audit import emit_gate_audit_day_summary
+
+            if self._session_date is not None:
+                emit_gate_audit_day_summary("commodity")
             self._session_date = today
             self._signal_fired_today = False
             self._placed_today = False
@@ -941,6 +945,9 @@ class CommodityStrategyWatch:
             )
         else:
             self._persist()
+        from services.gate_audit import emit_gate_audit_day_summary
+
+        emit_gate_audit_day_summary("commodity")
         log_info("[CommodityWatch] Disarmed")
         return self.status()
 
@@ -1501,6 +1508,18 @@ class CommodityStrategyWatch:
                 skip_msg = "; ".join(reasons[:2])
                 self._record_autonomous_skip(skip_msg, plan)
 
+        from services.gate_audit import record_gate_audit
+
+        record_gate_audit(
+            "commodity",
+            plan,
+            preview,
+            try_autonomous=try_autonomous,
+            market_open=market_open,
+            can_execute=can_execute,
+            entry_ready=entry_ready,
+        )
+
         self._persist()
         return fire_signal, try_autonomous, preview, plan, can_execute
 
@@ -1712,6 +1731,9 @@ class CommodityStrategyWatch:
                         self._placed_count_today += 1
                         self._placed_today = True
                         self._placed_symbol_today = sym
+                        from services.gate_audit import record_gate_audit_placed
+
+                        record_gate_audit_placed("commodity", sym or "—")
                         if sym:
                             up = sym.upper()
                             if up not in self._placed_symbols_today:
