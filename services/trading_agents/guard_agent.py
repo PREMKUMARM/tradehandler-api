@@ -69,6 +69,9 @@ def entry_quality_for_autonomous(
     fair = float(plan.get("entry_fair_premium") or limit_px)
     if limit_px <= 0:
         return False, "Invalid entry limit price"
+    ltp = float(plan.get("entry_premium") or (plan.get("indicators") or {}).get("option_ltp") or 0)
+    if ltp >= 2.0 and limit_px < max(1.0, ltp * 0.5):
+        return False, f"Limit ₹{limit_px:.2f} too far below LTP ₹{ltp:.2f} for autonomous entry"
     if fair > 0 and limit_px > fair * 1.025:
         return False, f"Limit ₹{limit_px} chases above fair ₹{fair:.2f} — no autonomous chase"
     ind = plan.get("indicators") or {}

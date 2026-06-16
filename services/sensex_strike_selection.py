@@ -99,8 +99,11 @@ def _offset_step_distance(offset: str) -> int:
     return 99
 
 
-def _near_atm_strike_ok(strike: int, atm: int) -> bool:
-    return abs(int(strike) - int(atm)) <= sensex_atm_near_strike_points()
+def _strike_near_atm(strike: int, atm: int, max_dist: Optional[int] = None) -> bool:
+    if strike <= 0 or atm <= 0:
+        return False
+    limit = max_dist if max_dist is not None else sensex_premium_band_scan_points()
+    return abs(int(strike) - int(atm)) <= int(limit)
 
 
 def _pick_best_near_atm(pool: List[StrikeCandidate]) -> Optional[StrikeCandidate]:
@@ -438,6 +441,7 @@ def resolve_sensex_strike_for_plan(
         if (
             row
             and _valid_otm_side(kind, int(anchor_strike), atm)
+            and _strike_near_atm(int(anchor_strike), atm)
             and _in_band(ltp, band_low, band_high)
             and float(row.get("spread_pct") or 0) <= MAX_SPREAD_PCT
         ):
@@ -485,21 +489,23 @@ def resolve_sensex_strike_for_plan(
         available = _available_strikes(chain, kind)
         if available:
             target = _strike_from_moneyness_label(moneyness, kind, spot, available)
-            row = _chain_row_for_strike(chain, kind, target)
-            return ResolvedSensexStrike(
-                strike=int(target),
-                kind=kind,
-                symbol=(row or {}).get("symbol"),
-                ltp=float((row or {}).get("ltp") or 0),
-                moneyness=moneyness,
-                offset=moneyness,
-                oi=float((row or {}).get("oi") or 0),
-                source="moneyness",
-                reason=f"{sid}: {moneyness} strike mapped on live chain",
-            )
+            if _strike_near_atm(target, atm):
+                row = _chain_row_for_strike(chain, kind, target)
+                return ResolvedSensexStrike(
+                    strike=int(target),
+                    kind=kind,
+                    symbol=(row or {}).get("symbol"),
+                    ltp=float((row or {}).get("ltp") or 0),
+                    moneyness=moneyness,
+                    offset=moneyness,
+                    oi=float((row or {}).get("oi") or 0),
+                    source="moneyness",
+                    reason=f"{sid}: {moneyness} strike mapped on live chain",
+                )
 
+    atm_fallback = atm
     return ResolvedSensexStrike(
-        strike=atm,
+        strike=atm_fallback,
         kind=kind,
         symbol=None,
         ltp=float(((chain.get("atm_ce") if kind == "CE" else chain.get("atm_pe")) or {}).get("ltp") or 0),

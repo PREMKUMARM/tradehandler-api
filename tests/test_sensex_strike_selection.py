@@ -103,3 +103,18 @@ def test_resolve_pe_smart_pick():
     )
     assert resolved.kind == "PE"
     assert resolved.strike == 81300
+
+
+def test_resolve_rejects_far_anchor_strike():
+    chain = _sample_chain(atm=23900)
+    resolved = resolve_sensex_strike_for_plan(
+        spot=23900.0,
+        option_kind="CE",
+        chain_oi=chain,
+        strategy_id="20rupees_strategy",
+        anchor_strike=67600,
+        band_low=17.0,
+        band_high=23.0,
+    )
+    assert resolved.strike != 67600
+    assert abs(resolved.strike - 23900) <= 1000

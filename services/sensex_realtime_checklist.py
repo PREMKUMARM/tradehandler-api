@@ -180,17 +180,21 @@ def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, 
     oi_block = enrich_chain_with_oi_buildup(kite, spot, universe)
     atm = int(oi_block.get("atm") or round(spot / 100) * 100)
     expiry = oi_block.get("expiry")
+    from services.sensex_option_chain import _expiry_key, _same_expiry
+
     if not expiry:
-        expiries = sorted({u["expiry"] for u in universe if u.get("expiry")})
+        expiries = sorted(
+            {e for e in (_expiry_key(u.get("expiry")) for u in universe if u.get("expiry")) if e}
+        )
         if not expiries:
             return oi_block
         expiry_key = expiries[0]
-        expiry = expiry_key.isoformat() if hasattr(expiry_key, "isoformat") else str(expiry_key)
+        expiry = expiry_key.isoformat()
 
     rows = [
         u
         for u in universe
-        if (u.get("expiry").isoformat() if hasattr(u.get("expiry"), "isoformat") else str(u.get("expiry"))) == str(expiry)
+        if _same_expiry(u.get("expiry"), expiry)
         and abs(int(u.get("strike") or 0) - atm) <= max(500, sensex_premium_band_scan_points() // 2)
     ]
     keys = [f"BFO:{r['tradingsymbol']}" for r in rows if r.get("tradingsymbol")]

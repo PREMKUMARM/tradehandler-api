@@ -11,7 +11,11 @@ from services.push.option_contract_resolver import (
     estimate_delta_from_spot,
     fetch_option_ltp,
 )
-from services.sensex_option_chain import build_sensex_options_universe, resolve_sensex_contract
+from services.sensex_option_chain import (
+    build_sensex_options_universe,
+    resolve_sensex_contract,
+    resolve_sensex_contract_by_symbol,
+)
 from services.sensex_live_indicators import get_sensex_bundle_for_v2, get_vix_snapshot, recalculate_from_ticker
 from services.sensex_constants import SENSEX_BFO_PRODUCT
 from services.sensex_entry_pricing import EntryAnalysis, compute_strategy_entry
@@ -246,10 +250,6 @@ def build_indicator_trade_plan(
         if prem > 0:
             intra["contract_ltp"] = prem
             intra["option_ltp"] = prem
-    if strategy_analysis:
-        cand_entry = float(sel.get("spot_entry") or nifty_spot)
-        if cand_entry > 5000:
-            spot_entry = cand_entry
     level_note = ""
     spot_entry, spot_sl, spot_tgt, level_note = refine_spot_levels_from_candles(
         sid, spot_entry, option_kind, spot_sl, spot_tgt, intra
@@ -262,6 +262,7 @@ def build_indicator_trade_plan(
     contract: Optional[OptionContract] = None
     kite = get_kite_instance()
     chain_oi: Dict[str, Any] = {}
+    universe: List[Dict[str, Any]] = []
     try:
         from services.sensex_realtime_checklist import _chain_live
 
@@ -270,6 +271,10 @@ def build_indicator_trade_plan(
             chain_oi = _chain_live(kite, nifty_spot, universe)
     except Exception:
         pass
+
+    sym_hint = str(sel.get("tradingsymbol") or "").strip() if strategy_analysis else ""
+    if sym_hint:
+        contract = resolve_sensex_contract_by_symbol(kite, sym_hint, universe=universe or None)
 
     resolved = resolve_sensex_strike_for_plan(
         spot=nifty_spot,
@@ -291,9 +296,18 @@ def build_indicator_trade_plan(
     pick_strike = int(resolved.strike)
     if resolved.reason:
         messages.append(f"Strike: {resolved.reason}")
-    contract = resolve_sensex_contract(kite, strike=pick_strike, kind=option_kind)
+    if contract is None:
+        contract = resolve_sensex_contract(kite, strike=pick_strike, kind=option_kind, universe=universe or None)
     if contract is None:
         return None, ["Could not resolve Sensex BFO option contract for live strike"]
+
+    atm_ref = int(round(nifty_spot / 100) * 100)
+    from services.sensex_strike_selection import _strike_near_atm
+
+    if not _strike_near_atm(contract.strike, atm_ref):
+        return None, [
+            f"Strike {contract.strike} too far from live ATM {atm_ref} — refresh chain and retry"
+        ]
 
     quote = live_option_quote(contract.tradingsymbol)
     entry_prem = quote["ltp"] or fetch_option_ltp(contract)
@@ -361,6 +375,20 @@ def build_indicator_trade_plan(
         prev_close=float(ind.get("prev_close") or 0),
     )
     entry_limit = entry_analysis.entry_limit_price
+    entry_limit, limit_ok, limit_msg = validate_buy_limit_price(entry_limit, quote=quote)
+    if not limit_ok:
+        entry_analysis = EntryAnalysis(
+            entry_ready=False,
+            entry_limit_price=entry_limit,
+            fair_premium=entry_analysis.fair_premium,
+            entry_style="circuit_blocked",
+            spot_trigger=entry_analysis.spot_trigger,
+            confirmation_score=entry_analysis.confirmation_score,
+            notes=list(entry_analysis.notes) + ([limit_msg] if limit_msg else []),
+            block_reason=limit_msg,
+        )
+    elif limit_msg:
+        entry_analysis.notes.append(limit_msg)
     if not entry_analysis.entry_ready:
         messages.append(
             entry_analysis.block_reason or "Entry not confirmed — wait for setup"

@@ -75,7 +75,11 @@ def enrich_chain_with_oi_buildup(
         return {}
 
     atm = int(round(spot / 100) * 100)
-    expiries = sorted({u["expiry"] for u in universe if u.get("expiry")})
+    from services.sensex_option_chain import _expiry_key, _same_expiry
+
+    expiries = sorted(
+        {e for e in (_expiry_key(u.get("expiry")) for u in universe if u.get("expiry")) if e}
+    )
     if not expiries:
         return {}
     expiry = expiries[0]
@@ -83,7 +87,7 @@ def enrich_chain_with_oi_buildup(
     rows = [
         u
         for u in universe
-        if u.get("expiry") == expiry
+        if _same_expiry(u.get("expiry"), expiry)
         and abs(int(u.get("strike") or 0) - atm) <= strike_window
     ]
     quotes = _quote_rows(kite, rows)

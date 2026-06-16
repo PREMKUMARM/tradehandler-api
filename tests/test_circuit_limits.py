@@ -22,3 +22,10 @@ def test_limit_inside_band_unchanged():
     limit, ok, _ = validate_buy_limit_price(8180.0, quote=quote)
     assert ok is True
     assert limit == 8180.0
+
+
+def test_absurdly_low_limit_blocked():
+    quote = {"ltp": 120.0, "lower_circuit_limit": 0.05, "upper_circuit_limit": 500.0}
+    limit, ok, msg = validate_buy_limit_price(0.05, quote=quote)
+    assert ok is False
+    assert "LTP" in msg

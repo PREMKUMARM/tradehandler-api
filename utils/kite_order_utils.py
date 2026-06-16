@@ -82,6 +82,13 @@ def validate_buy_limit_price(
         adjusted = round_to_tick(lower)
         return adjusted, True, f"Limit raised to circuit floor ₹{adjusted:.2f}"
 
+    if ltp >= 2.0 and px < max(1.0, ltp * 0.5):
+        return (
+            px,
+            False,
+            f"Limit ₹{px:.2f} too far below LTP ₹{ltp:.2f} — wait for live quotes",
+        )
+
     return round_to_tick(px), True, ""
 
 

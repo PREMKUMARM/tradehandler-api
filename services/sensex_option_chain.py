@@ -5,6 +5,25 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from services.push.option_contract_resolver import OptionContract
+from services.sensex_constants import sensex_premium_band_scan_points
+
+
+def _expiry_key(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return date.fromisoformat(str(value).strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _same_expiry(left: Any, right: Any) -> bool:
+    a, b = _expiry_key(left), _expiry_key(right)
+    return a is not None and a == b
 
 
 def build_sensex_options_universe(kite) -> List[Dict[str, Any]]:
@@ -33,15 +52,8 @@ def _nearest_expiry(universe: List[Dict[str, Any]]) -> Optional[date]:
     today = date.today()
     expiries: List[date] = []
     for row in universe:
-        exp = row.get("expiry")
-        if isinstance(exp, datetime):
-            exp = exp.date()
-        elif isinstance(exp, str):
-            try:
-                exp = date.fromisoformat(exp[:10])
-            except ValueError:
-                continue
-        if isinstance(exp, date) and exp >= today:
+        exp = _expiry_key(row.get("expiry"))
+        if exp is not None and exp >= today:
             expiries.append(exp)
     if not expiries:
         return None
@@ -66,16 +78,9 @@ def resolve_sensex_contract(
     target_expiry = expiry or _nearest_expiry(rows)
     if target_expiry is None:
         return None
+    max_dist = sensex_premium_band_scan_points()
     for row in rows:
-        exp = row.get("expiry")
-        if isinstance(exp, datetime):
-            exp = exp.date()
-        elif isinstance(exp, str):
-            try:
-                exp = date.fromisoformat(str(exp)[:10])
-            except ValueError:
-                continue
-        if exp != target_expiry:
+        if not _same_expiry(row.get("expiry"), target_expiry):
             continue
         if int(row.get("strike") or 0) != int(strike):
             continue
@@ -97,17 +102,47 @@ def resolve_sensex_contract(
         int(r.get("strike") or 0)
         for r in rows
         if (r.get("instrument_type") or "").upper() == kind
-        and (
-            (isinstance(r.get("expiry"), date) and r.get("expiry") == target_expiry)
-            or str(r.get("expiry"))[:10] == target_expiry.isoformat()
-        )
+        and _same_expiry(r.get("expiry"), target_expiry)
     ]
     if not same_kind:
         return None
     nearest = min(same_kind, key=lambda s: abs(s - int(strike)))
+    if abs(nearest - int(strike)) > max_dist:
+        return None
     return resolve_sensex_contract(
         kite, strike=nearest, kind=kind, expiry=target_expiry, universe=rows
     )
+
+
+def resolve_sensex_contract_by_symbol(
+    kite,
+    tradingsymbol: str,
+    *,
+    universe: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[OptionContract]:
+    """Resolve BFO contract from tradingsymbol (preferred when strategy already picked strike)."""
+    sym = (tradingsymbol or "").strip().upper()
+    if not sym:
+        return None
+    rows = universe if universe is not None else build_sensex_options_universe(kite)
+    for row in rows:
+        if str(row.get("tradingsymbol") or "").upper() != sym:
+            continue
+        exp = _expiry_key(row.get("expiry"))
+        kind = (row.get("instrument_type") or "").upper()
+        tok = int(row.get("instrument_token") or 0)
+        strike = int(row.get("strike") or 0)
+        if not exp or kind not in ("CE", "PE") or tok <= 0 or strike <= 0:
+            continue
+        return OptionContract(
+            tradingsymbol=sym,
+            exchange="BFO",
+            instrument_token=tok,
+            strike=strike,
+            expiry=exp,
+            instrument_type=kind,
+        )
+    return None
 
 
 def sensex_index_token(kite) -> int:

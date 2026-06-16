@@ -925,7 +925,7 @@ class V2StrategyWatch:
                 can_execute=bool(self._last_can_execute),
                 autonomous_eligible=bool(setup.get("autonomous_eligible")),
                 kill_switch_active=self._kill_switch_active(),
-                market_open=bool(self._last_market_open),
+                market_open=sensex_trade_service.is_market_session_open(),
                 paper_trading_mode=bool(self._last_paper_mode),
                 kite_connected=is_kite_broker_connected() or bool(self._last_kite_connected),
                 guard_message=self._last_autonomous_block_reason,

@@ -706,12 +706,28 @@ def get_strategy_analysis(
     run_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Standalone strategy analysis for wizard step 4 (uses steps 1–3 context)."""
+    from services.sensex_live_indicators import recalculate_from_ticker
+    from services.sensex_option_chain import build_sensex_options_universe
+    from services.sensex_realtime_checklist import _chain_live
+
     _, margin, _ = _check_kite_and_margin()
     rp = _resolve_run_params(run_params, direction=direction)
     capital = _resolve_sensex_capital(margin, rp)
+    chain: Dict[str, Any] = {}
+    try:
+        live = recalculate_from_ticker()
+        spot = float(live.get("nifty_spot") or 0)
+        if spot > 0:
+            kite = get_kite_instance()
+            universe = build_sensex_options_universe(kite)
+            if universe:
+                chain = _chain_live(kite, spot, universe)
+    except Exception:
+        pass
     return analyze_fno_strategies(
         direction_pref=rp.direction,
         margin=capital,
+        chain_oi=chain,
         run_params=rp,
     )
 
