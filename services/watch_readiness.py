@@ -33,10 +33,13 @@ def _trade_plan_preview(plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not plan or not plan.get("tradingsymbol"):
         return None
     ind = plan.get("indicators") or {}
+    option_ltp = ind.get("option_ltp") or plan.get("entry_premium")
     return {
         "tradingsymbol": plan.get("tradingsymbol"),
         "strategy_name": plan.get("strategy_name"),
         "entry_limit_price": plan.get("entry_limit_price") or plan.get("entry_premium"),
+        "entry_premium": plan.get("entry_premium"),
+        "option_ltp": option_ltp,
         "stop_loss_premium": plan.get("stop_loss_premium"),
         "target_premium": plan.get("target_premium"),
         "spot_stop_loss": plan.get("spot_stop_loss"),

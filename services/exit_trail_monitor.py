@@ -25,6 +25,7 @@ from services.exit_trail_store import (
 from services.momentum_trail import (
     compute_trailed_levels,
     get_momentum_trail_config,
+    gtt_tp_cap_for_trail,
     gtt_triggers_for_levels,
     levels_changed_enough,
 )
@@ -38,7 +39,7 @@ from services.trail_ops import (
     resolve_trail_config,
 )
 from services.watch_reconcile import gtt_exists_on_broker
-from utils.logger import log_error, log_info, log_warning_throttled
+from utils.logger import log_error, log_info, log_warning, log_warning_throttled
 
 
 class ExitTrailMonitor:
@@ -172,7 +173,9 @@ class ExitTrailMonitor:
 
             activating = ready and not trail_active
             if activating and not bool(t.get("partial_exit_done")):
-                pq = partial_exit_qty(qty, cfg)
+                init_qty = int(t.get("initial_quantity") or qty)
+                lot_sz = int(t.get("lot_size") or (init_qty if init_qty == qty else 0))
+                pq = partial_exit_qty(qty, cfg, lot_size=lot_sz)
                 if pq > 0:
                     ok = (
                         execute_paper_partial_exit(t, pq, ltp)
@@ -228,7 +231,9 @@ class ExitTrailMonitor:
                 if paper_oid:
                     sync_paper_order_levels(paper_oid, new_sl, new_tp)
             elif gtt_id:
-                ok = self._sync_live_gtt(t, gtt_id, new_sl, new_tp, ltp, qty_override=qty)
+                init_tgt = float(t.get("initial_target") or activation_target or tp)
+                broker_tp = gtt_tp_cap_for_trail(entry, init_tgt)
+                ok = self._sync_live_gtt(t, gtt_id, new_sl, broker_tp, ltp, qty_override=qty)
                 if not ok:
                     fails = increment_gtt_sync_fail(tid)
                     log_warning(

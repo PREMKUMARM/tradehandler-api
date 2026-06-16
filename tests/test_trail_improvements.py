@@ -21,6 +21,8 @@ def test_breakeven_uses_pct_and_r_fraction():
 def test_partial_exit_qty_respects_single_lot():
     cfg = get_momentum_trail_config()
     assert partial_exit_qty(1, cfg) == 0
+    assert partial_exit_qty(65, cfg, lot_size=65) == 0
+    assert partial_exit_qty(130, cfg, lot_size=65) == 65
     assert partial_exit_qty(10, cfg) >= 1
     assert partial_exit_qty(10, cfg) <= 9
 

@@ -199,9 +199,22 @@ def check_time_stop(
     return None
 
 
-def partial_exit_qty(total_qty: int, cfg: MomentumTrailConfig) -> int:
+def partial_exit_qty(
+    total_qty: int, cfg: MomentumTrailConfig, *, lot_size: int = 0
+) -> int:
+    """Return partial sell qty; 0 when single lot or qty not lot-aligned."""
     if not cfg.partial_exit_enabled or total_qty <= 1:
         return 0
+    ls = max(0, int(lot_size or 0))
+    if ls > 0:
+        if total_qty <= ls:
+            return 0
+        lots = total_qty // ls
+        if lots <= 1:
+            return 0
+        pct = max(0.1, min(0.7, cfg.partial_exit_pct))
+        partial_lots = max(1, min(lots - 1, int(round(lots * pct))))
+        return partial_lots * ls
     pct = max(0.1, min(0.7, cfg.partial_exit_pct))
     raw = int(round(total_qty * pct))
     return max(1, min(total_qty - 1, raw))

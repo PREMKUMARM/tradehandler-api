@@ -14,6 +14,9 @@ def _gtt_ids_on_broker() -> Set[str]:
         for g in gtts:
             if not isinstance(g, dict):
                 continue
+            st = str(g.get("status") or "").lower()
+            if st in ("triggered", "disabled", "cancelled", "expired", "deleted"):
+                continue
             tid = g.get("id") or g.get("trigger_id")
             if tid is not None:
                 out.add(str(tid))
