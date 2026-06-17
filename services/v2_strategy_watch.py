@@ -201,6 +201,10 @@ class V2StrategyWatch:
         self._trade_plans_by_symbol: Dict[str, Dict[str, Any]] = {}
         self._last_orphan_gtt_reconcile_at: Optional[datetime] = None
         self._last_stale_abort_at: Optional[datetime] = None
+        self._reentry_armed = True
+        self._last_trade_at: Optional[datetime] = None
+        self._last_trade_kind: Optional[str] = None
+        self._direction_flips_today = 0
         self._last_autonomous_block_reason: Optional[str] = None
         self._last_skip_logged_msg: Optional[str] = None
         self._last_skip_logged_at: Optional[datetime] = None
@@ -257,6 +261,15 @@ class V2StrategyWatch:
             self._pending_symbol = data.get("pending_symbol")
             self._signal_fired_today = bool(data.get("signal_fired_today"))
             self._eval_count = int(data.get("eval_count") or 0)
+            self._reentry_armed = bool(data.get("reentry_armed", True))
+            self._last_trade_kind = data.get("last_trade_kind")
+            lta = data.get("last_trade_at")
+            if lta:
+                try:
+                    self._last_trade_at = datetime.fromisoformat(str(lta))
+                except Exception:
+                    self._last_trade_at = None
+            self._direction_flips_today = int(data.get("direction_flips_today") or 0)
             ler = data.get("last_entry_ready")
             self._last_entry_ready = ler if ler is None else bool(ler)
             lcr = data.get("last_checklist_ready")
@@ -288,6 +301,12 @@ class V2StrategyWatch:
                 "eval_count": self._eval_count,
                 "last_entry_ready": self._last_entry_ready,
                 "last_checklist_ready": self._last_checklist_ready,
+                "reentry_armed": self._reentry_armed,
+                "last_trade_at": (
+                    self._last_trade_at.isoformat() if self._last_trade_at else None
+                ),
+                "last_trade_kind": self._last_trade_kind,
+                "direction_flips_today": self._direction_flips_today,
             }
         _write_persisted(data)
 
@@ -326,6 +345,74 @@ class V2StrategyWatch:
             self._last_entry_ready = None
             self._last_checklist_ready = None
             self._eval_count = 0
+            self._reentry_armed = True
+            self._last_trade_at = None
+            self._last_trade_kind = None
+            self._direction_flips_today = 0
+
+    def _reentry_cooldown_sec(self) -> float:
+        try:
+            return max(0.0, float(os.getenv("V2_WATCH_REENTRY_COOLDOWN_SEC", "180") or 180))
+        except (TypeError, ValueError):
+            return 180.0
+
+    def _max_direction_flips_per_day(self) -> int:
+        try:
+            return max(0, int(os.getenv("V2_WATCH_MAX_DIRECTION_FLIPS", "2") or 2))
+        except (TypeError, ValueError):
+            return 2
+
+    def _maybe_rearm_reentry(self, entry_ready: bool) -> None:
+        with _lock:
+            if self._reentry_armed:
+                return
+            if not self._last_trade_at:
+                self._reentry_armed = True
+                return
+            prev = self._last_entry_ready
+            if entry_ready and prev is False:
+                self._reentry_armed = True
+                return
+            age = (datetime.now(IST) - self._last_trade_at.astimezone(IST)).total_seconds()
+            if age >= self._reentry_cooldown_sec():
+                self._reentry_armed = True
+
+    def _seconds_since_last_trade(self) -> Optional[float]:
+        with _lock:
+            if not self._last_trade_at:
+                return None
+            return (datetime.now(IST) - self._last_trade_at.astimezone(IST)).total_seconds()
+
+    def _autonomous_entry_allowed(self, entry_ready: bool) -> tuple[bool, str]:
+        self._maybe_rearm_reentry(entry_ready)
+        if not entry_ready:
+            with _lock:
+                self._reentry_armed = True
+            return False, "Entry not confirmed (entry_ready=false)"
+        with _lock:
+            if not self._reentry_armed:
+                cd = int(self._reentry_cooldown_sec())
+                return False, f"Re-entry cooldown — wait {cd}s after last trade or until setup resets"
+            max_flips = self._max_direction_flips_per_day()
+            if max_flips > 0 and self._direction_flips_today >= max_flips:
+                return (
+                    False,
+                    f"Direction flip limit reached ({self._direction_flips_today}/{max_flips} CE↔PE today)",
+                )
+        return True, ""
+
+    def _mark_post_trade_cooldown(self) -> None:
+        with _lock:
+            self._last_trade_at = datetime.now(IST)
+            self._reentry_armed = False
+
+    def _record_autonomous_trade(self, plan: Dict[str, Any]) -> None:
+        kind = str(plan.get("option_type") or "CE").upper()
+        with _lock:
+            if self._last_trade_kind and kind != self._last_trade_kind:
+                self._direction_flips_today += 1
+            self._last_trade_kind = kind
+        self._mark_post_trade_cooldown()
 
     def _max_trades_per_day(self) -> int:
         """Per-day autonomous cap — higher in paper mode for practice runs."""
@@ -594,6 +681,8 @@ class V2StrategyWatch:
             )
             with _lock:
                 self._last_stale_abort_at = datetime.now(IST)
+            if plan:
+                self._mark_post_trade_cooldown()
         finally:
             with _lock:
                 self._gtt_attach_in_progress = False
@@ -1219,16 +1308,24 @@ class V2StrategyWatch:
             ):
                 from services.v2_order_guard import autonomous_place_allowed
 
+                reentry_ok, reentry_msg = self._autonomous_entry_allowed(entry_ready)
+                with _lock:
+                    last_kind = self._last_trade_kind
+                secs = self._seconds_since_last_trade()
                 allowed, guard_msg = autonomous_place_allowed(
                     plan,
                     placed_today=self._placed_count_today >= self._max_trades_per_day(),
                     segment="nifty50",
+                    last_trade_kind=last_kind,
+                    seconds_since_last_trade=secs,
                 )
-                if allowed:
+                if allowed and reentry_ok:
                     self._last_autonomous_block_reason = None
                     try_autonomous = True
                 else:
-                    self._record_autonomous_skip(guard_msg, plan)
+                    self._record_autonomous_skip(
+                        reentry_msg if not reentry_ok else guard_msg, plan
+                    )
             elif autonomous_armed and checklist_ready and not entry_ready:
                 reason = plan.get("entry_block_reason") or "Entry not confirmed (entry_ready=false)"
                 self._record_autonomous_skip(reason, plan)
@@ -1341,15 +1438,19 @@ class V2StrategyWatch:
                 if not self._should_autonomous_place(cfg):
                     return
 
-                with _lock:
-                    last_abort = self._last_stale_abort_at
-                if last_abort:
-                    try:
-                        cooldown = float(os.getenv("V2_WATCH_REENTRY_COOLDOWN_SEC", "120") or 120)
-                        if cooldown > 0 and (datetime.now(IST) - last_abort.astimezone(IST)).total_seconds() < cooldown:
-                            return
-                    except Exception:
-                        pass
+                reentry_ok, reentry_msg = self._autonomous_entry_allowed(
+                    plan.get("entry_ready") is True
+                )
+                if not reentry_ok:
+                    self._push_event(
+                        WatchEvent(
+                            at=datetime.now(IST).isoformat(),
+                            kind="auto_skipped",
+                            message=reentry_msg[:240],
+                            tradingsymbol=plan.get("tradingsymbol"),
+                        )
+                    )
+                    return
 
                 from services.v2_order_guard import autonomous_place_allowed
 
@@ -1432,6 +1533,7 @@ class V2StrategyWatch:
                 sym = plan.get("tradingsymbol") or sym
 
                 if entry_submitted or placed:
+                    self._record_autonomous_trade(plan)
                     entry_limit = float(plan.get("entry_limit_price") or entry_px or 0)
                     fair = float(plan.get("entry_fair_premium") or entry_limit or 0)
                     sl_prem = float(plan.get("stop_loss_premium") or 0)

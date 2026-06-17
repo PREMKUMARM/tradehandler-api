@@ -503,6 +503,23 @@ def _analyze_bb_5m(
             notes.append(index_block)
             return False, float(idx_mid), 28, notes, index_block, "bb5m_index_block"
 
+        from services.nifty_regime_guard import nifty_intraday_regime_block
+
+        regime_block = nifty_intraday_regime_block(
+            kind,
+            spot=float(idx_spot or spot),
+            prev_close=float(intra.get("prev_close") or 0),
+            day_low=float(intra.get("day_low") or idx_spot or spot),
+            day_high=float(intra.get("day_high") or idx_spot or spot),
+            index_bb_lower=idx_lo,
+            index_bb_middle=idx_mid,
+            index_bb_upper=idx_hi,
+            contract_zone=None,
+        )
+        if regime_block:
+            notes.append(regime_block)
+            return False, float(idx_mid), 28, notes, regime_block, "bb5m_regime_block"
+
     px = contract_price_for_bb(spot, intra)
     bb = bollinger_zone(px, float(mid), float(upper), float(lower), kind)
     zone = bb["zone"]
@@ -518,6 +535,22 @@ def _analyze_bb_5m(
     )
 
     if index_override:
+        from services.nifty_regime_guard import nifty_intraday_regime_block
+
+        regime_block = nifty_intraday_regime_block(
+            kind,
+            spot=float(idx_spot or spot),
+            prev_close=float(intra.get("prev_close") or 0),
+            day_low=float(intra.get("day_low") or idx_spot or spot),
+            day_high=float(intra.get("day_high") or idx_spot or spot),
+            index_bb_lower=idx_lo,
+            index_bb_middle=idx_mid,
+            index_bb_upper=idx_hi,
+            contract_zone=zone,
+        )
+        if regime_block:
+            notes.append(regime_block)
+            return False, float(bb["trigger"]), 28, notes, regime_block, "bb5m_regime_block"
         trigger = float(idx_hi if kind == "PE" else idx_lo)
         notes.append(f"Index BB override — {index_override}")
         return True, trigger, 88, notes, None, f"bb5m_{index_override}"

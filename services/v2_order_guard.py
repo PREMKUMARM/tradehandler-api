@@ -1,7 +1,7 @@
 """Duplicate-order and entry-quality guards for Nifty V2 autonomous place."""
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from services.trading_agents.guard_agent import (
     NIFTY_GUARD,
@@ -38,7 +38,23 @@ def autonomous_place_allowed(
     *,
     placed_today: bool,
     segment: str = "nifty50",
+    last_trade_kind: Optional[str] = None,
+    seconds_since_last_trade: Optional[float] = None,
 ) -> Tuple[bool, str]:
-    return _autonomous_place_allowed(
+    ok, msg = _autonomous_place_allowed(
         plan, config=NIFTY_GUARD, placed_today=placed_today
     )
+    if not ok:
+        return ok, msg
+    from services.nifty_regime_guard import (
+        nifty_autonomous_regime_allowed,
+        opposite_direction_blocked,
+    )
+
+    kind = str(plan.get("option_type") or "CE")
+    flip = opposite_direction_blocked(
+        kind, last_trade_kind, seconds_since_last=seconds_since_last_trade
+    )
+    if flip:
+        return False, flip
+    return nifty_autonomous_regime_allowed(plan)

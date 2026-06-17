@@ -4,6 +4,7 @@ Entry: LIMIT at live premium. Exit control: GTT OCO only (no MARKET exit).
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.push.option_contract_resolver import (
@@ -502,6 +503,11 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     risk_pct = float(ind_meta.get("risk_pct") or 1.0)
     lot_size = int(plan.get("lot_size") or 75)
     num_lots = int(plan.get("num_lots") or 1)
+    try:
+        max_auto_lots = max(1, int(os.getenv("V2_AUTO_MAX_LOTS", "5") or 5))
+        num_lots = min(num_lots, max_auto_lots)
+    except (TypeError, ValueError):
+        pass
     if capital > 0:
         qty_lots, quantity, risk_inr = size_from_risk(
             capital,
