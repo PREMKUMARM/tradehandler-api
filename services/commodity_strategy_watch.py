@@ -1214,23 +1214,11 @@ class CommodityStrategyWatch:
                 except Exception:
                     pass
             status = self._order_status(oid)
-            if invalid:
-                if is_open_order_status(status):
-                    self._cancel_pending(reason=why, entry_order_id=oid)
-                    continue
-                if is_filled_order_status(status):
-                    disarm = self._should_disarm_watch()
-                    await self._abort_stale_fill(
-                        entry_id=oid,
-                        plan=trade_plan,
-                        sym=sym,
-                        reason=why,
-                        disarm=disarm,
-                    )
-                    with _lock:
-                        remove_pending_entry(self._pending_entries, oid)
-                        self._sync_legacy_pending()
-                    continue
+            if is_filled_order_status(status):
+                invalid = False
+            if invalid and is_open_order_status(status):
+                self._cancel_pending(reason=why, entry_order_id=oid)
+                continue
 
             try:
                 timeout_sec = float(

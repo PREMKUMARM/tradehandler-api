@@ -59,6 +59,24 @@ def _symbol_drift_min_strike_steps() -> int:
         return 2
 
 
+def _trigger_is_premium_scale(spot: float, trigger: float, ltp: float) -> bool:
+    """BB / contract triggers are option premium, not underlying."""
+    if trigger <= 0:
+        return False
+    if spot > 0 and trigger < spot * 0.25:
+        return True
+    if ltp > 0 and trigger <= max(ltp * 3.0, 500.0):
+        return True
+    return False
+
+
+def _spot_trigger_buffer() -> float:
+    try:
+        return max(0.0, float(os.getenv("INVALIDATION_SPOT_TRIGGER_BUFFER", "8") or 8))
+    except (TypeError, ValueError):
+        return 8.0
+
+
 def _index_spot_level(level: float, index_spot: float) -> bool:
     """True when level is on index/underlying scale (not option premium)."""
     if level <= 0 or index_spot <= 0:
@@ -193,17 +211,32 @@ def pending_entry_invalidated(
                 )
 
     trig = _float(pending.get("entry_spot_trigger"))
-    if trig is not None:
-        if kind == "PE" and spot >= trig:
-            return (
-                True,
-                f"Breakdown invalid — spot {spot:.0f} reclaimed entry trigger {trig:.0f}",
-            )
-        if kind == "CE" and spot <= trig:
-            return (
-                True,
-                f"Breakout invalid — spot {spot:.0f} below entry trigger {trig:.0f}",
-            )
+    if trig is not None and spot is not None:
+        prem_ltp = _float(ind_pending.get("option_ltp") or pending.get("entry_premium"))
+        if prem_ltp is not None and not _index_spot_level(trig, spot):
+            tick_buf = 0.05
+            if kind == "PE" and prem_ltp >= trig + tick_buf:
+                return (
+                    True,
+                    f"Premium {prem_ltp:.2f} above entry trigger {trig:.2f} — setup reset",
+                )
+            if kind == "CE" and prem_ltp <= trig - tick_buf:
+                return (
+                    True,
+                    f"Premium {prem_ltp:.2f} below entry trigger {trig:.2f} — setup reset",
+                )
+        elif _index_spot_level(trig, spot):
+            buf = _spot_trigger_buffer()
+            if kind == "PE" and spot >= trig + buf:
+                return (
+                    True,
+                    f"Breakdown invalid — spot {spot:.0f} reclaimed entry trigger {trig:.0f}",
+                )
+            if kind == "CE" and spot <= trig - buf:
+                return (
+                    True,
+                    f"Breakout invalid — spot {spot:.0f} below entry trigger {trig:.0f}",
+                )
 
     if "pdh" in strategy_id or "pdl" in strategy_id or "pdh" in strat_name or "pdl" in strat_name:
         if kind == "PE":

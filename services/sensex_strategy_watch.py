@@ -996,28 +996,13 @@ class V2StrategyWatch:
                     elif not session_open:
                         self._cancel_pending(reason="Market session closed")
                     else:
-                        invalid, why = self._setup_invalidated(plan)
                         status = self._order_status(self._pending_entry_order_id)
-                        if invalid:
-                            if is_open_order_status(status):
-                                self._cancel_pending(reason=why)
-                            elif is_filled_order_status(status):
-                                with _lock:
-                                    entry_id = self._pending_entry_order_id
-                                    stale_plan = (
-                                        copy.deepcopy(self._pending_trade_plan)
-                                        if self._pending_trade_plan
-                                        else None
-                                    )
-                                    stale_sym = self._pending_symbol
-                                    disarm = self._cfg.disarm_after_place
-                                await self._abort_stale_fill(
-                                    entry_id=entry_id,
-                                    plan=stale_plan,
-                                    sym=stale_sym,
-                                    reason=why,
-                                    disarm=disarm,
-                                )
+                        if is_filled_order_status(status):
+                            invalid, why = False, ""
+                        else:
+                            invalid, why = self._setup_invalidated(plan)
+                        if invalid and is_open_order_status(status):
+                            self._cancel_pending(reason=why)
                         if self._pending_entry_order_id:
                             try:
                                 timeout_sec = float(os.getenv("SENSEX_WATCH_ENTRY_TIMEOUT_SEC", "600") or 600)

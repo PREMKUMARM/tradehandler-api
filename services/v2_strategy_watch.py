@@ -198,6 +198,9 @@ class V2StrategyWatch:
         self._place_lock: Optional[asyncio.Lock] = None
         self._placing = False
         self._gtt_attach_in_progress = False
+        self._trade_plans_by_symbol: Dict[str, Dict[str, Any]] = {}
+        self._last_orphan_gtt_reconcile_at: Optional[datetime] = None
+        self._last_stale_abort_at: Optional[datetime] = None
         self._last_autonomous_block_reason: Optional[str] = None
         self._last_skip_logged_msg: Optional[str] = None
         self._last_skip_logged_at: Optional[datetime] = None
@@ -548,6 +551,22 @@ class V2StrategyWatch:
             elif exit_err:
                 detail = f"exit failed — {exit_err[:120]}"
                 kind = "auto_stale_abort_failed"
+                if plan and sym and entry_id:
+                    try:
+                        gtt_result = await asyncio.to_thread(
+                            v2_trade_service.place_gtt_for_plan,
+                            plan,
+                            fill_price=fill_px,
+                            entry_order_id=entry_id,
+                        )
+                        gtt_id = gtt_result.get("gtt_trigger_id")
+                        if gtt_id:
+                            detail = f"exit failed — attached protective GTT {gtt_id}"
+                            kind = "auto_stale_abort_gtt"
+                            with _lock:
+                                self._trade_plans_by_symbol[sym.upper()] = copy.deepcopy(plan)
+                    except Exception as gtt_exc:
+                        detail = f"exit failed — {exit_err[:80]} · GTT also failed: {gtt_exc}"[:120]
             else:
                 detail = "no exit placed"
                 kind = "auto_stale_abort_failed"
@@ -573,9 +592,96 @@ class V2StrategyWatch:
             log_warning(
                 f"[V2Watch] stale fill abort entry={entry_id} sym={sym} reason={reason} exit={exit_id}"
             )
+            with _lock:
+                self._last_stale_abort_at = datetime.now(IST)
         finally:
             with _lock:
                 self._gtt_attach_in_progress = False
+
+    def _nfo_symbols_with_exit_trail(self) -> Dict[str, str]:
+        try:
+            from services.exit_trail_store import list_open_exit_trails
+
+            out: Dict[str, str] = {}
+            for t in list_open_exit_trails():
+                seg = str(t.get("segment") or "").lower()
+                if seg not in ("nifty50", "v2", "nifty"):
+                    continue
+                sym = str(t.get("tradingsymbol") or "").upper()
+                if sym:
+                    out[sym] = str(t.get("gtt_trigger_id") or "").strip()
+            return out
+        except Exception:
+            return {}
+
+    def _list_nfo_long_positions(self) -> List[Dict[str, Any]]:
+        try:
+            from utils.kite_utils import get_kite_instance
+
+            kite = get_kite_instance()
+            positions = kite.positions() or {}
+            seen: set[str] = set()
+            out: List[Dict[str, Any]] = []
+            for bucket in ("net", "day"):
+                for p in positions.get(bucket) or []:
+                    if str(p.get("exchange") or "").upper() != "NFO":
+                        continue
+                    sym = str(p.get("tradingsymbol") or "").upper()
+                    qty = int(p.get("quantity") or 0)
+                    if qty <= 0 or not sym or sym in seen:
+                        continue
+                    seen.add(sym)
+                    out.append(
+                        {
+                            "tradingsymbol": sym,
+                            "quantity": qty,
+                            "average_price": float(p.get("average_price") or 0),
+                        }
+                    )
+            return out
+        except Exception:
+            return []
+
+    async def _reconcile_orphan_nfo_gtt(self) -> None:
+        """Attach GTT+trail for NFO positions missing exit protection."""
+        with _lock:
+            last = self._last_orphan_gtt_reconcile_at
+        if last and (datetime.now(IST) - last.astimezone(IST)).total_seconds() < 60:
+            return
+        with _lock:
+            self._last_orphan_gtt_reconcile_at = datetime.now(IST)
+
+        trails = self._nfo_symbols_with_exit_trail()
+        for pos in self._list_nfo_long_positions():
+            sym = str(pos.get("tradingsymbol") or "").upper()
+            if not sym or trails.get(sym):
+                continue
+            with _lock:
+                plan = self._trade_plans_by_symbol.get(sym) or (
+                    self._pending_trade_plan
+                    if (self._pending_symbol or "").upper() == sym
+                    else None
+                )
+            if not plan:
+                log_warning(
+                    f"[V2Watch] NFO position {sym} qty={pos.get('quantity')} has no GTT/trail and no cached plan"
+                )
+                continue
+            log_warning(f"[V2Watch] Orphan NFO position {sym} — attempting GTT from cached plan")
+            gtt_result = await asyncio.to_thread(
+                v2_trade_service.place_gtt_for_plan,
+                plan,
+                fill_price=float(pos.get("average_price") or 0) or None,
+            )
+            if gtt_result.get("gtt_trigger_id"):
+                log_info(
+                    f"[V2Watch] Orphan GTT attached for {sym}: {gtt_result.get('gtt_trigger_id')}"
+                )
+            else:
+                log_error(
+                    f"[V2Watch] Orphan GTT failed for {sym}: "
+                    f"{'; '.join(gtt_result.get('errors') or [])}"
+                )
 
     def _cancel_pending(self, *, reason: str, rollback_slot: bool = True) -> None:
         with _lock:
@@ -961,28 +1067,13 @@ class V2StrategyWatch:
                     elif not session_open:
                         self._cancel_pending(reason="Market session closed")
                     else:
-                        invalid, why = self._setup_invalidated(plan)
                         status = self._order_status(self._pending_entry_order_id)
-                        if invalid:
-                            if is_open_order_status(status):
-                                self._cancel_pending(reason=why)
-                            elif is_filled_order_status(status):
-                                with _lock:
-                                    entry_id = self._pending_entry_order_id
-                                    stale_plan = (
-                                        copy.deepcopy(self._pending_trade_plan)
-                                        if self._pending_trade_plan
-                                        else None
-                                    )
-                                    stale_sym = self._pending_symbol
-                                    disarm = self._cfg.disarm_after_place
-                                await self._abort_stale_fill(
-                                    entry_id=entry_id,
-                                    plan=stale_plan,
-                                    sym=stale_sym,
-                                    reason=why,
-                                    disarm=disarm,
-                                )
+                        if is_filled_order_status(status):
+                            invalid, why = False, ""
+                        else:
+                            invalid, why = self._setup_invalidated(plan)
+                        if invalid and is_open_order_status(status):
+                            self._cancel_pending(reason=why)
                         if self._pending_entry_order_id:
                             try:
                                 timeout_sec = float(os.getenv("V2_WATCH_ENTRY_TIMEOUT_SEC", "600") or 600)
@@ -1020,6 +1111,7 @@ class V2StrategyWatch:
                         await self._on_signal_ready(preview, plan, can_place, try_autonomous)
                     elif try_autonomous and preview is not None:
                         await self._try_auto_place(preview, plan)
+                    await self._reconcile_orphan_nfo_gtt()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1249,6 +1341,16 @@ class V2StrategyWatch:
                 if not self._should_autonomous_place(cfg):
                     return
 
+                with _lock:
+                    last_abort = self._last_stale_abort_at
+                if last_abort:
+                    try:
+                        cooldown = float(os.getenv("V2_WATCH_REENTRY_COOLDOWN_SEC", "120") or 120)
+                        if cooldown > 0 and (datetime.now(IST) - last_abort.astimezone(IST)).total_seconds() < cooldown:
+                            return
+                    except Exception:
+                        pass
+
                 from services.v2_order_guard import autonomous_place_allowed
 
                 allowed, guard_msg = autonomous_place_allowed(
@@ -1369,6 +1471,8 @@ class V2StrategyWatch:
                         self._placed_count_today += 1
                         self._placed_today = True
                         self._placed_symbol_today = sym
+                        if sym:
+                            self._trade_plans_by_symbol[sym.upper()] = copy.deepcopy(plan)
                         from services.gate_audit import record_gate_audit_placed
 
                         record_gate_audit_placed("nifty50", sym or "—")

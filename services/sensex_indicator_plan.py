@@ -139,8 +139,12 @@ def size_from_risk(
 ) -> Tuple[int, int, float]:
     """Return (num_lots, quantity, risk_inr) from risk rule and live premium risk."""
     prem_risk = max(0.05, entry_premium - sl_premium)
+    min_prem_risk = max(0.50, float(entry_premium) * 0.015)
+    prem_risk_for_size = max(prem_risk, min_prem_risk)
     max_risk_amt = capital * (risk_pct / 100.0)
-    max_lots = int(max_risk_amt / (prem_risk * lot_size)) if prem_risk > 0 else 1
+    max_lots = (
+        int(max_risk_amt / (prem_risk_for_size * lot_size)) if prem_risk_for_size > 0 else 1
+    )
     qty_lots = min(num_lots, max(1, max_lots))
     quantity = qty_lots * lot_size
     risk_inr = prem_risk * quantity

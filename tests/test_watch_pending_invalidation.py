@@ -137,6 +137,60 @@ def test_post_fill_skips_unrelated_live_preview():
     assert invalid is False
 
 
+def test_bb_premium_trigger_not_compared_to_nifty_spot():
+    """Contract BB trigger (~174 premium) must not invalidate against Nifty spot (~24000)."""
+    pending = {
+        "tradingsymbol": "NIFTY2662324000PE",
+        "option_type": "PE",
+        "strategy_id": "bb_5m_mean_reversion",
+        "entry_spot_trigger": 174.0,
+        "entry_premium": 168.0,
+        "indicators": {"nifty_spot": 23990.0, "option_ltp": 168.0},
+    }
+    current = {
+        "tradingsymbol": "NIFTY2662324000PE",
+        "entry_ready": True,
+        "entry_confirmation_score": 88,
+        "nifty_spot": 23990.0,
+    }
+    invalid, reason = pending_entry_invalidated(
+        pending_plan=pending,
+        pending_symbol="NIFTY2662324000PE",
+        current_plan=current,
+        min_score=65,
+    )
+    assert invalid is False, reason
+
+
+def test_index_spot_trigger_requires_buffer():
+    pending = {
+        "tradingsymbol": "NIFTY2662324000PE",
+        "option_type": "PE",
+        "strategy_id": "orb_15m_breakout",
+        "entry_ready": True,
+        "entry_confirmation_score": 88,
+        "entry_spot_trigger": 24003.0,
+        "indicators": {"nifty_spot": 24005.0, "option_ltp": 170.0},
+    }
+    invalid, _ = pending_entry_invalidated(
+        pending_plan=pending,
+        pending_symbol="NIFTY2662324000PE",
+        current_plan=pending,
+        min_score=65,
+    )
+    assert invalid is False
+
+    pending["indicators"]["nifty_spot"] = 24015.0
+    invalid, reason = pending_entry_invalidated(
+        pending_plan=pending,
+        pending_symbol="NIFTY2662324000PE",
+        current_plan=pending,
+        min_score=65,
+    )
+    assert invalid is True
+    assert "reclaimed" in reason.lower()
+
+
 def test_large_strike_drift_cancels_when_enabled(monkeypatch):
     monkeypatch.setenv("COMMODITY_WATCH_CANCEL_ON_SYMBOL_DRIFT", "1")
     monkeypatch.setenv("COMMODITY_WATCH_SYMBOL_DRIFT_MIN_STRIKES", "2")
