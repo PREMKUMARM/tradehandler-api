@@ -221,8 +221,10 @@ def check_order_allowed(
     if quantity <= 0:
         return False, "Quantity must be positive."
 
-    if cfg.max_trades_per_day and trade_limits.limits.get("trades_today", 0) >= cfg.max_trades_per_day:
-        return False, f"Daily trade count cap reached ({cfg.max_trades_per_day})."
+    if cfg.max_trades_per_day:
+        status = trade_limits.get_limits_status()
+        if int(status.get("trades_today") or 0) >= cfg.max_trades_per_day:
+            return False, f"Daily trade count cap reached ({cfg.max_trades_per_day})."
 
     ok, msg = trade_limits.can_place_trade(estimated_value_inr or 0.0)
     if not ok:

@@ -3,10 +3,18 @@ Trade limits management service
 """
 import json
 import os
-from datetime import datetime, date
+from datetime import date, datetime
 from threading import RLock
 from typing import Dict, Optional
-from utils.logger import log_info, log_warning, log_error
+from zoneinfo import ZoneInfo
+
+from utils.logger import log_error, log_info, log_warning
+
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def _ist_today() -> date:
+    return datetime.now(IST).date()
 
 
 class TradeLimits:
@@ -22,7 +30,7 @@ class TradeLimits:
             # Absolute caps (INR). 0 = disabled.
             "max_premium_inr_per_day": float(os.getenv("MAX_PREMIUM_INR_PER_DAY", "0") or 0),
             "max_loss_inr_per_day": float(os.getenv("MAX_LOSS_INR_PER_DAY", "0") or 0),
-            "current_day": str(date.today()),
+            "current_day": str(_ist_today()),
             "trades_today": 0,
             "profit_today": 0.0,
             "loss_today": 0.0,
@@ -33,6 +41,25 @@ class TradeLimits:
         }
         self.limits = self._load_limits()
     
+    def _roll_day_if_needed(self) -> None:
+        """Reset daily counters when IST trading date changes (long-running API)."""
+        today = str(_ist_today())
+        if self.limits.get("current_day") == today:
+            return
+        prev = self.limits.get("current_day")
+        self.limits.update(
+            {
+                "current_day": today,
+                "trades_today": 0,
+                "profit_today": 0.0,
+                "loss_today": 0.0,
+                "total_investment_today": 0.0,
+                "pnl_inr_today": 0.0,
+            }
+        )
+        self._save_limits(self.limits)
+        log_info(f"Daily trade limits rolled {prev} → {today} (IST)")
+    
     def _load_limits(self) -> Dict:
         """Load trade limits from file"""
         try:
@@ -40,10 +67,10 @@ class TradeLimits:
                 with open(self.limits_file, 'r') as f:
                     limits = json.load(f)
                 
-                # Reset if it's a new day
-                if limits.get("current_day") != str(date.today()):
+                # Reset if it's a new IST day
+                if limits.get("current_day") != str(_ist_today()):
                     limits = self.default_limits.copy()
-                    limits["current_day"] = str(date.today())
+                    limits["current_day"] = str(_ist_today())
                     self._save_limits(limits)
                 
                 return limits
@@ -68,52 +95,53 @@ class TradeLimits:
 
     def set_pnl_inr_today(self, value: float) -> None:
         with self._lock:
+            self._roll_day_if_needed()
             self.limits["pnl_inr_today"] = float(value or 0)
             self._save_limits(self.limits)
     
     def can_place_trade(self, investment_amount: float = 0) -> tuple[bool, str]:
         """Check if a new trade can be placed"""
-        # Absolute premium cap (INR)
-        try:
-            max_prem = float(self.limits.get("max_premium_inr_per_day") or 0)
-            spent = float(self.limits.get("total_investment_today") or 0)
-            if max_prem > 0 and (spent + float(investment_amount or 0)) > max_prem:
-                return (
-                    False,
-                    f"Daily premium cap reached (spent ₹{spent:.0f}, cap ₹{max_prem:.0f})",
-                )
-        except Exception:
-            pass
+        with self._lock:
+            self._roll_day_if_needed()
+            # Absolute premium cap (INR)
+            try:
+                max_prem = float(self.limits.get("max_premium_inr_per_day") or 0)
+                spent = float(self.limits.get("total_investment_today") or 0)
+                if max_prem > 0 and (spent + float(investment_amount or 0)) > max_prem:
+                    return (
+                        False,
+                        f"Daily premium cap reached (spent ₹{spent:.0f}, cap ₹{max_prem:.0f})",
+                    )
+            except Exception:
+                pass
 
-        # Absolute max loss cap (INR)
-        try:
-            max_loss_inr = float(self.limits.get("max_loss_inr_per_day") or 0)
-            pnl = float(self.limits.get("pnl_inr_today") or 0)
-            if max_loss_inr > 0 and pnl <= -abs(max_loss_inr):
-                return (
-                    False,
-                    f"Daily loss cap reached (P&L ₹{pnl:.0f}, cap -₹{abs(max_loss_inr):.0f})",
-                )
-        except Exception:
-            pass
+            # Absolute max loss cap (INR)
+            try:
+                max_loss_inr = float(self.limits.get("max_loss_inr_per_day") or 0)
+                pnl = float(self.limits.get("pnl_inr_today") or 0)
+                if max_loss_inr > 0 and pnl <= -abs(max_loss_inr):
+                    return (
+                        False,
+                        f"Daily loss cap reached (P&L ₹{pnl:.0f}, cap -₹{abs(max_loss_inr):.0f})",
+                    )
+            except Exception:
+                pass
 
-        # Check trade count limit
-        if self.limits["trades_today"] >= self.limits["max_trades_per_day"]:
-            return False, f"Daily trade limit reached ({self.limits['max_trades_per_day']} trades)"
-        
-        # Check profit limit
-        if self.limits["profit_today"] >= self.limits["max_profit_per_day"]:
-            return False, f"Daily profit target reached ({self.limits['max_profit_per_day']*100:.1f}%)"
-        
-        # Check loss limit
-        if self.limits["loss_today"] >= self.limits["max_loss_per_day"]:
-            return False, f"Daily loss limit reached ({self.limits['max_loss_per_day']*100:.1f}%)"
-        
-        return True, "Trade allowed"
+            if self.limits["trades_today"] >= self.limits["max_trades_per_day"]:
+                return False, f"Daily trade limit reached ({self.limits['max_trades_per_day']} trades)"
+
+            if self.limits["profit_today"] >= self.limits["max_profit_per_day"]:
+                return False, f"Daily profit target reached ({self.limits['max_profit_per_day']*100:.1f}%)"
+
+            if self.limits["loss_today"] >= self.limits["max_loss_per_day"]:
+                return False, f"Daily loss limit reached ({self.limits['max_loss_per_day']*100:.1f}%)"
+
+            return True, "Trade allowed"
     
     def record_trade(self, investment_amount: float = 0):
         """Record a new trade"""
         with self._lock:
+            self._roll_day_if_needed()
             self.limits["trades_today"] += 1
             self.limits["total_investment_today"] += float(investment_amount or 0)
             self._save_limits(self.limits)
@@ -125,6 +153,7 @@ class TradeLimits:
     def rollback_trade(self, investment_amount: float = 0) -> None:
         """Reverse record_trade when an unfilled entry is cancelled."""
         with self._lock:
+            self._roll_day_if_needed()
             self.limits["trades_today"] = max(0, int(self.limits.get("trades_today") or 0) - 1)
             self.limits["total_investment_today"] = max(
                 0.0,
@@ -139,6 +168,7 @@ class TradeLimits:
     def record_profit_loss(self, pnl_amount: float, investment_amount: float = 0):
         """Record profit/loss from a closed position"""
         with self._lock:
+            self._roll_day_if_needed()
             try:
                 self.limits["pnl_inr_today"] = float(self.limits.get("pnl_inr_today") or 0) + float(
                     pnl_amount or 0
@@ -167,6 +197,8 @@ class TradeLimits:
     
     def get_limits_status(self) -> Dict:
         """Get current limits status"""
+        with self._lock:
+            self._roll_day_if_needed()
         return {
             "max_trades_per_day": self.limits["max_trades_per_day"],
             "trades_today": self.limits["trades_today"],
@@ -187,16 +219,17 @@ class TradeLimits:
     
     def reset_daily_limits(self):
         """Reset daily limits (for testing or manual reset)"""
-        self.limits.update({
-            "current_day": str(date.today()),
-            "trades_today": 0,
-            "profit_today": 0.0,
-            "loss_today": 0.0,
-            "total_investment_today": 0.0,
-            "pnl_inr_today": 0.0,
-        })
-        self._save_limits(self.limits)
-        log_info("Daily trade limits reset")
+        with self._lock:
+            self.limits.update({
+                "current_day": str(_ist_today()),
+                "trades_today": 0,
+                "profit_today": 0.0,
+                "loss_today": 0.0,
+                "total_investment_today": 0.0,
+                "pnl_inr_today": 0.0,
+            })
+            self._save_limits(self.limits)
+            log_info("Daily trade limits reset")
     
     def update_limits(self, max_trades: Optional[int] = None, max_profit_pct: Optional[float] = None, 
                      max_loss_pct: Optional[float] = None):
