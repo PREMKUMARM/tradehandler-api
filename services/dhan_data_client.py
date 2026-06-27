@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 API_BASE = "https://api.dhan.co/v2"
 SENSEX_SECURITY_ID = "51"
+NIFTY_SECURITY_ID = "13"
+INTRADAY_MAX_DAYS = 90
 DEFAULT_INTERVAL = "5"
 DEFAULT_SLEEP_SEC = 1.25
 SUPPORTED_INTERVALS_MIN: Tuple[int, ...] = (1, 5, 15, 25, 60)
@@ -178,6 +180,25 @@ class DhanDataClient:
             raise RuntimeError(f"Dhan intraday failed ({security_id}): {msg}")
         return resp
 
+    def nifty_index_intraday(
+        self,
+        *,
+        from_date: str,
+        to_date: str,
+        interval: str = DEFAULT_INTERVAL,
+    ) -> Dict[str, Any]:
+        """Nifty 50 index intraday OHLC via POST /charts/intraday (IDX_I, max 90 days per call)."""
+        return self.intraday_chart(
+            security_id=NIFTY_SECURITY_ID,
+            exchange_segment="IDX_I",
+            instrument="INDEX",
+            interval=interval,
+            from_datetime=from_date,
+            to_datetime=to_date,
+            oi=False,
+            expiry_code=0,
+        )
+
     def rolling_option_raw(
         self,
         *,
@@ -185,14 +206,41 @@ class DhanDataClient:
         kind: str,
         offset: str = "ATM",
         security_id: str = SENSEX_SECURITY_ID,
+        exchange_segment: str = "BSE_FNO",
         interval: str = DEFAULT_INTERVAL,
         expiry_code: int = 1,
         expiry_flag: str = "WEEK",
     ) -> Dict[str, Any]:
         """Raw PE/CE leg dict from POST /charts/rollingoption (expired contracts)."""
         next_day = (date.fromisoformat(session_date) + timedelta(days=1)).isoformat()
+        return self.rolling_option_range(
+            from_date=session_date,
+            to_date=next_day,
+            kind=kind,
+            offset=offset,
+            security_id=security_id,
+            exchange_segment=exchange_segment,
+            interval=interval,
+            expiry_code=expiry_code,
+            expiry_flag=expiry_flag,
+        )
+
+    def rolling_option_range(
+        self,
+        *,
+        from_date: str,
+        to_date: str,
+        kind: str,
+        offset: str = "ATM",
+        security_id: str = SENSEX_SECURITY_ID,
+        exchange_segment: str = "BSE_FNO",
+        interval: str = DEFAULT_INTERVAL,
+        expiry_code: int = 1,
+        expiry_flag: str = "WEEK",
+    ) -> Dict[str, Any]:
+        """Raw PE/CE leg dict from POST /charts/rollingoption for a date range (up to ~30 days)."""
         body = {
-            "exchangeSegment": "BSE_FNO",
+            "exchangeSegment": exchange_segment,
             "interval": str(interval),
             "securityId": str(security_id),
             "instrument": "OPTIDX",
@@ -201,15 +249,41 @@ class DhanDataClient:
             "strike": offset,
             "drvOptionType": "CALL" if kind.upper() == "CE" else "PUT",
             "requiredData": ["open", "high", "low", "close", "oi", "spot", "strike", "volume"],
-            "fromDate": session_date,
-            "toDate": next_day,
+            "fromDate": from_date,
+            "toDate": to_date,
         }
         resp = self._request("POST", "/charts/rollingoption", body)
         if resp.get("errorCode") or resp.get("status") == "failed":
             msg = resp.get("errorMessage") or resp.get("remarks") or resp.get("data")
-            raise RuntimeError(f"Dhan rollingoption failed ({offset} {kind} {session_date}): {msg}")
+            raise RuntimeError(
+                f"Dhan rollingoption failed ({exchange_segment} {offset} {kind} {from_date}->{to_date}): {msg}"
+            )
         key = "ce" if kind.upper() == "CE" else "pe"
         return resp.get("data", {}).get(key) or {}
+
+    def nifty_rolling_option_range(
+        self,
+        *,
+        from_date: str,
+        to_date: str,
+        kind: str,
+        offset: str = "ATM",
+        interval: str = DEFAULT_INTERVAL,
+        expiry_code: int = 1,
+        expiry_flag: str = "WEEK",
+    ) -> Dict[str, Any]:
+        """Nifty 50 rolling expired options OHLC via NSE_FNO."""
+        return self.rolling_option_range(
+            from_date=from_date,
+            to_date=to_date,
+            kind=kind,
+            offset=offset,
+            security_id=NIFTY_SECURITY_ID,
+            exchange_segment="NSE_FNO",
+            interval=interval,
+            expiry_code=expiry_code,
+            expiry_flag=expiry_flag,
+        )
 
     def fetch_expired_fixed_strike_bars(
         self,
