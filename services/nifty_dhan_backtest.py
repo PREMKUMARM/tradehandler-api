@@ -17,6 +17,7 @@ from services.nifty_duckdb_store import NIFTY_STRIKE_OFFSETS, STAGING_DB_PATH, N
 from services.sensex_constants import sensex_atm_near_offsets, sensex_max_lots_per_trade
 from services.sensex_dhan_backtest import (
     BacktestParams,
+    BacktestProgress,
     TradeResult,
     _backtest_size_from_risk,
     _f,
@@ -159,15 +160,29 @@ def fetch_nifty_sessions_data(
     interval_min: int = 5,
     refresh: bool = False,
     store: Optional[NiftyDuckDBStore] = None,
+    progress_cb: Optional[Any] = None,
 ) -> Tuple[Dict[str, Dict[str, Dict[str, OptionSeries]]], Dict[str, int]]:
     store = store or _store()
     offsets = list(sensex_atm_near_offsets())
     loaded: Dict[str, Dict[str, Dict[str, OptionSeries]]] = {}
     stats = {"cached": 0, "fetched": 0}
     pending: List[str] = []
+    total = len(sessions)
+    iv = f"{interval_min}m"
 
-    for row in sessions:
+    for i, row in enumerate(sessions, start=1):
         session_date = row["session_date"]
+        if progress_cb:
+            progress_cb(
+                BacktestProgress(
+                    phase="fetch",
+                    current=i,
+                    total=total,
+                    expiry_date=session_date,
+                    timeframe=iv,
+                    message=f"Loading DuckDB/Dhan {iv} — {session_date}",
+                )
+            )
         if refresh:
             pending.append(session_date)
             continue
@@ -189,7 +204,18 @@ def fetch_nifty_sessions_data(
         conn = store.connect()
         try:
             store.ensure_schema(conn)
-            for session_date in pending:
+            for j, session_date in enumerate(pending, start=1):
+                if progress_cb:
+                    progress_cb(
+                        BacktestProgress(
+                            phase="fetch",
+                            current=stats["cached"] + j,
+                            total=total,
+                            expiry_date=session_date,
+                            timeframe=iv,
+                            message=f"Fetching Dhan {iv} from API — {session_date}",
+                        )
+                    )
                 series = client.fetch_nifty_session(
                     session_date,
                     offsets=offsets,
@@ -227,14 +253,16 @@ def _run_backtest_for_timeframe(
     interval_min: int,
     *,
     store: Optional[NiftyDuckDBStore] = None,
+    progress_cb: Optional[Any] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, int]]:
+    iv = f"{interval_min}m"
     data, fetch_stats = fetch_nifty_sessions_data(
         sessions,
         interval_min=interval_min,
         refresh=params.refresh_dhan,
         store=store,
+        progress_cb=progress_cb,
     )
-    iv = f"{interval_min}m"
     start_capital = max(1000.0, float(params.capital))
     scan_start, cutoff, scan_start_label, scan_end_label = resolve_backtest_scan_window(params)
     trades: List[TradeResult] = []
@@ -243,9 +271,21 @@ def _run_backtest_for_timeframe(
     peak_equity = start_capital
     max_drawdown_inr = 0.0
     prev_spot_close = 0.0
+    total_sessions = len(sessions)
 
-    for row in sessions:
+    for i, row in enumerate(sessions, start=1):
         session_date = row["session_date"]
+        if progress_cb:
+            progress_cb(
+                BacktestProgress(
+                    phase="simulate",
+                    current=i,
+                    total=total_sessions,
+                    expiry_date=session_date,
+                    timeframe=iv,
+                    message=f"Simulating {session_date} ({i}/{total_sessions}) · {iv}",
+                )
+            )
         session = data.get(session_date)
         if not session:
             skipped.append({"expiry_date": session_date, "reason": f"no Dhan {iv} data"})
@@ -334,7 +374,11 @@ def _run_backtest_for_timeframe(
     return report, fetch_stats
 
 
-def run_nifty_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
+def run_nifty_dhan_backtest(
+    params: BacktestParams,
+    *,
+    progress_cb: Optional[Any] = None,
+) -> Dict[str, Any]:
     store = _store()
     sessions = _resolve_sessions(params)
     timeframes = _normalize_timeframes(params.timeframes_min)
@@ -343,7 +387,18 @@ def run_nifty_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
 
     for interval_min in timeframes:
         key = f"{interval_min}m"
-        report, fetch_stats = _run_backtest_for_timeframe(params, sessions, interval_min, store=store)
+        iv = f"{interval_min}m"
+        if progress_cb:
+            progress_cb(
+                BacktestProgress(
+                    phase="timeframe",
+                    timeframe=iv,
+                    message=f"Running {iv} timeframe",
+                )
+            )
+        report, fetch_stats = _run_backtest_for_timeframe(
+            params, sessions, interval_min, store=store, progress_cb=progress_cb
+        )
         reports[key] = report
         total_fetch["cached"] += fetch_stats.get("cached", 0)
         total_fetch["fetched"] += fetch_stats.get("fetched", 0)

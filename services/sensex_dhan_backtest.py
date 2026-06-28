@@ -201,6 +201,7 @@ class BacktestProgress:
     current: int = 0
     total: int = 0
     expiry_date: str = ""
+    timeframe: str = ""
     message: str = ""
 
 
@@ -927,6 +928,7 @@ def fetch_sessions_data(
                     current=i,
                     total=total,
                     expiry_date=expiry,
+                    timeframe=iv_label,
                     message=f"Loading Dhan {iv_label} data for {expiry}",
                 )
             )
@@ -950,6 +952,17 @@ def fetch_sessions_data(
             raise RuntimeError("Dhan Data API is not active. Subscribe at dhan.co and set DHAN_ACCESS_TOKEN.")
         interval_str = interval_to_str(interval_min)
         for expiry in pending:
+            if progress_cb:
+                progress_cb(
+                    BacktestProgress(
+                        phase="fetch",
+                        current=stats["cached"] + stats["fetched"] + 1,
+                        total=total,
+                        expiry_date=expiry,
+                        timeframe=iv_label,
+                        message=f"Fetching Dhan {iv_label} from API — {expiry}",
+                    )
+                )
             series = client.fetch_sensex_session(
                 expiry,
                 offsets=sensex_atm_near_offsets(),
@@ -992,14 +1005,17 @@ def _run_backtest_for_timeframe(
     params: BacktestParams,
     sessions: List[Dict[str, Any]],
     interval_min: int,
+    *,
+    progress_cb: Optional[Any] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, int]]:
     """Run the strategy on one bar interval; returns (report_block, fetch_stats)."""
+    iv_label = _interval_label(interval_min)
     data, fetch_stats = fetch_sessions_data(
         sessions,
         interval_min=interval_min,
         refresh=params.refresh_dhan,
+        progress_cb=progress_cb,
     )
-    iv_label = _interval_label(interval_min)
     start_capital = max(1000.0, float(params.capital))
     scan_start, cutoff, scan_start_label, scan_end_label = resolve_backtest_scan_window(params)
     trades: List[TradeResult] = []
@@ -1007,10 +1023,22 @@ def _run_backtest_for_timeframe(
     equity = start_capital
     peak_equity = start_capital
     max_drawdown_inr = 0.0
+    total_sessions = len(sessions)
 
     prev_spot_close = 0.0
-    for row in sessions:
+    for i, row in enumerate(sessions, start=1):
         session_date = row["expiry_date"]
+        if progress_cb:
+            progress_cb(
+                BacktestProgress(
+                    phase="simulate",
+                    current=i,
+                    total=total_sessions,
+                    expiry_date=session_date,
+                    timeframe=iv_label,
+                    message=f"Simulating {session_date} ({i}/{total_sessions}) · {iv_label}",
+                )
+            )
         session = data.get(session_date)
         if not session:
             skipped.append({"expiry_date": session_date, "reason": f"no Dhan {iv_label} data"})
@@ -1123,7 +1151,11 @@ def _run_backtest_for_timeframe(
     return report, fetch_stats
 
 
-def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
+def run_sensex_dhan_backtest(
+    params: BacktestParams,
+    *,
+    progress_cb: Optional[Any] = None,
+) -> Dict[str, Any]:
     sessions = _resolve_backtest_sessions(params)
     timeframes = _normalize_timeframes(params.timeframes_min)
     start_capital = max(1000.0, float(params.capital))
@@ -1133,7 +1165,18 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
     fetch_stats_by_tf: Dict[str, Dict[str, int]] = {}
     for interval_min in timeframes:
         key = _timeframe_key(interval_min)
-        report, fetch_stats = _run_backtest_for_timeframe(params, sessions, interval_min)
+        iv_label = _interval_label(interval_min)
+        if progress_cb:
+            progress_cb(
+                BacktestProgress(
+                    phase="timeframe",
+                    timeframe=iv_label,
+                    message=f"Running {iv_label} timeframe",
+                )
+            )
+        report, fetch_stats = _run_backtest_for_timeframe(
+            params, sessions, interval_min, progress_cb=progress_cb
+        )
         reports[key] = report
         fetch_stats_by_tf[key] = fetch_stats
 
