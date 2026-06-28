@@ -5,6 +5,10 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class SensexBacktestRunRequest(BaseModel):
+    segment: str = Field(
+        default="sensex",
+        description="sensex or nifty50 — which index segment to backtest",
+    )
     start_date: Optional[str] = Field(
         default=None,
         description="Inclusive backtest start date YYYY-MM-DD (weekdays only)",
@@ -19,10 +23,10 @@ class SensexBacktestRunRequest(BaseModel):
     )
     capital: float = Field(default=1_000_000.0, ge=10_000, le=100_000_000)
     risk_pct: float = Field(
-        default=1.0,
+        default=10.0,
         gt=0,
         le=100,
-        description="Capital allocation % per trade (lots = allocation ÷ entry premium)",
+        description="Risk % of capital at stop-loss per trade (lots sized from entry − SL)",
     )
     sl_inr: float = Field(
         default=9.0,
@@ -109,6 +113,16 @@ class SensexBacktestRunRequest(BaseModel):
         if not out:
             raise ValueError("Select at least one timeframe")
         return sorted(out)
+
+    @field_validator("segment")
+    @classmethod
+    def _segment(cls, value: str) -> str:
+        v = (value or "sensex").lower()
+        if v in ("nifty", "nifty50"):
+            return "nifty50"
+        if v != "sensex":
+            raise ValueError("segment must be sensex or nifty50")
+        return v
 
     @field_validator("direction")
     @classmethod

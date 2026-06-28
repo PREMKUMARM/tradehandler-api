@@ -1,4 +1,4 @@
-"""Persist open exit trails for momentum trailing (paper + live GTT)."""
+"""Persist open exit trails for stepped SL management (paper + live)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -24,20 +24,26 @@ def register_exit_trail(
     stop_loss: float,
     target: float,
     gtt_trigger_id: Optional[str] = None,
+    sl_order_id: Optional[str] = None,
+    target_2: Optional[float] = None,
     paper: bool = False,
     paper_order_id: Optional[str] = None,
     strategy_id: Optional[str] = None,
 ) -> None:
     from services.momentum_trail import get_momentum_trail_config
 
-    if not get_momentum_trail_config().enabled:
+    if not get_momentum_trail_config().enabled and not (sl_order_id or gtt_trigger_id):
         return
     if stop_loss <= 0 or target <= 0 or entry_price <= 0:
         return
 
     risk_unit = max(0.05, float(entry_price) - float(stop_loss))
-    initial_target = float(entry_price) + risk_unit
+    initial_target = float(target) if float(target) > float(entry_price) else float(entry_price) + risk_unit
+    t2_val = float(target_2 or 0)
+    if t2_val <= initial_target:
+        t2_val = float(entry_price) + 2 * risk_unit
     qty = int(quantity)
+    sl_oid = (sl_order_id or gtt_trigger_id or "").strip() or None
 
     seg = normalize_segment(segment or infer_segment_from_order(exchange, tradingsymbol))
     oid = (entry_order_id or paper_order_id or "").strip()
@@ -52,17 +58,19 @@ def register_exit_trail(
     conn.execute(
         """
         INSERT INTO exit_trails (
-            created_at, updated_at, segment, entry_order_id, gtt_trigger_id,
+            created_at, updated_at, segment, entry_order_id, gtt_trigger_id, sl_order_id,
             tradingsymbol, exchange, product, quantity, entry_price,
-            stop_loss, target, initial_target, peak_ltp, trail_active, paper,
-            paper_order_id, status, strategy_id, target_touch_since, partial_exit_done,
+            stop_loss, target, initial_target, target_2, peak_ltp, trail_active, trail_stage,
+            paper, paper_order_id, status, strategy_id, target_touch_since, partial_exit_done,
             initial_quantity, gtt_sync_fail_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'open', ?, NULL, 0, ?, 0)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 'open', ?, NULL, 0, ?, 0)
         ON CONFLICT(entry_order_id) DO UPDATE SET
             updated_at = excluded.updated_at,
             gtt_trigger_id = COALESCE(excluded.gtt_trigger_id, exit_trails.gtt_trigger_id),
+            sl_order_id = COALESCE(excluded.sl_order_id, exit_trails.sl_order_id),
             stop_loss = excluded.stop_loss,
             target = excluded.target,
+            target_2 = COALESCE(excluded.target_2, exit_trails.target_2),
             initial_target = COALESCE(excluded.initial_target, exit_trails.initial_target),
             strategy_id = COALESCE(excluded.strategy_id, exit_trails.strategy_id),
             initial_quantity = COALESCE(excluded.initial_quantity, exit_trails.initial_quantity),
@@ -74,6 +82,7 @@ def register_exit_trail(
             seg,
             oid,
             gtt_trigger_id,
+            sl_oid,
             tradingsymbol,
             exchange.upper(),
             product,
@@ -82,6 +91,7 @@ def register_exit_trail(
             float(stop_loss),
             float(target),
             float(initial_target),
+            float(t2_val),
             float(entry_price),
             1 if paper else 0,
             paper_order_id or oid,
@@ -99,9 +109,9 @@ def list_open_exit_trails() -> List[Dict[str, Any]]:
     conn = db.get_connection()
     cur = conn.execute(
         """
-        SELECT id, created_at, segment, entry_order_id, gtt_trigger_id, tradingsymbol, exchange,
-               product, quantity, entry_price, stop_loss, target, initial_target, peak_ltp,
-               trail_active, paper, paper_order_id, status, updated_at, strategy_id,
+        SELECT id, created_at, segment, entry_order_id, gtt_trigger_id, sl_order_id, tradingsymbol, exchange,
+               product, quantity, entry_price, stop_loss, target, initial_target, target_2, peak_ltp,
+               trail_active, trail_stage, paper, paper_order_id, status, updated_at, strategy_id,
                target_touch_since, partial_exit_done, initial_quantity, gtt_sync_fail_count,
                last_alert_at
         FROM exit_trails
@@ -244,6 +254,38 @@ def update_exit_trail_gtt(trail_id: int, gtt_trigger_id: str) -> None:
         "UPDATE exit_trails SET updated_at = ?, gtt_trigger_id = ?, gtt_sync_fail_count = 0 WHERE id = ?",
         (_now(), str(gtt_trigger_id), trail_id),
     )
+    conn.commit()
+
+
+def update_trail_stage(
+    trail_id: int,
+    *,
+    trail_stage: int,
+    stop_loss: float,
+    peak_ltp: Optional[float] = None,
+) -> None:
+    from database.connection import get_database
+
+    db = get_database()
+    conn = db.get_connection()
+    if peak_ltp is not None:
+        conn.execute(
+            """
+            UPDATE exit_trails
+            SET updated_at = ?, trail_stage = ?, stop_loss = ?, peak_ltp = ?, trail_active = 1
+            WHERE id = ?
+            """,
+            (_now(), int(trail_stage), float(stop_loss), float(peak_ltp), trail_id),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE exit_trails
+            SET updated_at = ?, trail_stage = ?, stop_loss = ?, trail_active = 1
+            WHERE id = ?
+            """,
+            (_now(), int(trail_stage), float(stop_loss), trail_id),
+        )
     conn.commit()
 
 

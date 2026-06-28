@@ -487,6 +487,9 @@ class DatabaseConnection:
             ("initial_quantity", "INTEGER"),
             ("gtt_sync_fail_count", "INTEGER"),
             ("last_alert_at", "TEXT"),
+            ("sl_order_id", "TEXT"),
+            ("trail_stage", "INTEGER"),
+            ("target_2", "REAL"),
         ):
             try:
                 cursor.execute(f"ALTER TABLE exit_trails ADD COLUMN {_col} {_typ}")

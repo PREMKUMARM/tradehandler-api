@@ -99,7 +99,7 @@ def flatten_commodity_eod(*, force: bool = False) -> Dict[str, Any]:
         log_error(f"[CommodityEOD] Kite unavailable: {exc}")
         return summary
 
-    from agent.tools.kite_tools import cancel_order_tool, delete_gtt_tool, place_order_tool
+    from agent.tools.kite_tools import cancel_order_tool, place_order_tool
 
     # 1. Cancel open MCX orders
     try:
@@ -162,29 +162,7 @@ def flatten_commodity_eod(*, force: bool = False) -> Dict[str, Any]:
     except Exception as exc:
         summary["errors"].append(f"positions: {exc}")
 
-    # 3. Delete active MCX GTTs
-    try:
-        for g in kite.get_gtts() or []:
-            cond = g.get("condition") or {}
-            ex = str(cond.get("exchange") or g.get("exchange") or "").upper()
-            if ex != "MCX":
-                continue
-            st = str(g.get("status") or "").lower()
-            if st in ("disabled", "cancelled", "expired", "rejected"):
-                continue
-            gid = g.get("id") or g.get("trigger_id")
-            if gid is None:
-                continue
-            try:
-                res = delete_gtt_tool.invoke({"trigger_id": int(gid)})
-                if res.get("status") == "success":
-                    summary["gtts_deleted"].append(str(gid))
-                else:
-                    summary["errors"].append(f"gtt {gid}: {res.get('error')}")
-            except Exception as exc:
-                summary["errors"].append(f"gtt {gid}: {exc}")
-    except Exception as exc:
-        summary["errors"].append(f"gtts: {exc}")
+    # 3. Open MCX SL-M exit orders are cancelled in step 1 with other open orders.
 
     # 4. Close commodity exit trails
     try:

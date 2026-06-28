@@ -32,12 +32,22 @@ IST = ZoneInfo("Asia/Kolkata")
 
 STRATEGY_ID = "20rupees_strategy"
 STRATEGY_NAME = "20rupees-strategy"
+
+
+def _strategy_exit_blurb() -> str:
+    from services.entry_quality import exit_model
+
+    if exit_model() == "t1_scalp":
+        return "full exit at 1R target (T1 scalp — locks profit, no breakeven trail)"
+    return "1:1 target then stepped trail (T1→entry, T2→T1, …)"
+
+
 STRATEGY_DESC = (
     "Buy Sensex option when premium closes ₹17–₹23 on 5m (from 14:00 IST). "
-    "AUTO: PE on gap-down, CE on gap-up/flat; monitors 5 strikes around ATM (ATM±2); ATM from index LTP. "
-    "Fixed initial SL at ₹9 premium; 1R = entry − SL; 1:1 target then stepped trail. "
-    "Size lots from risk % ÷ entry premium (not SL distance). "
-    "No new entries after 3:00 PM IST."
+    "AUTO: leg from index day direction (CE up / PE down vs open); monitors ATM±2. "
+    f"Fixed initial SL at ₹9 premium; 1R = entry − SL; {_strategy_exit_blurb()}. "
+    "Size lots from risk % at SL. "
+    f"No new entries after {sensex_entry_cutoff_label()} IST."
 )
 
 STRATEGY_IDS = (STRATEGY_ID,)
@@ -99,7 +109,10 @@ def _resolve_kind(ctx: MarketContext, bias: str) -> str:
         return bias
     if ctx.direction_pref in ("CE", "PE"):
         return ctx.direction_pref
-    return sensex_gap_direction_kind(ctx.day_open or ctx.nifty_ltp, ctx.prev_close)
+    from services.entry_quality import auto_entry_kind
+
+    kind = auto_entry_kind(ctx.day_open or ctx.nifty_ltp, ctx.nifty_ltp, ctx.prev_close)
+    return kind or "CE"
 
 
 def _in_premium_band(
@@ -136,8 +149,14 @@ def _pick_auto_strike_from_chain(
     band_low: float = PREMIUM_BAND_LOW,
     band_high: float = PREMIUM_BAND_HIGH,
 ) -> Tuple[Optional[int], float, str, Optional[str], Optional[float], str]:
-    """AUTO: gap direction leg + smart OI strike in premium band."""
-    kind = sensex_gap_direction_kind(day_open or spot, prev_close)
+    """AUTO: day-direction leg + smart OI strike in premium band."""
+    from services.entry_quality import auto_entry_kind, entry_day_aligned_ok
+
+    day_open = day_open or spot
+    kind = auto_entry_kind(day_open, spot, prev_close)
+    if not kind or not entry_day_aligned_ok(kind=kind, index_open=day_open, spot=spot):
+        atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
+        return atm, 0.0, "ATM", None, None, kind or "CE"
     picked = pick_smart_from_chain(
         chain_oi,
         spot,

@@ -9,7 +9,14 @@ from services.watch_execute import is_paper_trading, resolve_can_execute
 
 
 class TestResolveCanExecute:
-    PLAN = {"tradingsymbol": "TEST24MAY100CE", "entry_limit_price": 100}
+    PLAN = {
+        "tradingsymbol": "TEST24MAY100CE",
+        "entry_limit_price": 100,
+        "entry_premium": 100,
+        "stop_loss_premium": 80,
+        "target_premium": 120,
+        "entry_ready": True,
+    }
 
     def test_live_can_place(self):
         preview = {
@@ -75,11 +82,14 @@ class TestV2WatchEvaluate:
             "can_place": False,
             "can_execute": True,
             "paper_trading_mode": True,
+            "validation": {"is_good_trade": True},
             "trade_plan": {
                 "tradingsymbol": "NIFTY24MAY100CE",
                 "entry_ready": True,
                 "entry_confirmation_score": 80,
                 "entry_limit_price": 50,
+                "stop_loss_premium": 40,
+                "target_premium": 60,
                 "quantity": 25,
             },
         }
@@ -182,18 +192,22 @@ class TestCommodityWatchEvaluate:
 
         with patch.object(watch, "_persist"):
             with patch(
-                "services.commodity_strategy_watch.commodity_trade_service.preview_trade",
-                return_value=preview,
+                "services.commodity_strategy_watch.is_commodity_new_trading_allowed",
+                return_value=True,
             ):
                 with patch(
-                    "services.commodity_strategy_watch.commodity_trade_service.allow_offhours_commodity_place",
-                    return_value=False,
+                    "services.commodity_strategy_watch.commodity_trade_service.preview_trade",
+                    return_value=preview,
                 ):
                     with patch(
-                        "services.commodity_strategy_watch.autonomous_place_allowed",
-                        return_value=(True, "ok"),
+                        "services.commodity_strategy_watch.commodity_trade_service.allow_offhours_commodity_place",
+                        return_value=False,
                     ):
-                        fire, auto, _, _, can_exec = watch._evaluate_sync()
+                        with patch(
+                            "services.commodity_strategy_watch.autonomous_place_allowed",
+                            return_value=(True, "ok"),
+                        ):
+                            fire, auto, _, _, can_exec = watch._evaluate_sync()
 
         assert fire is False
         assert auto is True
@@ -225,41 +239,49 @@ class TestCommodityTryAutoPlace:
 
         with patch.object(watch, "_persist"):
             with patch(
-                "services.commodity_strategy_watch.autonomous_place_allowed",
-                return_value=(True, "OK"),
-            ) as guard:
+                "services.commodity_strategy_watch.is_commodity_new_trading_allowed",
+                return_value=True,
+            ):
                 with patch(
-                    "services.commodity_strategy_watch.commodity_trade_service.place_trade",
-                    return_value={
-                        "placed": True,
-                        "entry_order_id": "1",
-                        "gtt_deferred": True,
-                        "trade_plan": plan,
-                    },
-                ):
+                    "services.commodity_strategy_watch.autonomous_place_allowed",
+                    return_value=(True, "OK"),
+                ) as guard:
                     with patch(
-                        "services.risk_gate.check_order_allowed",
-                        return_value=(True, "ok"),
+                        "services.commodity_strategy_watch.commodity_trade_service.place_trade",
+                        return_value={
+                            "placed": True,
+                            "entry_order_id": "1",
+                            "gtt_deferred": True,
+                            "trade_plan": plan,
+                        },
                     ):
                         with patch(
-                            "services.risk_gate.is_kill_switch_active",
-                            return_value=False,
+                            "services.commodity_indicator_plan.refresh_plan_at_execution",
+                            side_effect=lambda p, **kw: dict(p),
                         ):
                             with patch(
-                                "services.paper_trading.is_paper_mode",
-                                return_value=False,
+                                "services.risk_gate.check_order_allowed",
+                                return_value=(True, "ok"),
                             ):
                                 with patch(
-                                    "services.commodity_strategy_watch.broadcast_agent_update",
-                                    return_value=None,
+                                    "services.risk_gate.is_kill_switch_active",
+                                    return_value=False,
                                 ):
                                     with patch(
-                                        "services.commodity_strategy_watch.push_service.send_to_user",
-                                        return_value=None,
+                                        "services.paper_trading.is_paper_mode",
+                                        return_value=False,
                                     ):
-                                        import asyncio
+                                        with patch(
+                                            "services.commodity_strategy_watch.broadcast_agent_update",
+                                            return_value=None,
+                                        ):
+                                            with patch(
+                                                "services.commodity_strategy_watch.push_service.send_to_user",
+                                                return_value=None,
+                                            ):
+                                                import asyncio
 
-                                        asyncio.run(watch._try_auto_place(preview, plan))
+                                                asyncio.run(watch._try_auto_place(preview, plan))
 
         guard.assert_called_once()
         assert guard.call_args.kwargs["placed_today"] is False
@@ -280,14 +302,26 @@ class TestCommodityOrderGuard:
             "indicators": {"option_bid": 468, "option_ask": 472, "option_ltp": 470},
         }
         with patch(
-            "services.commodity_order_guard.has_pending_mcx_order",
-            return_value=(False, ""),
+            "services.commodity_config.is_commodity_new_trading_allowed",
+            return_value=True,
         ):
             with patch(
-                "services.commodity_order_guard.has_mcx_position",
+                "services.trading_agents.guard_agent.has_any_exchange_position",
                 return_value=(False, ""),
             ):
-                ok, msg = autonomous_place_allowed(plan, placed_today=False)
+                with patch(
+                    "services.trading_agents.guard_agent.has_pending_exchange_order",
+                    return_value=(False, ""),
+                ):
+                    with patch(
+                        "services.trading_agents.guard_agent.has_exchange_position",
+                        return_value=(False, ""),
+                    ):
+                        with patch(
+                            "services.paper_trading.is_paper_mode_for_segment",
+                            return_value=False,
+                        ):
+                            ok, msg = autonomous_place_allowed(plan, placed_today=False)
         assert ok is True
         assert msg == "OK"
 
@@ -304,14 +338,26 @@ class TestCommodityOrderGuard:
             "indicators": {"option_bid": 468, "option_ask": 472, "option_ltp": 470},
         }
         with patch(
-            "services.commodity_order_guard.has_pending_mcx_order",
-            return_value=(False, ""),
+            "services.commodity_config.is_commodity_new_trading_allowed",
+            return_value=True,
         ):
             with patch(
-                "services.commodity_order_guard.has_mcx_position",
-                return_value=(True, "Open position on CRUDEOILM26JUN8600PE (qty=1)"),
+                "services.trading_agents.guard_agent.has_any_exchange_position",
+                return_value=(False, ""),
             ):
-                ok, msg = autonomous_place_allowed(plan, placed_today=False)
+                with patch(
+                    "services.trading_agents.guard_agent.has_pending_exchange_order",
+                    return_value=(False, ""),
+                ):
+                    with patch(
+                        "services.trading_agents.guard_agent.has_exchange_position",
+                        return_value=(True, "Open position on CRUDEOILM26JUN8600PE (qty=1)"),
+                    ):
+                        with patch(
+                            "services.paper_trading.is_paper_mode_for_segment",
+                            return_value=False,
+                        ):
+                            ok, msg = autonomous_place_allowed(plan, placed_today=False)
         assert ok is False
         assert "Open position" in msg
 
@@ -340,26 +386,36 @@ class TestCommodityDeferredGtt:
         }
         with patch.object(commodity_trade_service, "preview_trade", return_value=preview):
             with patch.object(commodity_trade_service, "is_mcx_session_open", return_value=True):
-                with patch.object(commodity_trade_service, "has_pending_mcx_order", return_value=(False, "")):
-                    with patch.object(commodity_trade_service, "has_mcx_position", return_value=(False, "")):
-                        with patch(
-                            "services.commodity_trade_service.place_order_tool.invoke",
-                            return_value={"status": "success", "order_id": "E1"},
-                        ):
+                with patch(
+                    "services.commodity_config.is_commodity_new_trading_allowed",
+                    return_value=True,
+                ):
+                    with patch.object(commodity_trade_service, "has_pending_mcx_order", return_value=(False, "")):
+                        with patch.object(commodity_trade_service, "has_mcx_position", return_value=(False, "")):
                             with patch(
-                                "services.commodity_trade_service.place_gtt_for_plan",
-                            ) as gtt_fn:
-                                result = commodity_trade_service.place_trade(
-                                    confirm=True,
-                                    trade_plan_snapshot=plan,
+                                "services.commodity_trade_service.place_order_tool"
+                            ) as order_tool:
+                                order_tool.invoke = MagicMock(
+                                    return_value={"status": "success", "order_id": "E1"}
                                 )
+                                with patch(
+                                    "services.commodity_trade_service.place_gtt_for_plan",
+                                ) as gtt_fn:
+                                    with patch(
+                                        "services.commodity_indicator_plan.refresh_plan_at_execution",
+                                        side_effect=lambda p, **kw: dict(p),
+                                    ):
+                                        result = commodity_trade_service.place_trade(
+                                            confirm=True,
+                                            trade_plan_snapshot=plan,
+                                        )
         gtt_fn.assert_not_called()
         assert result["placed"] is True
         assert result["gtt_deferred"] is True
         assert result["entry_order_id"] == "E1"
         assert result.get("gtt_trigger_id") is None
 
-    def test_on_entry_filled_places_gtt(self):
+    def test_on_entry_filled_places_sl(self):
         from services.commodity_strategy_watch import CommodityStrategyWatch
 
         watch = CommodityStrategyWatch()
@@ -381,7 +437,8 @@ class TestCommodityDeferredGtt:
             with patch(
                 "services.commodity_strategy_watch.commodity_trade_service.place_gtt_for_plan",
                 return_value={
-                    "gtt_trigger_id": "G321",
+                    "sl_order_id": "SL321",
+                    "gtt_trigger_id": "SL321",
                     "trade_plan": {
                         "stop_loss_premium": 460.0,
                         "target_premium": 500.0,
@@ -395,5 +452,5 @@ class TestCommodityDeferredGtt:
 
         assert not watch._pending_entries
         assert watch._pending_entry_order_id is None
-        assert watch._events[0].kind == "auto_gtt_placed"
-        assert "G321" in watch._events[0].message
+        assert watch._events[0].kind == "auto_sl_placed"
+        assert "SL321" in watch._events[0].message

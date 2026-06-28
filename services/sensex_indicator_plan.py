@@ -63,6 +63,34 @@ def live_option_quote(tradingsymbol: str, exchange: str = "BFO") -> Dict[str, fl
     return merge_quote_with_circuit(base, row)
 
 
+def enrich_live_entry_intra(
+    intra: Dict[str, Any],
+    *,
+    nifty_spot: float,
+    ind: Dict[str, Any],
+    option_kind: str,
+) -> Dict[str, Any]:
+    """Attach index context for live entry filters (warmup, chase, bounce, etc.)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    out = dict(intra)
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
+    bar_min = now.hour * 60 + now.minute
+    out["spot"] = float(nifty_spot)
+    out["index_ltp"] = float(nifty_spot)
+    out["index_last_5m_close"] = float(ind.get("last_5m_close") or 0)
+    out["bar_minutes"] = bar_min
+    out["ist_minutes"] = bar_min
+    out["option_kind"] = (option_kind or "CE").upper()
+    out["day_open"] = float(ind.get("day_open") or out.get("day_open") or 0)
+    out["day_high"] = float(ind.get("day_high") or out.get("day_high") or 0)
+    out["day_low"] = float(ind.get("day_low") or out.get("day_low") or 0)
+    out["session_low_so_far"] = out["day_low"]
+    out["session_high_so_far"] = out["day_high"]
+    return out
+
+
 def precise_entry_limit_price(quote: Dict[str, float], transaction_type: str = "BUY") -> float:
     """Legacy: aggressive book price. Prefer compute_strategy_entry for V2 buys."""
     bid, ask, ltp = quote.get("bid", 0), quote.get("ask", 0), quote.get("ltp", 0)
@@ -326,6 +354,9 @@ def build_indicator_trade_plan(
     intra_bb["contract_ltp"] = float(entry_prem)
     intra_bb["option_ltp"] = quote.get("ltp") or opt_bb.get("option_ltp")
     intra_bb["sensex_run_params"] = rp.to_dict()
+    intra_bb = enrich_live_entry_intra(
+        intra_bb, nifty_spot=nifty_spot, ind=ind, option_kind=option_kind
+    )
     if opt_bb.get("bb_middle") is None:
         messages.append(
             f"Option 5m BB not ready on {contract.tradingsymbol} — "
@@ -475,7 +506,7 @@ def build_indicator_trade_plan(
         "product": SENSEX_BFO_PRODUCT,
         "entry_order_type": "LIMIT",
         "entry_limit_price": entry_limit,
-        "exit_order_type": "GTT_OCO",
+        "exit_order_type": "SL_STEPPED",
         "entry_premium": round(float(entry_prem), 2),
         "stop_loss_premium": sl_prem,
         "target_premium": tgt_prem,
@@ -538,6 +569,10 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         "or_low": live.get("or_low"),
         "ema9": live.get("ema9"),
         "nifty_spot": nifty_spot,
+        "day_open": live.get("day_open"),
+        "day_high": live.get("day_high"),
+        "day_low": live.get("day_low"),
+        "prev_close": live.get("prev_close"),
     }
     sid = plan.get("strategy_id") or TWENTY_RUPEES_ID
     kind = plan.get("option_type", "CE")
@@ -547,6 +582,9 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
     intra_bb = merge_option_bb_into_intra(intra, opt_bb, sym)
     intra_bb["contract_ltp"] = entry_prem
     intra_bb["option_ltp"] = quote.get("ltp") or opt_bb.get("option_ltp")
+    intra_bb = enrich_live_entry_intra(
+        intra_bb, nifty_spot=nifty_spot, ind=live, option_kind=kind
+    )
 
     spot_sl = float(plan.get("spot_stop_loss", 0))
     spot_tgt = float(plan.get("spot_target", 0))
@@ -630,7 +668,7 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
             "target_premium": tgt_prem,
             "delta_used": round(delta, 3),
             "entry_order_type": "LIMIT",
-            "exit_order_type": "GTT_OCO",
+            "exit_order_type": "SL_STEPPED",
             "num_lots": qty_lots,
             "quantity": quantity,
             "risk_inr": round(risk_inr, 2) if risk_inr else plan.get("risk_inr"),

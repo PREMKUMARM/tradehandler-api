@@ -395,6 +395,36 @@ class DhanDataClient:
                 )
         return out
 
+    def fetch_nifty_session(
+        self,
+        session_date: str,
+        *,
+        kinds: Optional[List[str]] = None,
+        offsets: Optional[List[str]] = None,
+        interval: str = DEFAULT_INTERVAL,
+        expiry_code: int = 1,
+        expiry_flag: str = "WEEK",
+    ) -> Dict[str, Dict[str, OptionSeries]]:
+        """Nifty 50 rolling expired options for one session day (NSE_FNO)."""
+        kinds = kinds or ["CE", "PE"]
+        offsets = offsets or STRIKE_OFFSETS
+        next_day = (date.fromisoformat(session_date) + timedelta(days=1)).isoformat()
+        out: Dict[str, Dict[str, OptionSeries]] = {}
+        for kind in kinds:
+            out[kind] = {}
+            for offset in offsets:
+                leg = self.nifty_rolling_option_range(
+                    from_date=session_date,
+                    to_date=next_day,
+                    kind=kind,
+                    offset=offset,
+                    interval=str(interval),
+                    expiry_code=expiry_code,
+                    expiry_flag=expiry_flag,
+                )
+                out[kind][offset] = OptionSeries.from_api(kind, offset, leg)
+        return out
+
 
 def interval_to_str(interval_min: int) -> str:
     iv = int(interval_min)

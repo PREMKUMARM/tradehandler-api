@@ -27,9 +27,9 @@ def _env_int(name: str, default: int) -> int:
 
 
 def sensex_entry_cutoff_minutes() -> int:
-    """Last minute we allow new 20rupees entries (default 15:00 IST — 30m before close)."""
-    hour = _env_int("SENSEX_ENTRY_CUTOFF_HOUR", 15)
-    minute = _env_int("SENSEX_ENTRY_CUTOFF_MINUTE", 0)
+    """Last minute we allow new 20rupees entries (default 14:45 IST — avoid late reversals)."""
+    hour = _env_int("SENSEX_ENTRY_CUTOFF_HOUR", 14)
+    minute = _env_int("SENSEX_ENTRY_CUTOFF_MINUTE", 45)
     hour = max(0, min(23, hour))
     minute = max(0, min(59, minute))
     return hour * 60 + minute
@@ -76,7 +76,10 @@ def sensex_max_lots_per_trade() -> int:
 
 def sensex_backtest_max_trades_per_contract_per_day() -> int:
     """Max entry/exit round-trips per tradingsymbol within one backtest session day."""
-    return max(1, min(20, _env_int("SENSEX_BACKTEST_MAX_TRADES_PER_CONTRACT_PER_DAY", 5)))
+    legacy = _env_int("SENSEX_BACKTEST_MAX_TRADES_PER_CONTRACT_PER_DAY", 0)
+    if legacy > 0:
+        return max(1, min(20, legacy))
+    return max(1, min(20, _env_int("MAX_TRADES_PER_CONTRACT_PER_DAY", 1)))
 
 
 def sensex_gap_pct(day_open: float, prev_close: float) -> float:
@@ -192,7 +195,7 @@ def resolve_sensex_bfo_product(plan: dict | None = None) -> str:
     """Product for V2 entry + GTT exit. Always NRML when exit is GTT_OCO."""
     if not plan:
         return SENSEX_BFO_PRODUCT
-    if str(plan.get("exit_order_type") or "GTT_OCO").upper() in ("GTT_OCO", "GTT"):
+    if str(plan.get("exit_order_type") or "SL_STEPPED").upper() in ("GTT_OCO", "GTT", "SL_STEPPED"):
         return SENSEX_BFO_PRODUCT
     p = str(plan.get("product") or SENSEX_BFO_PRODUCT).upper()
     return SENSEX_BFO_PRODUCT if p == "MIS" else (p if p in ("NRML", "MIS", "CNC") else SENSEX_BFO_PRODUCT)

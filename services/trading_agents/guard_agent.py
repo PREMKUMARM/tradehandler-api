@@ -250,7 +250,10 @@ def _commodity_pre_check() -> Tuple[bool, str]:
     ok, msg = _commodity_cutoff_check()
     if not ok:
         return ok, msg
-    return has_any_exchange_position(exchange="MCX", log_prefix="CommodityGuard")
+    any_pos, pos_msg = has_any_exchange_position(exchange="MCX", log_prefix="CommodityGuard")
+    if any_pos:
+        return False, pos_msg
+    return True, "OK"
 
 
 def _sensex_cutoff_check() -> Tuple[bool, str]:

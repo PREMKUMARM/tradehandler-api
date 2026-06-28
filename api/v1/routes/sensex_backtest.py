@@ -1,34 +1,78 @@
-"""Sensex 20rupees-strategy backtest via Dhan Data API."""
+"""20rupees-strategy backtest via Dhan Data API (Sensex + Nifty50)."""
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from core.responses import SuccessResponse
 from schemas.sensex_backtest import SensexBacktestRunRequest
+from services.dhan_viewer import list_dhan_sessions, load_cached_backtest_bundle
+from services.nifty_dhan_backtest import run_nifty_dhan_backtest
 from services.sensex_dhan_backtest import (
     BacktestParams,
     backtest_session_calendar,
     check_dhan_status,
     list_available_sessions,
     run_sensex_dhan_backtest,
+    sensex_entry_cutoff_minutes,
+    sensex_entry_scan_start_minutes,
 )
 
 router = APIRouter(prefix="/sensex/backtest", tags=["Sensex Backtest"])
 
 
+def _backtest_calendar_for_segment(segment: str) -> dict:
+    seg = (segment or "sensex").lower()
+    if seg in ("nifty50", "nifty"):
+        sessions = list_dhan_sessions("nifty50")
+        dates = [s["session_date"] for s in sessions if s.get("session_date")]
+        scan_start = sensex_entry_scan_start_minutes()
+        scan_end = sensex_entry_cutoff_minutes()
+        return {
+            "segment": "nifty50",
+            "start_date": min(dates) if dates else None,
+            "end_date": max(dates) if dates else None,
+            "trading_days": len(dates),
+            "cached_count": len(dates),
+            "default_entry_scan_start_ist": f"{scan_start // 60:02d}:{scan_start % 60:02d}",
+            "default_entry_scan_end_ist": f"{scan_end // 60:02d}:{scan_end % 60:02d}",
+        }
+    cal = backtest_session_calendar()
+    cal["segment"] = "sensex"
+    return cal
+
+
 @router.get("/sessions")
-async def backtest_sessions(_: Request):
+async def backtest_sessions(
+    _: Request,
+    segment: str = Query("sensex", description="sensex or nifty50"),
+):
     """Trading-day calendar with Dhan cache status (for date-range picker)."""
-    sessions = list_available_sessions()
-    calendar = backtest_session_calendar()
+    seg = (segment or "sensex").lower()
+    if seg in ("nifty50", "nifty"):
+        sessions = list_dhan_sessions("nifty50")
+        calendar = _backtest_calendar_for_segment("nifty50")
+    else:
+        sessions = list_available_sessions()
+        calendar = _backtest_calendar_for_segment("sensex")
     return SuccessResponse(
         data={
             "sessions": sessions,
             "count": len(sessions),
             "calendar": calendar,
+            "segment": calendar.get("segment", seg),
         },
         message=f"{len(sessions)} trading days · {calendar.get('cached_count', 0)} cached",
     )
+
+
+@router.get("/cached")
+async def backtest_cached_results(_: Request):
+    """Load latest on-disk backtest JSON (Nifty + Sensex) and combined trade CSV."""
+    try:
+        bundle = load_cached_backtest_bundle()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return SuccessResponse(data=bundle, message="Cached backtest results loaded")
 
 
 @router.get("/status")
@@ -61,8 +105,9 @@ async def run_backtest(_: Request, body: SensexBacktestRunRequest):
         entry_scan_start_ist=body.entry_scan_start_ist,
         entry_scan_end_ist=body.entry_scan_end_ist,
     )
+    runner = run_nifty_dhan_backtest if body.segment == "nifty50" else run_sensex_dhan_backtest
     try:
-        result = await asyncio.to_thread(run_sensex_dhan_backtest, params)
+        result = await asyncio.to_thread(runner, params)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

@@ -1144,6 +1144,27 @@ def get_option_bollinger_snapshot(
     out["bb_upper"] = round(upper, 2) if upper is not None else None
     out["bb_lower"] = round(lower, 2) if lower is not None else None
     out["last_5m_close"] = round(closes[-1], 2) if closes else None
+
+    def _ohlc(row: Dict[str, Any]) -> Dict[str, float]:
+        return {
+            "open": float(row.get("open") or 0),
+            "high": float(row.get("high") or 0),
+            "low": float(row.get("low") or 0),
+            "close": float(row.get("close") or 0),
+        }
+
+    # rows[-1] is forming; [-3] setup, [-2] last two closed bars for confirmation entry
+    if len(rows) >= 3:
+        setup = _ohlc(rows[-3])
+        confirm = _ohlc(rows[-2])
+        for k, v in setup.items():
+            out[f"setup_bar_{k}"] = round(v, 2)
+        for k, v in confirm.items():
+            out[f"confirm_bar_{k}"] = round(v, 2)
+        out["bar_open"] = round(float(rows[-1].get("open") or 0), 2)
+        out["bar_high"] = round(float(rows[-1].get("high") or 0), 2)
+        out["bar_low"] = round(float(rows[-1].get("low") or 0), 2)
+
     src = "kite_historical_5m_option"
     out["indicator_sources"] = {
         "bb_middle": src,

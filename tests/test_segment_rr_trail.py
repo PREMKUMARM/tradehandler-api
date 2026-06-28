@@ -126,45 +126,43 @@ def test_gtt_tp_widened_for_trail_all_segments():
 
 
 @pytest.mark.parametrize(
-    "place_fn_path,gtt_patch",
+    "place_fn_path",
     [
-        (
-            "services.v2_trade_service.place_gtt_for_plan",
-            "services.v2_indicator_plan.gtt_triggers_from_plan",
-        ),
-        (
-            "services.commodity_trade_service.place_gtt_for_plan",
-            "services.commodity_indicator_plan.gtt_triggers_from_plan",
-        ),
-        (
-            "services.sensex_trade_service.place_gtt_for_plan",
-            "services.sensex_indicator_plan.gtt_triggers_from_plan",
-        ),
+        "services.v2_trade_service.place_gtt_for_plan",
+        "services.commodity_trade_service.place_gtt_for_plan",
+        "services.sensex_trade_service.place_gtt_for_plan",
     ],
 )
-def test_place_gtt_caps_tp_for_trail(place_fn_path, gtt_patch):
+def test_place_sl_exit_after_fill(place_fn_path):
     import importlib
 
     mod_name, fn_name = place_fn_path.rsplit(".", 1)
     mod = importlib.import_module(mod_name)
-    place_gtt = getattr(mod, fn_name)
+    place_sl = getattr(mod, fn_name)
     plan = _sample_plan(entry=20.0, sl=10.0)
     captured = {}
 
     def _invoke(payload):
         captured.update(payload)
-        return {"status": "success", "trigger_id": "123"}
+        return {"status": "success", "order_id": "SL123"}
 
-    with patch(f"{mod_name}.place_gtt_tool") as mock_tool:
+    segment = "nifty50"
+    if "commodity" in mod_name:
+        segment = "commodity"
+    elif "sensex" in mod_name:
+        segment = "sensex"
+
+    with patch("services.sl_exit_service.place_order_tool") as mock_tool:
         mock_tool.invoke = _invoke
-        with patch(gtt_patch, return_value=(9.0, 35.0, 20.0)):
-            with patch(
-                f"{gtt_patch.rsplit('.', 1)[0]}.refresh_plan_at_execution",
-                side_effect=lambda p, **kw: dict(p),
-            ):
-                result = place_gtt(plan, entry_order_id="E1")
-    assert result.get("gtt_trigger_id") == "123"
-    assert captured["target_price"] > plan["target_premium"]
+        with patch(
+            "services.v2_indicator_plan.refresh_plan_at_execution",
+            side_effect=lambda p, **kw: dict(p),
+        ):
+            with patch("services.exit_trail_register.register_from_trade_plan"):
+                result = place_sl(plan, entry_order_id="E1")
+    assert result.get("sl_order_id") == "SL123"
+    assert captured["order_type"] == "SL-M"
+    assert captured["transaction_type"] == "SELL"
 
 
 def test_register_trail_stores_one_r_initial_target():

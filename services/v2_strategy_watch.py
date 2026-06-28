@@ -528,28 +528,28 @@ class V2StrategyWatch:
             )
             return
 
-        gtt_id: Optional[str] = None
-        gtt_detail = ""
+        sl_id: Optional[str] = None
+        exit_detail = ""
         try:
             fill_px = self._order_fill_price(entry_id or "") if entry_id else None
             executed_plan = plan
 
             if plan:
-                gtt_result = await asyncio.to_thread(
+                exit_result = await asyncio.to_thread(
                     v2_trade_service.place_gtt_for_plan,
                     plan,
                     fill_price=fill_px,
                     entry_order_id=entry_id,
                 )
-                executed_plan = gtt_result.get("trade_plan") or plan
-                gtt_id = gtt_result.get("gtt_trigger_id")
-                if gtt_id:
+                executed_plan = exit_result.get("trade_plan") or plan
+                sl_id = exit_result.get("sl_order_id")
+                if sl_id:
                     sl_prem = float(executed_plan.get("stop_loss_premium") or 0)
-                    tp_prem = float(executed_plan.get("target_premium") or 0)
-                    gtt_detail = f"GTT OCO {gtt_id} · SL ₹{sl_prem:.2f} TP ₹{tp_prem:.2f}"
+                    t1 = float(executed_plan.get("target_premium") or 0)
+                    exit_detail = f"SL-M {sl_id} @ ₹{sl_prem:.2f} · T1 ₹{t1:.2f}"
                 else:
-                    errs = "; ".join(gtt_result.get("errors") or ["GTT failed"])
-                    gtt_detail = f"GTT failed: {errs}"[:180]
+                    errs = "; ".join(exit_result.get("errors") or ["SL exit failed"])
+                    exit_detail = f"SL failed: {errs}"[:180]
 
                 try:
                     from services.risk_gate import record_order_placed
@@ -567,7 +567,7 @@ class V2StrategyWatch:
 
             fill_bit = f" @ ₹{fill_px:.2f}" if fill_px else ""
             with _lock:
-                self._pending_gtt_trigger_id = str(gtt_id) if gtt_id else None
+                self._pending_gtt_trigger_id = str(sl_id) if sl_id else None
                 self._pending_symbol = None
                 if disarm:
                     self._armed = False
@@ -575,9 +575,9 @@ class V2StrategyWatch:
             self._push_event(
                 WatchEvent(
                     at=datetime.now(IST).isoformat(),
-                    kind="auto_gtt_placed" if gtt_id else "auto_gtt_failed",
+                    kind="auto_sl_placed" if sl_id else "auto_sl_failed",
                     message=(
-                        f"Entry {entry_id} filled{fill_bit} — {gtt_detail or 'no exit plan'}"
+                        f"Entry {entry_id} filled{fill_bit} — {exit_detail or 'no exit plan'}"
                         + (" (watch disarmed)" if disarm else "")
                     )[:240],
                     tradingsymbol=sym,
@@ -640,20 +640,20 @@ class V2StrategyWatch:
                 kind = "auto_stale_abort_failed"
                 if plan and sym and entry_id:
                     try:
-                        gtt_result = await asyncio.to_thread(
+                        sl_result = await asyncio.to_thread(
                             v2_trade_service.place_gtt_for_plan,
                             plan,
                             fill_price=fill_px,
                             entry_order_id=entry_id,
                         )
-                        gtt_id = gtt_result.get("gtt_trigger_id")
-                        if gtt_id:
-                            detail = f"exit failed — attached protective GTT {gtt_id}"
-                            kind = "auto_stale_abort_gtt"
+                        sl_id = sl_result.get("sl_order_id") or sl_result.get("gtt_trigger_id")
+                        if sl_id:
+                            detail = f"exit failed — attached protective SL {sl_id}"
+                            kind = "auto_stale_abort_sl"
                             with _lock:
                                 self._trade_plans_by_symbol[sym.upper()] = copy.deepcopy(plan)
-                    except Exception as gtt_exc:
-                        detail = f"exit failed — {exit_err[:80]} · GTT also failed: {gtt_exc}"[:120]
+                    except Exception as sl_exc:
+                        detail = f"exit failed — {exit_err[:80]} · SL also failed: {sl_exc}"[:120]
             else:
                 detail = "no exit placed"
                 kind = "auto_stale_abort_failed"
@@ -732,7 +732,7 @@ class V2StrategyWatch:
             return []
 
     async def _reconcile_orphan_nfo_gtt(self) -> None:
-        """Attach GTT+trail for NFO positions missing exit protection."""
+        """Attach SL+trail for NFO positions missing exit protection."""
         with _lock:
             last = self._last_orphan_gtt_reconcile_at
         if last and (datetime.now(IST) - last.astimezone(IST)).total_seconds() < 60:
@@ -753,23 +753,24 @@ class V2StrategyWatch:
                 )
             if not plan:
                 log_warning(
-                    f"[V2Watch] NFO position {sym} qty={pos.get('quantity')} has no GTT/trail and no cached plan"
+                    f"[V2Watch] NFO position {sym} qty={pos.get('quantity')} has no SL/trail and no cached plan"
                 )
                 continue
-            log_warning(f"[V2Watch] Orphan NFO position {sym} — attempting GTT from cached plan")
-            gtt_result = await asyncio.to_thread(
+            log_warning(f"[V2Watch] Orphan NFO position {sym} — attempting SL from cached plan")
+            sl_result = await asyncio.to_thread(
                 v2_trade_service.place_gtt_for_plan,
                 plan,
                 fill_price=float(pos.get("average_price") or 0) or None,
             )
-            if gtt_result.get("gtt_trigger_id"):
+            sl_id = sl_result.get("sl_order_id") or sl_result.get("gtt_trigger_id")
+            if sl_id:
                 log_info(
-                    f"[V2Watch] Orphan GTT attached for {sym}: {gtt_result.get('gtt_trigger_id')}"
+                    f"[V2Watch] Orphan SL attached for {sym}: {sl_id}"
                 )
             else:
                 log_error(
-                    f"[V2Watch] Orphan GTT failed for {sym}: "
-                    f"{'; '.join(gtt_result.get('errors') or [])}"
+                    f"[V2Watch] Orphan SL failed for {sym}: "
+                    f"{'; '.join(sl_result.get('errors') or [])}"
                 )
 
     def _cancel_pending(self, *, reason: str, rollback_slot: bool = True) -> None:
@@ -803,7 +804,7 @@ class V2StrategyWatch:
             except Exception:
                 pass
         try:
-            from agent.tools.kite_tools import cancel_order_tool, delete_gtt_tool
+            from agent.tools.kite_tools import cancel_order_tool
 
             if entry_id:
                 st = (self._order_status(entry_id) or "").upper()
@@ -815,7 +816,7 @@ class V2StrategyWatch:
                     cancel_order_tool.invoke({"order_id": entry_id, "variety": "regular"})
             if gtt_id:
                 try:
-                    delete_gtt_tool.invoke({"trigger_id": int(str(gtt_id))})
+                    cancel_order_tool.invoke({"order_id": str(gtt_id), "variety": "regular"})
                 except Exception:
                     pass
         except Exception:
@@ -825,7 +826,7 @@ class V2StrategyWatch:
                 at=datetime.now(IST).isoformat(),
                 kind="auto_cancelled",
                 message=f"Cancelled pending entry{f' {entry_id}' if entry_id else ''}"
-                f"{f' + GTT {gtt_id}' if gtt_id else ''}: {reason}"[:240],
+                f"{f' + SL {gtt_id}' if gtt_id else ''}: {reason}"[:240],
                 tradingsymbol=sym,
             )
         )
@@ -1369,7 +1370,7 @@ class V2StrategyWatch:
             autonomous = self._cfg.mode == "autonomous"
         title = f"V2 checklist complete — {strat}"
         if autonomous and try_autonomous:
-            venue = "paper ledger" if paper else "LIMIT+GTT"
+            venue = "paper ledger" if paper else "LIMIT+SL"
             body = f"{sym} — placing via {venue} (score {score})"
         elif autonomous:
             body = (
@@ -1560,11 +1561,11 @@ class V2StrategyWatch:
                         + (f" · trig {float(trig):.0f}" if trig is not None else "")
                         + (f" · score {score}" if score else "")
                         + (
-                            " · GTT after fill"
+                            " · SL after fill"
                             if result.get("gtt_deferred")
                             else (
-                                f" · GTT {result.get('gtt_trigger_id')}"
-                                if result.get("gtt_trigger_id")
+                                f" · SL {result.get('sl_order_id') or result.get('gtt_trigger_id')}"
+                                if result.get("sl_order_id") or result.get("gtt_trigger_id")
                                 else ""
                             )
                         )

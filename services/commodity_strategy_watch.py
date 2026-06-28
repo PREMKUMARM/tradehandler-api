@@ -570,21 +570,21 @@ class CommodityStrategyWatch:
             executed_plan = plan
 
             if plan:
-                gtt_result = await asyncio.to_thread(
+                exit_result = await asyncio.to_thread(
                     commodity_trade_service.place_gtt_for_plan,
                     plan,
                     fill_price=fill_px,
                     entry_order_id=oid,
                 )
-                executed_plan = gtt_result.get("trade_plan") or plan
-                gtt_id = gtt_result.get("gtt_trigger_id")
+                executed_plan = exit_result.get("trade_plan") or plan
+                gtt_id = exit_result.get("sl_order_id") or exit_result.get("gtt_trigger_id")
                 if gtt_id:
                     sl_prem = float(executed_plan.get("stop_loss_premium") or 0)
-                    tp_prem = float(executed_plan.get("target_premium") or 0)
-                    gtt_detail = f"GTT OCO {gtt_id} · SL ₹{sl_prem:.2f} TP ₹{tp_prem:.2f}"
+                    t1 = float(executed_plan.get("target_premium") or 0)
+                    gtt_detail = f"SL-M {gtt_id} @ ₹{sl_prem:.2f} · T1 ₹{t1:.2f}"
                 else:
-                    errs = "; ".join(gtt_result.get("errors") or ["GTT failed"])
-                    gtt_detail = f"GTT failed: {errs}"[:180]
+                    errs = "; ".join(exit_result.get("errors") or ["SL exit failed"])
+                    gtt_detail = f"SL failed: {errs}"[:180]
 
                 try:
                     from services.risk_gate import record_order_placed
@@ -607,7 +607,7 @@ class CommodityStrategyWatch:
                     update_pending_gtt(self._pending_entries, oid, gtt_id)
                 elif oid and not gtt_id:
                     log_error(
-                        f"[CommodityWatch] GTT attach failed for {oid} {sym}: {gtt_detail}"
+                        f"[CommodityWatch] SL attach failed for {oid} {sym}: {gtt_detail}"
                     )
                 if gtt_id:
                     remove_pending_entry(self._pending_entries, oid)
@@ -618,7 +618,7 @@ class CommodityStrategyWatch:
             self._push_event(
                 WatchEvent(
                     at=datetime.now(IST).isoformat(),
-                    kind="auto_gtt_placed" if gtt_id else "auto_gtt_failed",
+                    kind="auto_sl_placed" if gtt_id else "auto_sl_failed",
                     message=(
                         f"Entry {oid} filled{fill_bit} — {gtt_detail or 'no exit plan'}"
                         + (" (watch disarmed — daily cap reached)" if disarm else "")
@@ -750,7 +750,7 @@ class CommodityStrategyWatch:
             except Exception:
                 pass
         try:
-            from agent.tools.kite_tools import cancel_order_tool, delete_gtt_tool
+            from agent.tools.kite_tools import cancel_order_tool
 
             if entry_id:
                 st = (self._order_status(entry_id) or "").upper()
@@ -762,7 +762,7 @@ class CommodityStrategyWatch:
                     cancel_order_tool.invoke({"order_id": entry_id, "variety": "regular"})
             if gtt_id:
                 try:
-                    delete_gtt_tool.invoke({"trigger_id": int(str(gtt_id))})
+                    cancel_order_tool.invoke({"order_id": str(gtt_id), "variety": "regular"})
                 except Exception:
                     pass
         except Exception:
@@ -772,7 +772,7 @@ class CommodityStrategyWatch:
                 at=datetime.now(IST).isoformat(),
                 kind="auto_cancelled",
                 message=f"Cancelled pending entry{f' {entry_id}' if entry_id else ''}"
-                f"{f' + GTT {gtt_id}' if gtt_id else ''}: {reason}"[:240],
+                f"{f' + SL {gtt_id}' if gtt_id else ''}: {reason}"[:240],
                 tradingsymbol=sym,
             )
         )
@@ -1146,21 +1146,22 @@ class CommodityStrategyWatch:
                 await self._on_entry_filled(entry_id)
             else:
                 log_warning(
-                    f"[CommodityWatch] Orphan MCX position {sym} — attempting GTT from cached plan"
+                    f"[CommodityWatch] Orphan MCX position {sym} — attempting SL from cached plan"
                 )
-                gtt_result = await asyncio.to_thread(
+                sl_result = await asyncio.to_thread(
                     commodity_trade_service.place_gtt_for_plan,
                     plan,
                     fill_price=float(pos.get("average_price") or 0) or None,
                 )
-                if gtt_result.get("gtt_trigger_id"):
+                sl_id = sl_result.get("sl_order_id") or sl_result.get("gtt_trigger_id")
+                if sl_id:
                     log_info(
-                        f"[CommodityWatch] Orphan GTT attached for {sym}: {gtt_result.get('gtt_trigger_id')}"
+                        f"[CommodityWatch] Orphan SL attached for {sym}: {sl_id}"
                     )
                 else:
                     log_error(
-                        f"[CommodityWatch] Orphan GTT failed for {sym}: "
-                        f"{'; '.join(gtt_result.get('errors') or [])}"
+                        f"[CommodityWatch] Orphan SL failed for {sym}: "
+                        f"{'; '.join(sl_result.get('errors') or [])}"
                     )
 
     async def _tick_all_pending_entries(
@@ -1530,7 +1531,7 @@ class CommodityStrategyWatch:
             autonomous = self._cfg.mode == "autonomous"
         title = f"Crude Mini checklist complete — {strat}"
         if autonomous and try_autonomous:
-            venue = "paper ledger" if paper else "LIMIT+GTT"
+            venue = "paper ledger" if paper else "LIMIT+SL"
             body = f"{sym} — placing via {venue} (score {score})"
         elif autonomous:
             body = (
@@ -1707,12 +1708,12 @@ class CommodityStrategyWatch:
                         + (f" · trig {float(trig):.0f}" if trig is not None else "")
                         + (f" · score {score}" if score else "")
                         + (
-                            " · GTT after fill"
+                            " · SL after fill"
                             if result.get("gtt_deferred")
                             else (
-                                f" · GTT {result.get('gtt_trigger_id')}"
-                                if result.get("gtt_trigger_id")
-                                else " · set exit manually if GTT pending"
+                                f" · SL {result.get('sl_order_id') or result.get('gtt_trigger_id')}"
+                                if result.get("sl_order_id") or result.get("gtt_trigger_id")
+                                else " · set exit manually if SL pending"
                             )
                         )
                     )

@@ -50,7 +50,7 @@ OHLC_PATH = DATA_DIR / "weekly_expiry_day_ohlc.csv"
 LOT_SIZE = 20
 MAX_LOTS = sensex_max_lots_per_trade()
 MAX_TRADES_PER_CONTRACT_PER_DAY = sensex_backtest_max_trades_per_contract_per_day()
-DEFAULT_RISK_PCT = 1.0
+DEFAULT_RISK_PCT = 10.0
 DEFAULT_SL_INR = 9.0  # fixed initial stop-loss premium price (API field: sl_inr)
 DEFAULT_ENTRY_LOW = 17.0
 DEFAULT_ENTRY_HIGH = 23.0
@@ -108,6 +108,7 @@ class BacktestParams:
     timeframes_min: Optional[List[int]] = None
     entry_scan_start_ist: Optional[str] = None
     entry_scan_end_ist: Optional[str] = None
+    segment: str = "sensex"
 
 
 def _format_ist_minutes(minutes: int) -> str:
@@ -274,6 +275,7 @@ def _resolve_backtest_sessions(params: BacktestParams) -> List[Dict[str, Any]]:
     """Pick sessions from explicit dates, inclusive date range, or full calendar."""
     all_sessions = _load_all_sessions()
     by_date = {r["expiry_date"]: r for r in all_sessions}
+    expiry_idx = expiry_index_by_date()
 
     if params.expiry_dates:
         wanted = sorted(set(params.expiry_dates))
@@ -291,8 +293,25 @@ def _resolve_backtest_sessions(params: BacktestParams) -> List[Dict[str, Any]]:
         end = date.fromisoformat(end_raw)
         if end < start:
             raise ValueError("end_date must be on or after start_date")
-        wanted = set(list_trading_days(start=start, end=end))
-        sessions = [r for r in all_sessions if r.get("expiry_date") in wanted]
+        wanted_days = list_trading_days(start=start, end=end)
+        sessions: List[Dict[str, Any]] = []
+        for trade_date in wanted_days:
+            if trade_date in by_date:
+                sessions.append(by_date[trade_date])
+            else:
+                row = expiry_idx.get(trade_date) or {}
+                sessions.append(
+                    {
+                        "expiry_date": trade_date,
+                        "session_date": trade_date,
+                        "is_weekly_expiry": trade_date in expiry_idx,
+                        "expiry_weekday": row.get("expiry_weekday") or "",
+                        "holiday_adjusted": row.get("holiday_adjusted") == "True",
+                        "index_open": _f(row.get("open")),
+                        "index_close": _f(row.get("close")),
+                        "prev_close": _f(row.get("prev_close")),
+                    }
+                )
         if not sessions:
             raise ValueError(f"No trading sessions between {start_raw} and {end_raw}")
         return sessions
@@ -396,13 +415,14 @@ def _pick_entry_auto(
     scan_start_min: Optional[int] = None,
     start_idx: int = 0,
     contract_trade_counts: Optional[Dict[str, int]] = None,
-    max_trades_per_contract: int = MAX_TRADES_PER_CONTRACT_PER_DAY,
+    contract_last_exit: Optional[Dict[str, str]] = None,
+    max_trades_per_contract: Optional[int] = None,
+    segment: str = "sensex",
 ) -> Optional[Tuple[MinuteBar, str, OptionSeries]]:
-    """AUTO: gap direction (PE gap-down, CE gap-up/flat) + smart OI strike in band."""
-    kind = sensex_gap_direction_kind(index_open, prev_close)
+    """AUTO: pick CE/PE from index day direction (spot vs day open) at each scan bar."""
     return _pick_entry(
         session,
-        kind,
+        "AUTO",
         band_low,
         band_high,
         cutoff_minutes,
@@ -410,7 +430,10 @@ def _pick_entry_auto(
         scan_start_min=scan_start_min,
         start_idx=start_idx,
         contract_trade_counts=contract_trade_counts,
+        contract_last_exit=contract_last_exit,
         max_trades_per_contract=max_trades_per_contract,
+        segment=segment,
+        index_open=index_open,
     )
 
 
@@ -425,17 +448,38 @@ def _pick_entry(
     scan_start_min: Optional[int] = None,
     start_idx: int = 0,
     contract_trade_counts: Optional[Dict[str, int]] = None,
-    max_trades_per_contract: int = MAX_TRADES_PER_CONTRACT_PER_DAY,
+    contract_last_exit: Optional[Dict[str, str]] = None,
+    max_trades_per_contract: Optional[int] = None,
+    segment: str = "sensex",
+    index_open: float = 0.0,
 ) -> Optional[Tuple[MinuteBar, str, OptionSeries]]:
-    """CE/PE: smart strike within the chosen leg when premium is in band."""
-    leg = session.get(kind) or {}
-    ref = leg.get("ATM")
+    """CE/PE/AUTO: smart strike in band; AUTO uses index day direction at each bar."""
+    from services.entry_quality import (
+        confirmation_candle_entry_ok,
+        confirmation_candle_required,
+        contract_may_reenter,
+        day_direction_kind,
+        entry_bar_quality_ok,
+        entry_day_aligned_ok,
+        entry_intraday_context_ok,
+        max_trades_per_contract_per_day,
+    )
+
+    is_auto = (kind or "").upper() == "AUTO"
+    if is_auto:
+        ref = _ref_series(session)
+    else:
+        leg = session.get(kind) or {}
+        ref = leg.get("ATM")
     if not ref or not ref.timestamps:
         return None
 
     counts = contract_trade_counts or {}
+    last_exit = contract_last_exit or {}
+    cap = max_trades_per_contract if max_trades_per_contract is not None else max_trades_per_contract_per_day()
     scan_start = int(scan_start_min if scan_start_min is not None else sensex_entry_scan_start_minutes())
-    for idx in range(max(0, int(start_idx)), len(ref.timestamps)):
+    min_idx = 1 if confirmation_candle_required() else 0
+    for idx in range(max(min_idx, max(0, int(start_idx))), len(ref.timestamps)):
         ts = ref.timestamps[idx]
         dt = datetime.fromtimestamp(ts, tz=IST)
         bar_minutes = dt.hour * 60 + dt.minute
@@ -444,13 +488,22 @@ def _pick_entry(
         if bar_minutes >= cutoff_minutes:
             break
 
+        bar_spot = float(ref.spot[idx]) if ref.spot else 0.0
+        if is_auto:
+            effective_kind = day_direction_kind(index_open, bar_spot)
+            if not effective_kind:
+                continue
+        else:
+            effective_kind = kind.upper()
+
         picked = pick_smart_at_bar(
             session,
             idx,
-            kinds=(kind.upper(),),
+            kinds=(effective_kind,),
             band_low=band_low,
             band_high=band_high,
             prev_close=prev_close,
+            segment=segment,
         )
         if not picked:
             continue
@@ -458,8 +511,65 @@ def _pick_entry(
         bar = _series_bar(series, idx)
         if sensex_is_bad_option_bar(bar.open, bar.high, bar.close):
             continue
+        setup_bar = _series_bar(series, idx - 1) if idx > 0 else None
+        if setup_bar is None:
+            continue
+        ok_conf, _why_conf = confirmation_candle_entry_ok(
+            kind=series.kind,
+            setup_open=setup_bar.open,
+            setup_high=setup_bar.high,
+            setup_low=setup_bar.low,
+            setup_close=setup_bar.close,
+            confirm_open=bar.open,
+            confirm_high=bar.high,
+            confirm_low=bar.low,
+            confirm_close=bar.close,
+            band_low=band_low,
+            band_high=band_high,
+        )
+        if not ok_conf:
+            continue
+        if not entry_day_aligned_ok(kind=series.kind, index_open=index_open, spot=bar.spot):
+            continue
+        spot_prev = 0.0
+        if idx > 0 and ref.spot:
+            spot_prev = float(ref.spot[idx - 1])
+        elif idx > 0 and series.spot:
+            spot_prev = float(series.spot[idx - 1])
+        session_low = 0.0
+        session_high = 0.0
+        if ref.spot:
+            spots_upto = [float(x) for x in ref.spot[: idx + 1] if float(x) > 0]
+            if spots_upto:
+                session_low = min(spots_upto)
+                session_high = max(spots_upto)
+        ok_ctx, _why_ctx = entry_intraday_context_ok(
+            kind=series.kind,
+            index_open=index_open,
+            spot=bar.spot,
+            spot_prev=spot_prev,
+            bar_minutes=bar_minutes,
+            scan_start_minutes=scan_start,
+            session_low_so_far=session_low,
+            session_high_so_far=session_high,
+            segment=segment,
+        )
+        if not ok_ctx:
+            continue
+        ok, _why = entry_bar_quality_ok(
+            kind=series.kind,
+            bar_open=bar.open,
+            bar_close=bar.close,
+            spot=bar.spot,
+            prev_close=prev_close,
+            spot_prev=spot_prev,
+        )
+        if not ok:
+            continue
         contract = _contract_key(series.kind, bar.strike)
-        if counts.get(contract, 0) >= max(1, int(max_trades_per_contract)):
+        if counts.get(contract, 0) >= max(1, int(cap)):
+            continue
+        if not contract_may_reenter(contract, last_exit.get(contract)):
             continue
         source = strike_source_label(candidate.offset)
         entry = _entry_from_bar_close(bar.close, band_low, band_high)
@@ -474,34 +584,30 @@ def _r_unit(entry: float, fixed_sl_premium: float) -> float:
     return max(0.05, float(entry) - max(0.05, float(fixed_sl_premium)))
 
 
-def _stepped_trail_sl(entry: float, peak: float, r_inr: float) -> float:
-    """
-    Stepped-R trail after 1R target (aligned with live momentum_trail stepped_rr).
-
-    Example entry=23, R=10: target1=33 → SL moves to 23; at peak 43 SL=33; at peak 53 SL=43.
-    """
-    r = max(0.05, float(r_inr))
-    step = max(1, int((peak - entry) / r))
-    locked_step = max(0, step - 1)
-    if locked_step >= 1:
-        return round(entry + locked_step * r, 2)
-    return round(entry, 2)
+def _target_at_level(entry: float, r: float, level: int) -> float:
+    return round(entry + level * r, 2)
 
 
-def _backtest_size_from_allocation(
-    capital: float,
-    risk_pct: float,
-    entry_premium: float,
-    lot_size: int,
-) -> Tuple[int, int, float]:
-    """Lots from risk% capital allocation ÷ entry premium (not SL distance)."""
-    alloc_inr = capital * (risk_pct / 100.0)
-    if entry_premium <= 0:
-        return 1, lot_size, alloc_inr
-    lots = int(alloc_inr / (entry_premium * lot_size))
-    lots = max(1, lots)
-    quantity = lots * lot_size
-    return lots, quantity, round(alloc_inr, 2)
+def _sl_at_stage(entry: float, r: float, stage: int, initial_sl: float) -> float:
+    if stage <= 0:
+        return round(initial_sl, 2)
+    if stage == 1:
+        return round(entry, 2)
+    return _target_at_level(entry, r, stage - 1)
+
+
+def _levels_reached(px: float, entry: float, r: float) -> int:
+    if r <= 0 or px <= entry:
+        return 0
+    return int((px - entry) / r + 1e-9)
+
+
+def _stepped_sl_targets(entry: float, initial_sl: float, t1_override: Optional[float] = None) -> Tuple[float, float, float]:
+    """T1 = first target (1R), T2 = entry + 2R — aligned with sl_exit_service / ExitTrailMonitor."""
+    r = _r_unit(entry, initial_sl)
+    t1 = round(float(t1_override) if t1_override and t1_override > entry else entry + r, 2)
+    t2 = round(entry + 2 * r, 2)
+    return r, t1, t2
 
 
 def _simulate_from_entry(
@@ -512,20 +618,21 @@ def _simulate_from_entry(
     min_target_high: float,
 ) -> Tuple[float, str, int]:
     """
-    Stepped trailing stop on 5m bars after fill at entry close.
+    Stepped SL on option bars after fill (T1→entry, T2→T1, T3→T2, … until SL or EOD).
 
     fixed_sl_premium: absolute initial SL option price (e.g. ₹9).
-    R = entry − fixed_sl; 1R target = entry + R; trail steps every R.
-    Trail SL is not checked on the bar where 1R first activates.
+    min_target_high: T1 premium (1R); further targets at 2R, 3R, 4R, …
     """
-    initial_sl = round(max(0.05, float(fixed_sl_premium)), 2)
-    r = _r_unit(entry, initial_sl)
-    first_target = round(entry + r, 2)
-    max_target = round(entry + max(r, float(min_target_high)), 2)
+    from services.entry_quality import entry_t1_close_confirm, exit_model
 
-    trailing = False
-    activation_idx: Optional[int] = None
-    peak = entry
+    initial_sl = round(max(0.05, float(fixed_sl_premium)), 2)
+    r, t1, _t2 = _stepped_sl_targets(entry, initial_sl, t1_override=min_target_high)
+    close_confirm = entry_t1_close_confirm()
+    scalp = exit_model() == "t1_scalp"
+
+    stage = 0
+    sl = initial_sl
+
     first_idx = entry_bar_idx + 1
     if first_idx >= len(series.timestamps):
         last_close = round(series.close[entry_bar_idx], 2)
@@ -535,31 +642,50 @@ def _simulate_from_entry(
     for idx in range(first_idx, len(series.timestamps)):
         low = series.low[idx]
         high = series.high[idx]
+        close = series.close[idx]
         exit_idx = idx
 
-        if not trailing and high >= first_target:
-            trailing = True
-            activation_idx = idx
-            peak = high
-        elif trailing:
-            peak = max(peak, high)
+        px = close if close_confirm else high
+        levels = _levels_reached(px, entry, r)
 
-        if trailing:
-            sl = _stepped_trail_sl(entry, peak, r)
-        else:
-            sl = initial_sl
-            if high >= max_target and max_target > first_target:
-                return max_target, "target_max", idx
+        if scalp and levels >= 1:
+            return round(t1, 2), "target_t1", idx
 
-        skip_trail_sl = trailing and activation_idx == idx
-        if not skip_trail_sl and low <= sl:
-            reason = "trail_stop" if trailing else "stop_loss"
+        prev_stage = stage
+        if levels > stage:
+            stage = levels
+            sl = _sl_at_stage(entry, r, stage, initial_sl)
+            if stage > prev_stage:
+                continue
+
+        if low <= sl:
+            if stage <= 0:
+                reason = "stop_loss"
+            else:
+                reason = f"trail_t{stage}"
             return round(sl, 2), reason, idx
 
     last_close = round(series.close[exit_idx], 2)
-    if trailing:
+    if stage >= 1:
         return last_close, "eod_trail", exit_idx
     return last_close, "eod", exit_idx
+
+
+def _backtest_size_from_risk(
+    capital: float,
+    risk_pct: float,
+    entry_premium: float,
+    sl_premium: float,
+    lot_size: int,
+    max_lots: int,
+) -> Tuple[int, int, float]:
+    """Lots from risk% of capital and premium risk (entry − SL), capped at max_lots."""
+    from services.sensex_indicator_plan import size_from_risk
+
+    lots, qty, risk_inr = size_from_risk(
+        capital, risk_pct, entry_premium, sl_premium, lot_size, max_lots
+    )
+    return lots, qty, round(risk_inr, 2)
 
 
 def _resolve_exit_bar_index(
@@ -678,10 +804,17 @@ def _run_day(
         return []
 
     contract_counts: Dict[str, int] = {}
+    contract_last_exit: Dict[str, str] = {}
     trades: List[TradeResult] = []
     start_idx = 0
+    segment = getattr(params, "segment", "sensex") or "sensex"
+    from services.entry_quality import max_trades_per_session_day
+
+    session_cap = max_trades_per_session_day()
 
     while start_idx < len(ref.timestamps):
+        if len(trades) >= session_cap:
+            break
         if direction == "AUTO":
             picked = _pick_entry_auto(
                 session,
@@ -693,6 +826,8 @@ def _run_day(
                 scan_start_min=scan_start,
                 start_idx=start_idx,
                 contract_trade_counts=contract_counts,
+                contract_last_exit=contract_last_exit,
+                segment=segment,
             )
         else:
             picked = _pick_entry(
@@ -705,6 +840,9 @@ def _run_day(
                 scan_start_min=scan_start,
                 start_idx=start_idx,
                 contract_trade_counts=contract_counts,
+                contract_last_exit=contract_last_exit,
+                segment=segment,
+                index_open=index_open,
             )
         if not picked:
             break
@@ -729,6 +867,7 @@ def _run_day(
 
         contract = trade.symbol
         contract_counts[contract] = contract_counts.get(contract, 0) + 1
+        contract_last_exit[contract] = trade.exit_reason
         trades.append(trade)
 
     return trades
@@ -902,11 +1041,13 @@ def _run_backtest_for_timeframe(
             continue
 
         for tr in tr_list:
-            lots, qty, alloc_inr = _backtest_size_from_allocation(
+            lots, qty, risk_inr = _backtest_size_from_risk(
                 equity,
                 params.risk_pct,
                 tr.entry,
+                params.sl_inr,
                 LOT_SIZE,
+                MAX_LOTS,
             )
             notional = tr.entry * qty
             if notional > equity:
@@ -928,7 +1069,7 @@ def _run_backtest_for_timeframe(
             tr.num_lots = lots
             tr.pnl_inr = pnl_inr
             tr.entry_notional = round(notional, 2)
-            tr.risk_at_sl_inr = round(alloc_inr, 2)
+            tr.risk_at_sl_inr = round(risk_inr, 2)
             tr.capital_before = round(cap_before, 2)
             tr.capital_after = equity
             trades.append(tr)
@@ -1003,16 +1144,16 @@ def run_sensex_dhan_backtest(params: BacktestParams) -> Dict[str, Any]:
     total_fetched = sum(s.get("fetched", 0) for s in fetch_stats_by_tf.values())
 
     note = (
-        f"Starting capital ₹{start_capital:,.0f} · {params.risk_pct:g}% allocation per trade · "
+        f"Starting capital ₹{start_capital:,.0f} · {params.risk_pct:g}% risk at SL per trade · "
         f"fixed initial SL premium ₹{params.sl_inr:g} · 1R = entry − SL · 1R target = entry + 1R · "
-        f"stepped trail every 1R · entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
+        f"SL stepped: T1 → entry, T2 → T1, T3 → T2, … until trailing SL · entry ₹{params.entry_band_low:g}–₹{params.entry_band_high:g}. "
         f"Timeframes: {tf_labels}. "
-        f"Lots = floor(capital × risk% ÷ (entry × {LOT_SIZE})) — not sized from SL distance. "
+        f"Lots = floor(capital × risk% ÷ ((entry − SL) × {LOT_SIZE})), max {MAX_LOTS} lots. "
         f"AUTO picks PE on gap-down and CE on gap-up/flat; monitors ATM±{sensex_atm_near_steps()} per leg for band close. "
         f"Skips bad option ticks (open/high > 3× close). "
         f"Entry scan {scan_start_label}–{scan_end_label} IST when bar close is in band. "
         f"Exit simulation starts on the bar after entry (fill at close). "
-        f"Trail SL deferred on the 1R activation bar (no same-bar low wick stop). "
+        f"T1/T2 SL ratchet deferred on the activation bar (no same-bar wick stop). "
         f"Exits stay on the entry offset series from the entry bar onward. "
         f"Up to {MAX_TRADES_PER_CONTRACT_PER_DAY} round-trips per contract per session day (re-entry after exit). "
         f"All trading days in window ({len(sessions)} sessions). "

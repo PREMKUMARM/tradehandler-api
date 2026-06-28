@@ -1,5 +1,5 @@
 """
-V2 wizard — indicator-based LIMIT entry + GTT OCO exit (no MARKET orders).
+V2 wizard — indicator-based LIMIT entry + SL-M stepped exit (no GTT).
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from agent.config import get_agent_config
-from agent.tools.kite_tools import place_gtt_tool, place_order_tool
+from agent.tools.kite_tools import place_order_tool
 from schemas.v2_trading import ChecklistStepStatus
 from services.checklist_step_utils import parse_checklist_steps
 from utils.margin_utils import parse_equity_margins
@@ -311,7 +311,7 @@ def _validate_checklist_auto(
                 if plan
                 else plan_error
             )
-            statuses.append(_step(i, title, ok, "Exit plan (GTT OCO)", out))
+            statuses.append(_step(i, title, ok, "Exit plan (SL stepped)", out))
         elif i == 9:
             ok = plan is not None
             lots = plan.get("num_lots") if plan else 0
@@ -326,8 +326,8 @@ def _validate_checklist_auto(
         elif i == 10:
             ok = plan is not None
             prod = resolve_v2_nfo_product(plan) if plan else "NRML"
-            out = f"{prod} · LIMIT entry + GTT OCO exit" if plan else plan_error
-            statuses.append(_step(i, title, ok, "NRML + GTT (required by Zerodha)", out))
+            out = f"{prod} · LIMIT entry + SL-M stepped exit" if plan else plan_error
+            statuses.append(_step(i, title, ok, "NRML + SL-M exit", out))
         elif i == 11:
             has_plan = plan is not None
             ok = has_plan
@@ -733,95 +733,18 @@ def place_gtt_for_plan(
     fill_price: Optional[float] = None,
     entry_order_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Place OCO GTT exit (SL + target) for a long NFO option."""
-    from services.v2_indicator_plan import gtt_triggers_from_plan, refresh_plan_at_execution
+    """Place SL-M exit after entry fill (GTT removed)."""
+    from services.sl_exit_service import place_sl_exit_for_plan
 
-    result: Dict[str, Any] = {
-        "gtt_trigger_id": None,
-        "errors": [],
-        "messages": [],
-        "ok": False,
-        "trade_plan": None,
-    }
-    working = dict(plan)
-    if fill_price is not None and fill_price > 0:
-        working["entry_limit_price"] = float(fill_price)
-        working["entry_premium"] = float(fill_price)
-
-    plan = refresh_plan_at_execution(working)
-    if fill_price is not None and fill_price > 0:
-        plan["entry_limit_price"] = float(fill_price)
-        plan["entry_premium"] = float(fill_price)
-
-    from services.premium_exit_policy import enforce_plan_exits
-
-    entry_limit = float(plan.get("entry_limit_price") or plan.get("entry_premium") or 0)
-    plan = enforce_plan_exits(plan, entry=entry_limit)
-
-    symbol = plan.get("tradingsymbol")
-    if not symbol:
-        result["errors"].append("No tradingsymbol in plan")
-        return result
-
-    qty = int(plan.get("quantity") or plan.get("num_lots") or 1)
-    sl_prem = float(plan["stop_loss_premium"])
-    tgt_prem = float(plan["target_premium"])
-    result["trade_plan"] = plan
-
-    product = resolve_v2_nfo_product(plan)
-    gtt_plan = dict(plan)
-    try:
-        from services.momentum_trail import get_momentum_trail_config, gtt_tp_cap_for_trail
-
-        if get_momentum_trail_config().enabled and entry_limit > 0:
-            gtt_plan["target_premium"] = gtt_tp_cap_for_trail(entry_limit, tgt_prem)
-    except Exception:
-        pass
-    sl_trigger, tp_trigger, last_price = gtt_triggers_from_plan(gtt_plan)
-    gtt_tp = float(gtt_plan.get("target_premium") or tgt_prem)
-    if fill_price is not None and fill_price > 0:
-        last_price = fill_price
-
-    gtt = place_gtt_tool.invoke(
-        {
-            "tradingsymbol": symbol,
-            "exchange": "NFO",
-            "trigger_type": "two-leg",
-            "trigger_prices": [sl_trigger, tp_trigger],
-            "last_price": last_price,
-            "stop_loss_price": sl_prem,
-            "target_price": gtt_tp,
-            "quantity": qty,
-            "transaction_type": "SELL",
-            "product": product,
-        }
+    out = place_sl_exit_for_plan(
+        plan,
+        fill_price=fill_price,
+        entry_order_id=entry_order_id,
+        segment="nifty50",
     )
-
-    if gtt.get("status") == "success":
-        tid = gtt.get("trigger_id")
-        if isinstance(tid, dict):
-            tid = tid.get("trigger_id", tid)
-        result["gtt_trigger_id"] = str(tid)
-        result["ok"] = True
-        result["messages"].append(f"GTT OCO trigger {result['gtt_trigger_id']}")
-        if entry_order_id:
-            try:
-                from services.exit_trail_register import register_from_trade_plan
-
-                register_from_trade_plan(
-                    result.get("trade_plan") or plan,
-                    entry_order_id=str(entry_order_id),
-                    gtt_trigger_id=result["gtt_trigger_id"],
-                    segment="nifty50",
-                    fill_price=fill_price,
-                    paper=False,
-                )
-            except Exception as exc:
-                log_warning(f"Exit trail register failed: {exc}")
-    else:
-        result["errors"].append(gtt.get("error") or "GTT placement failed")
-
-    return result
+    if out.get("sl_order_id"):
+        out["gtt_trigger_id"] = out["sl_order_id"]
+    return out
 
 
 def place_trade(
@@ -1024,26 +947,27 @@ def place_trade(
         if defer_gtt_until_fill:
             result["placed"] = True
             result["gtt_deferred"] = True
+            result["exit_deferred"] = True
             result["trade_plan"] = plan
             result["messages"] = list(preview.get("messages", [])) + [
                 f"Entry order {entry_id} on {venue}",
-                "GTT OCO will attach after entry fills",
+                "SL exit will attach after entry fills",
             ]
         else:
-            gtt_result = place_gtt_for_plan(plan, entry_order_id=entry_id)
-            result["trade_plan"] = gtt_result.get("trade_plan") or plan
-            if gtt_result.get("gtt_trigger_id"):
-                result["gtt_trigger_id"] = gtt_result["gtt_trigger_id"]
+            exit_result = place_gtt_for_plan(plan, entry_order_id=entry_id)
+            result["trade_plan"] = exit_result.get("trade_plan") or plan
+            if exit_result.get("sl_order_id"):
+                result["sl_order_id"] = exit_result["sl_order_id"]
                 result["placed"] = True
                 result["messages"] = list(preview.get("messages", [])) + [
                     f"Entry order {entry_id} on {venue}",
-                    *gtt_result.get("messages", []),
+                    *exit_result.get("messages", []),
                 ]
             else:
-                result["errors"].extend(gtt_result.get("errors") or [])
+                result["errors"].extend(exit_result.get("errors") or [])
                 result["placed"] = False
                 result["messages"] = list(preview.get("messages", [])) + [
-                    f"Entry order {entry_id} placed on Zerodha; exit GTT failed — set SL/target manually in Kite",
+                    f"Entry order {entry_id} placed on Zerodha; SL exit failed — set stop manually in Kite",
                 ]
 
     except Exception as exc:

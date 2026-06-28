@@ -460,12 +460,18 @@ def resolve_sensex_strike_for_plan(
             )
 
     if chain and sid in ("20rupees_strategy", "bb_5m_mean_reversion", "long_atm_directional", ""):
-        from services.sensex_constants import sensex_gap_direction_kind
+        from services.entry_quality import auto_entry_kind, entry_day_aligned_ok
 
         kinds = (kind,)
         if sid == "20rupees_strategy" and (direction or "AUTO").upper() == "AUTO":
-            kind = sensex_gap_direction_kind(day_open or spot, prev_close)
-            kinds = (kind,)
+            day_open = day_open or spot
+            auto_kind = auto_entry_kind(day_open, spot, prev_close)
+            if not auto_kind or not entry_day_aligned_ok(
+                kind=auto_kind, index_open=day_open, spot=spot
+            ):
+                auto_kind = None
+            kind = auto_kind or kind
+            kinds = (kind,) if kind else ()
         picked = pick_smart_from_chain(
             chain,
             spot,
@@ -525,11 +531,14 @@ def pick_smart_at_bar(
     band_low: float = PREMIUM_BAND_LOW,
     band_high: float = PREMIUM_BAND_HIGH,
     prev_close: float = 0.0,
+    segment: str = "sensex",
 ) -> Optional[Tuple[StrikeCandidate, Any]]:
     """
-    Backtest: first band close among ATM±N monitored offsets at bar idx.
+    Backtest: band close among ATM±N offsets at bar idx; OI-weighted strike pick.
     Returns (candidate, OptionSeries).
     """
+    from services.index_atm import true_atm_from_spot
+
     spot = 0.0
     for kind in ("CE", "PE"):
         atm_s = (session.get(kind) or {}).get("ATM")
@@ -538,36 +547,56 @@ def pick_smart_at_bar(
             break
     if spot <= 0:
         return None
-    atm = _true_atm(spot)
+    atm = true_atm_from_spot(spot, segment=segment)
+    bias_kind = _direction_bias_kind(spot, prev_close) if prev_close > 0 else None
 
     pool: List[StrikeCandidate] = []
     series_map: Dict[Tuple[str, str], Any] = {}
+    max_oi = 1.0
+    raw_candidates: List[Tuple] = []
     for kind in kinds:
         k = kind.upper()
         for offset in sensex_atm_near_offsets():
             series = (session.get(k) or {}).get(offset)
             if not series or idx >= len(series.close):
                 continue
-            series_map[(k, offset)] = series
             bar_close = float(series.close[idx])
             if bar_close <= 0 or not _in_band(bar_close, band_low, band_high):
                 continue
             strike = int(series.strike[idx])
             if not _valid_otm_side(k, strike, atm):
                 continue
-            pool.append(
-                StrikeCandidate(
-                    kind=k,
-                    strike=strike,
-                    offset=str(offset),
-                    oi=float(series.oi[idx]),
-                    ltp=bar_close,
-                    score=0.0,
-                    dist_pts=abs(strike - atm),
-                )
-            )
+            oi = float(series.oi[idx])
+            max_oi = max(max_oi, oi)
+            raw_candidates.append((k, strike, offset, oi, bar_close, series))
 
-    best = _pick_best_near_atm(pool)
+    for k, strike, offset, oi, bar_close, series in raw_candidates:
+        dist = abs(strike - atm)
+        sc = score_strike(
+            oi=oi,
+            strike=strike,
+            atm=atm,
+            kind=k,
+            max_oi=max_oi,
+            bias_kind=bias_kind,
+            ltp=bar_close,
+            band_low=band_low,
+            band_high=band_high,
+        )
+        pool.append(
+            StrikeCandidate(
+                kind=k,
+                strike=strike,
+                offset=str(offset),
+                oi=oi,
+                ltp=bar_close,
+                score=sc,
+                dist_pts=dist,
+            )
+        )
+        series_map[(k, offset)] = series
+
+    best = _pick_best(pool)
     if not best:
         return None
     series = series_map.get((best.kind, best.offset))

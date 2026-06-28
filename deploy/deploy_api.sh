@@ -122,6 +122,50 @@ V2_WATCH_REENTRY_COOLDOWN_SEC_VAL="$(_read_local_env V2_WATCH_REENTRY_COOLDOWN_S
 V2_WATCH_MAX_DIRECTION_FLIPS_VAL="$(_read_local_env V2_WATCH_MAX_DIRECTION_FLIPS)"
 INVALIDATION_SPOT_TRIGGER_BUFFER_VAL="$(_read_local_env INVALIDATION_SPOT_TRIGGER_BUFFER)"
 
+# 20rupees strategy / Dhan backtest (sync all non-empty keys from local .env)
+STRATEGY_ENV_KEYS=(
+    EXIT_MODEL
+    NIFTY_DUCKDB_PATH
+    ENTRY_REQUIRE_MOMENTUM_BAR
+    ENTRY_REQUIRE_INDEX_MOMENTUM
+    ENTRY_REQUIRE_DAY_ALIGNED
+    ENTRY_REQUIRE_CONFIRMATION_CANDLE
+    ENTRY_MID_BAND_ONLY
+    ENTRY_BAND_LOW
+    ENTRY_BAND_HIGH
+    SENSEX_ENTRY_START_HOUR
+    SENSEX_ENTRY_START_MINUTE
+    SENSEX_ENTRY_CUTOFF_HOUR
+    SENSEX_ENTRY_CUTOFF_MINUTE
+    MAX_TRADES_PER_CONTRACT_PER_DAY
+    MAX_TRADES_PER_SESSION_DAY
+    ENTRY_BLOCK_REENTRY_AFTER_LOSS
+    ENTRY_BLOCK_REENTRY_AFTER_BREAKEVEN
+    EXIT_T1_CLOSE_CONFIRM
+    ENTRY_SCAN_WARMUP_MIN
+    ENTRY_MIN_DAY_MOVE_PTS
+    ENTRY_CHASE_DAY_PTS
+    ENTRY_CHASE_MAX_BAR_MOVE_PTS
+    ENTRY_CHASE_MIN_BAR_MOVE_PTS
+    ENTRY_PE_BOUNCE_RECOVERY_MAX_PCT
+    SENSEX_ENTRY_MIN_DAY_MOVE_PTS
+    SENSEX_ENTRY_CHASE_DAY_PTS
+    SENSEX_ENTRY_CHASE_MAX_BAR_MOVE_PTS
+    SENSEX_ENTRY_CHASE_MIN_BAR_MOVE_PTS
+    SENSEX_ENTRY_PE_BOUNCE_RECOVERY_MAX_PCT
+)
+
+STRATEGY_ENV_UPSERT_LINES=""
+for _key in "${STRATEGY_ENV_KEYS[@]}"; do
+    _val="$(_read_local_env "$_key")"
+    if [ -n "$_val" ]; then
+        # Escape single quotes for remote bash heredoc
+        _val_esc="${_val//\'/\'\\\'\'}"
+        STRATEGY_ENV_UPSERT_LINES="${STRATEGY_ENV_UPSERT_LINES}
+    upsert_env_line \"${_key}\" '${_val_esc}'"
+    fi
+done
+
 # Normalize FCM JSON path for EC2:
 # - If your local .env uses an absolute path, we still deploy the file into the API directory
 #   and write FCM_SERVICE_ACCOUNT_JSON as a repo-relative path (basename) on the server.
@@ -265,6 +309,7 @@ ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" bash << EOF
     upsert_env_line "V2_WATCH_REENTRY_COOLDOWN_SEC" '$V2_WATCH_REENTRY_COOLDOWN_SEC_VAL'
     upsert_env_line "V2_WATCH_MAX_DIRECTION_FLIPS" '$V2_WATCH_MAX_DIRECTION_FLIPS_VAL'
     upsert_env_line "INVALIDATION_SPOT_TRIGGER_BUFFER" '$INVALIDATION_SPOT_TRIGGER_BUFFER_VAL'
+${STRATEGY_ENV_UPSERT_LINES}
 EOF
 
 # Copy Firebase service account JSON to EC2 (secret file; should NOT be in git)
@@ -292,6 +337,30 @@ if [ -f "$SENSEX_DATA_LOCAL/weekly_expiry_day_ohlc.csv" ]; then
     echo "  ✓ Sensex backtest data synced"
 else
     echo "  ⚠️  Sensex weekly_expiry_day_ohlc.csv missing locally — backtest UI will fail on EC2"
+fi
+
+# Nifty DuckDB + cached backtest JSON (gitignored — required for nifty50 Dhan viewer/backtest UI)
+MARKET_DATA_LOCAL="$REPO_ROOT/data/market"
+MARKET_DATA_REMOTE="$REMOTE_API_PATH/data/market"
+if [ -d "$MARKET_DATA_LOCAL" ]; then
+    echo "📤 Uploading Nifty market data + backtest results..."
+    ssh -i "$PEM_FILE" "$EC2_USER@$EC2_IP" "mkdir -p \"$MARKET_DATA_REMOTE\""
+    for _f in \
+        nifty50.staging.duckdb \
+        nifty50.duckdb \
+        backtest_nifty50_dhan_results.json \
+        backtest_nifty50_sensex_trades.csv \
+        tuned_20rupees_config.json; do
+        if [ -f "$MARKET_DATA_LOCAL/$_f" ]; then
+            echo "  → $_f"
+            scp -i "$PEM_FILE" "$MARKET_DATA_LOCAL/$_f" "$EC2_USER@$EC2_IP:$MARKET_DATA_REMOTE/"
+        fi
+    done
+    if [ -f "$SENSEX_DATA_LOCAL/backtest_20rupees_dhan_results.json" ]; then
+        echo "  → sensex/backtest_20rupees_dhan_results.json"
+        scp -i "$PEM_FILE" "$SENSEX_DATA_LOCAL/backtest_20rupees_dhan_results.json" "$EC2_USER@$EC2_IP:$SENSEX_DATA_REMOTE/../sensex/"
+    fi
+    echo "  ✓ Market/backtest data synced"
 fi
 
 # Now continue with the main deployment

@@ -16,11 +16,38 @@ def merge_option_bb_into_intra(
 ) -> Dict[str, Any]:
     out = dict(intra)
     if opt_bb.get("bb_middle") is None:
+        for key in (
+            "setup_bar_open",
+            "setup_bar_high",
+            "setup_bar_low",
+            "setup_bar_close",
+            "confirm_bar_open",
+            "confirm_bar_high",
+            "confirm_bar_low",
+            "confirm_bar_close",
+        ):
+            if opt_bb.get(key) is not None:
+                out[key] = opt_bb[key]
         return out
     out["bb_lower"] = opt_bb["bb_lower"]
     out["bb_middle"] = opt_bb["bb_middle"]
     out["bb_upper"] = opt_bb["bb_upper"]
     out["last_5m_close"] = opt_bb.get("last_5m_close")
+    for key in (
+        "setup_bar_open",
+        "setup_bar_high",
+        "setup_bar_low",
+        "setup_bar_close",
+        "confirm_bar_open",
+        "confirm_bar_high",
+        "confirm_bar_low",
+        "confirm_bar_close",
+        "bar_open",
+        "bar_high",
+        "bar_low",
+    ):
+        if opt_bb.get(key) is not None:
+            out[key] = opt_bb[key]
     out["indicator_sources"] = {
         **(intra.get("indicator_sources") or {}),
         **(opt_bb.get("indicator_sources") or {}),

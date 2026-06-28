@@ -519,15 +519,144 @@ def _analyze_20rupees(
             "20rupees_no_ltp",
         )
 
+    from services.entry_quality import (
+        confirmation_candle_entry_ok,
+        confirmation_candle_required,
+        entry_bar_quality_ok,
+        entry_day_aligned_ok,
+        entry_intraday_context_ok,
+        entry_scan_warmup_minutes,
+    )
+
+    setup_open = float(intra.get("setup_bar_open") or 0)
+    setup_high = float(intra.get("setup_bar_high") or 0)
+    setup_low = float(intra.get("setup_bar_low") or 0)
+    setup_close = float(intra.get("setup_bar_close") or 0)
+    confirm_open = float(intra.get("confirm_bar_open") or bar_open or 0)
+    confirm_high = float(intra.get("confirm_bar_high") or bar_high or ltp)
+    confirm_low = float(intra.get("confirm_bar_low") or intra.get("bar_low") or quote.get("low") or 0)
+    confirm_close = float(intra.get("confirm_bar_close") or ltp)
+
+    kind = str(intra.get("option_kind") or intra.get("direction") or "CE").upper()
+    if confirmation_candle_required():
+        if setup_close <= 0 and setup_high <= 0:
+            msg = "Wait for setup + confirmation 5m candles (band touch then break)"
+            notes.append(msg)
+            return False, None, 0, notes, msg, "20rupees_no_setup"
+        ok_conf, why_conf = confirmation_candle_entry_ok(
+            kind=kind,
+            setup_open=setup_open,
+            setup_high=setup_high,
+            setup_low=setup_low,
+            setup_close=setup_close,
+            confirm_open=confirm_open,
+            confirm_high=confirm_high,
+            confirm_low=confirm_low,
+            confirm_close=confirm_close,
+            band_low=band_low,
+            band_high=band_high,
+        )
+        if not ok_conf:
+            msgs = {
+                "no_setup": "Setup candle has not touched premium band — wait",
+                "confirm_not_in_band": "Confirmation candle must close inside premium band",
+                "confirm_not_bullish": "CE confirmation needs bullish candle (close > open)",
+                "confirm_not_bearish": "PE confirmation needs bearish candle (close < open)",
+                "confirm_no_progress": "Confirmation must close beyond setup candle close",
+            }
+            msg = msgs.get(why_conf, "Waiting for confirmation candle")
+            notes.append(msg)
+            return False, None, 0, notes, msg, f"20rupees_{why_conf}"
+
+    spot = float(
+        intra.get("spot") or intra.get("nifty_spot") or intra.get("index_ltp") or 0
+    )
+    spot_prev = float(
+        intra.get("spot_prev")
+        or intra.get("index_ltp_prev")
+        or intra.get("index_last_5m_close")
+        or 0
+    )
+    index_open = float(day_open or intra.get("day_open") or 0)
+    if bar_minutes <= 0:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        _now = datetime.now(ZoneInfo("Asia/Kolkata"))
+        bar_minutes = _now.hour * 60 + _now.minute
+
+    if index_open > 0 and spot > 0:
+        if not entry_day_aligned_ok(kind=kind, index_open=index_open, spot=spot):
+            msg = "Entry leg must match index intraday direction (spot vs day open)"
+            notes.append(msg)
+            return False, None, 0, notes, msg, "20rupees_day_misalign"
+
+        session_low = float(
+            intra.get("session_low_so_far") or intra.get("day_low") or 0
+        )
+        session_high = float(
+            intra.get("session_high_so_far") or intra.get("day_high") or 0
+        )
+        ok_ctx, why_ctx = entry_intraday_context_ok(
+            kind=kind,
+            index_open=index_open,
+            spot=spot,
+            spot_prev=spot_prev,
+            bar_minutes=bar_minutes,
+            scan_start_minutes=scan_start,
+            session_low_so_far=session_low,
+            session_high_so_far=session_high,
+            segment="sensex",
+        )
+        if not ok_ctx:
+            ctx_msgs = {
+                "scan_warmup": (
+                    f"Wait {entry_scan_warmup_minutes()} min after scan open "
+                    f"({scan_start // 60:02d}:{scan_start % 60:02d} IST) — avoid open-bar noise"
+                ),
+                "weak_day_trend": "Index day move too small for this leg — wait for clearer trend",
+                "chase_exhaustion": "Extended day without fresh index momentum — skip chase entry",
+                "capitulation_bar": "Violent index bar after extended move — likely exhaustion bounce",
+                "bounce_from_low": "Index recovering from session low — avoid shorting the bounce (PE)",
+            }
+            msg = ctx_msgs.get(why_ctx, "Intraday context filter — wait for better setup")
+            notes.append(msg)
+            return False, None, 0, notes, msg, f"20rupees_{why_ctx}"
+
+    ok, why = entry_bar_quality_ok(
+        kind=kind,
+        bar_open=bar_open,
+        bar_close=ltp,
+        spot=spot,
+        prev_close=prev_close,
+        spot_prev=spot_prev,
+    )
+    if not ok:
+        msg = (
+            "Index not aligned with option leg (spot vs prev close)"
+            if why == "direction"
+            else (
+                "Index bar not rising for CE / falling for PE"
+                if why == "index_momentum"
+                else "Entry bar not bullish (close must be above open)"
+            )
+        )
+        notes.append(msg)
+        return False, None, 0, notes, msg, f"20rupees_{why}"
+
     notes.append(f"20rupees band {band} · LTP ₹{ltp:.2f}")
 
     if band_low <= ltp <= band_high:
         center = (band_low + band_high) / 2.0
         score = max(75, min(95, int(92 - abs(ltp - center) * 4)))
+        if confirmation_candle_required() and setup_close > 0:
+            score = min(98, score + 6)
         notes.append(
             f"Premium closed in band — entry at ₹{ltp:.2f} · "
             f"SL ₹{sl_prem:.2f} · target ₹{ltp + max(0.05, ltp - sl_prem):.2f} (1:1)"
         )
+        if confirmation_candle_required():
+            notes.append("Confirmation candle: setup band touch + break confirmed")
         return True, round(ltp, 2), score, notes, None, "20rupees_in_band"
 
     if ltp > band_high:
