@@ -17,6 +17,7 @@ from services.dhan_data_client import (
     save_cached_session,
     ts_to_ist_label,
 )
+from services.dhan_trade_explain import explain_trade_on_rows
 from services.entry_quality import entry_band_limits, exit_model
 from services.sensex_dhan_backtest import DEFAULT_SL_INR
 from services.nifty_dhan_backtest import _store as nifty_store
@@ -280,7 +281,20 @@ def get_dhan_ohlc(
             "pnl_inr": trade.get("pnl_inr"),
             "entry_bar_index": entry_idx,
             "exit_bar_index": exit_idx,
+            "kind": (trade.get("kind") or leg).upper(),
+            "strike_source": trade.get("strike_source") or off,
         }
+        payload["trade"]["decision"] = explain_trade_on_rows(
+            rows,
+            payload["trade"],
+            band=(band_lo, band_hi),
+            sl_inr=sl_inr,
+            scan_window=payload["scan_window"],
+            index_open=index_open,
+            segment=segment,
+            kind=payload["trade"]["kind"],
+            strike_source=str(trade.get("strike_source") or off),
+        )
     return payload
 
 

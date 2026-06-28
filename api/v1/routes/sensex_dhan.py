@@ -62,6 +62,8 @@ async def dhan_ohlc(
     exit_datetime_ist: str | None = Query(None, description="Exit bar time for marker"),
     exit_reason: str | None = Query(None, description="Exit reason label"),
     pnl_inr: float | None = Query(None, description="Trade P&L for chart subtitle"),
+    trade_kind: str | None = Query(None, description="Trade leg CE or PE for decision explain"),
+    strike_source: str | None = Query(None, description="Strike offset label e.g. ATM"),
 ):
     """5m OHLC rows for a selected rolling contract, optional trade overlay."""
     trade = None
@@ -75,6 +77,8 @@ async def dhan_ohlc(
             "exit_datetime_ist": exit_datetime_ist or "",
             "exit_reason": exit_reason or "",
             "pnl_inr": pnl_inr,
+            "kind": trade_kind or kind,
+            "strike_source": strike_source or "",
         }
     try:
         data = await asyncio.to_thread(
