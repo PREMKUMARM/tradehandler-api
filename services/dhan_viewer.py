@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -16,7 +17,8 @@ from services.dhan_data_client import (
     save_cached_session,
     ts_to_ist_label,
 )
-from services.entry_quality import entry_band_limits
+from services.entry_quality import entry_band_limits, exit_model
+from services.sensex_dhan_backtest import DEFAULT_SL_INR
 from services.nifty_dhan_backtest import _store as nifty_store
 from services.nifty_dhan_backtest import list_cached_session_dates, load_session_from_duckdb
 from services.sensex_constants import normalize_rolling_offset, sensex_atm_near_offsets, sensex_entry_scan_start_minutes
@@ -226,6 +228,12 @@ def get_dhan_ohlc(
         )
 
     band_lo, band_hi = entry_band_limits()
+    try:
+        sl_inr = float(os.getenv("SL_INR", str(DEFAULT_SL_INR)) or DEFAULT_SL_INR)
+    except (TypeError, ValueError):
+        sl_inr = DEFAULT_SL_INR
+    scan_start = sensex_entry_scan_start_minutes()
+    scan_end_h, scan_end_m = 14, 45
     payload: Dict[str, Any] = {
         "segment": segment,
         "session_date": session_date,
@@ -242,8 +250,17 @@ def get_dhan_ohlc(
         "index_open": round(index_open, 2) if index_open > 0 else None,
         "entry_band": [band_lo, band_hi],
         "scan_window": {
-            "start": f"{sensex_entry_scan_start_minutes() // 60:02d}:{sensex_entry_scan_start_minutes() % 60:02d}",
-            "end": "14:45",
+            "start": f"{scan_start // 60:02d}:{scan_start % 60:02d}",
+            "end": f"{scan_end_h:02d}:{scan_end_m:02d}",
+        },
+        "strategy": {
+            "sl_inr": sl_inr,
+            "exit_model": exit_model(),
+            "entry_band": [band_lo, band_hi],
+            "scan_window": {
+                "start": f"{scan_start // 60:02d}:{scan_start % 60:02d}",
+                "end": f"{scan_end_h:02d}:{scan_end_m:02d}",
+            },
         },
     }
 
