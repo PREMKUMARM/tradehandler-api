@@ -148,14 +148,16 @@ def _pick_auto_strike_from_chain(
     day_open: float = 0.0,
     band_low: float = PREMIUM_BAND_LOW,
     band_high: float = PREMIUM_BAND_HIGH,
+    segment: str = "sensex",
 ) -> Tuple[Optional[int], float, str, Optional[str], Optional[float], str]:
     """AUTO: day-direction leg + smart OI strike in premium band."""
     from services.entry_quality import auto_entry_kind, entry_day_aligned_ok
+    from services.index_atm import true_atm_from_spot
 
     day_open = day_open or spot
     kind = auto_entry_kind(day_open, spot, prev_close)
+    atm = true_atm_from_spot(spot, segment=segment)
     if not kind or not entry_day_aligned_ok(kind=kind, index_open=day_open, spot=spot):
-        atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
         return atm, 0.0, "ATM", None, None, kind or "CE"
     picked = pick_smart_from_chain(
         chain_oi,
@@ -164,11 +166,10 @@ def _pick_auto_strike_from_chain(
         band_low=band_low,
         band_high=band_high,
         prev_close=prev_close,
+        segment=segment,
     )
     if not picked:
-        atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
         return atm, 0.0, "ATM", None, None, kind
-    atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
     money = moneyness_label(picked.strike, atm, picked.offset)
     return picked.strike, picked.ltp, money, picked.symbol, picked.oi, picked.kind
 
@@ -180,8 +181,11 @@ def _pick_strike_from_chain(
     prev_close: float = 0.0,
     band_low: float = PREMIUM_BAND_LOW,
     band_high: float = PREMIUM_BAND_HIGH,
+    segment: str = "sensex",
 ) -> Tuple[Optional[int], float, str, Optional[str], Optional[float]]:
     """CE/PE: smart strike in premium band on the chosen leg."""
+    from services.index_atm import true_atm_from_spot
+
     picked = pick_smart_from_chain(
         chain_oi,
         spot,
@@ -189,8 +193,9 @@ def _pick_strike_from_chain(
         band_low=band_low,
         band_high=band_high,
         prev_close=prev_close,
+        segment=segment,
     )
-    atm = int(chain_oi.get("atm") or round(spot / 100) * 100)
+    atm = int(chain_oi.get("atm") or true_atm_from_spot(spot, segment=segment))
     if picked:
         money = moneyness_label(picked.strike, atm, picked.offset)
         return picked.strike, picked.ltp, money, picked.symbol, picked.oi
@@ -201,23 +206,31 @@ def _pick_strike_from_chain(
     return atm if atm > 0 else None, atm_ltp, "ATM", None, None
 
 
-def _fetch_market_context(direction_pref: str, margin: float) -> MarketContext:
+def _fetch_market_context(
+    direction_pref: str, margin: float, segment: str = "sensex"
+) -> MarketContext:
     ctx = MarketContext(margin=margin, direction_pref=(direction_pref or "AUTO").upper())
     now = datetime.now(IST)
     ctx.minutes = now.hour * 60 + now.minute
     ctx.is_weekday = now.weekday() <= 4  # Mon–Fri
 
+    seg = (segment or "sensex").strip().lower()
     try:
-        from services.sensex_live_indicators import recalculate_from_ticker
+        if seg in ("nifty50", "nifty", "nfo"):
+            from services.kite_live_indicators import recalculate_from_ticker
 
-        live = recalculate_from_ticker()
+            live = recalculate_from_ticker()
+        else:
+            from services.sensex_live_indicators import recalculate_from_ticker
+
+            live = recalculate_from_ticker()
         ctx.nifty_ltp = float(live.get("nifty_spot") or 0)
         ctx.prev_close = float(live.get("prev_close") or ctx.nifty_ltp)
         ctx.day_open = float(live.get("day_open") or ctx.nifty_ltp)
         if live.get("vix"):
             ctx.vix_ltp = float(live["vix"])
     except Exception as exc:
-        log_warning(f"[Sensex strategy] live indicators failed: {exc}")
+        log_warning(f"[{seg} strategy] live indicators failed: {exc}")
 
     return ctx
 
@@ -226,6 +239,8 @@ def _score_20rupees(
     ctx: MarketContext,
     chain_oi: Optional[Dict[str, Any]],
     run_params: Optional[SensexRunParams] = None,
+    *,
+    segment: str = "sensex",
 ) -> StrategyCandidate:
     rp = run_params or SensexRunParams.defaults()
     band_low = rp.entry_band_low
@@ -233,6 +248,7 @@ def _score_20rupees(
     sl_prem_fixed = rp.sl_inr
     chain = chain_oi or {}
     spot = ctx.nifty_ltp
+    index_label = "Nifty" if (segment or "").lower() in ("nifty50", "nifty", "nfo") else "Sensex"
     if spot <= 0:
         spot = float(chain.get("atm") or 0)
     rr = 1.0
@@ -252,7 +268,7 @@ def _score_20rupees(
             spot_target=0,
             rr_ratio=rr,
             reasons=reasons,
-            warnings=["Sensex spot unavailable — connect Kite ticker"],
+            warnings=[f"{index_label} spot unavailable — connect Kite ticker"],
         )
 
     if ctx.direction_pref == "AUTO":
@@ -263,6 +279,7 @@ def _score_20rupees(
             day_open=ctx.day_open,
             band_low=band_low,
             band_high=band_high,
+            segment=segment,
         )
         gap_pct = sensex_gap_pct(ctx.day_open, ctx.prev_close)
         if ctx.prev_close > 0:
@@ -278,6 +295,7 @@ def _score_20rupees(
             prev_close=ctx.prev_close,
             band_low=band_low,
             band_high=band_high,
+            segment=segment,
         )
 
     if strike is None or ltp <= 0:
@@ -344,7 +362,7 @@ def _score_20rupees(
         pattern = "20rupees_open_bar_skip"
     elif ctx.minutes > 0 and ctx.minutes >= scan_end:
         warnings.append(
-            f"No new Sensex entries after {rp.entry_cutoff_label()} IST "
+            f"No new {index_label} entries after {rp.entry_cutoff_label()} IST "
             f"(avoid last-minute gamma and settlement decay)"
         )
         score = min(score, 25)
@@ -389,11 +407,14 @@ def analyze_fno_strategies(
     hypothesis_note: Optional[str] = None,
     chain_oi: Optional[Dict[str, Any]] = None,
     run_params: Optional[SensexRunParams] = None,
+    *,
+    segment: str = "sensex",
 ) -> Dict[str, Any]:
-    """Single 20rupees-strategy for Sensex (paper + live)."""
+    """Single 20rupees-strategy (paper + live)."""
     rp = run_params or SensexRunParams.from_mapping({"direction": direction_pref})
-    ctx = _fetch_market_context(rp.direction, margin)
-    selected = _score_20rupees(ctx, chain_oi, rp)
+    ctx = _fetch_market_context(rp.direction, margin, segment=segment)
+    selected = _score_20rupees(ctx, chain_oi, rp, segment=segment)
+    index_label = "Nifty" if (segment or "").lower() in ("nifty50", "nifty", "nfo") else "Sensex"
 
     ranked = [selected]
 
@@ -449,7 +470,7 @@ def analyze_fno_strategies(
     band = f"₹{rp.entry_band_low:.0f}–{rp.entry_band_high:.0f}"
     output_lines = [
         f"Selected: {selected.name} (score {selected.score}/100, {selected.fit})",
-        f"Leg: BUY Sensex {selected.option_kind} · premium band {band}",
+        f"Leg: BUY {index_label} {selected.option_kind} · premium band {band}",
     ]
     if selected.entry_premium:
         output_lines.append(

@@ -1,5 +1,5 @@
 """
-V2 — dynamic strike (ATM/OTM) and premium from live spot, candles, and patterns.
+V2 — 20rupees-strategy strike selection (smart OI in premium band).
 """
 from __future__ import annotations
 
@@ -35,73 +35,13 @@ def _pick_moneyness(
     spot_tgt: float,
     intra: Dict[str, Any],
 ) -> Tuple[str, str, str]:
-    """Return (moneyness, pattern_tag, reason) from strategy + live structure."""
-    or_h, or_l = intra.get("or_high"), intra.get("or_low")
-    pdh, pdl = intra.get("pdh"), intra.get("pdl")
-    ema9 = intra.get("ema9")
-    risk_pts = abs(spot - spot_sl)
-    reward_pts = abs(spot_tgt - spot)
-
-    if strategy_id == "bb_5m_mean_reversion":
-        return "ATM", "bb_5m", "5m BB mean reversion — ATM for liquidity and delta"
-
-    if strategy_id == "long_atm_directional":
-        return "ATM", "directional", "Session bias — ATM for delta ~0.5 and liquidity"
-
-    if strategy_id == "orb_15m_breakout":
-        if or_h and or_l:
-            or_range = or_h - or_l
-            if kind == "CE" and spot > or_h:
-                ext = spot - or_h
-                if or_range > 0 and ext > 0.28 * or_range:
-                    return (
-                        "OTM1",
-                        "orb_extension",
-                        f"ORB CE break +{ext:.0f} pts past OR high — OTM1",
-                    )
-                return "ATM", "orb_breakout", "ORB CE breakout — ATM"
-            if kind == "PE" and spot < or_l:
-                ext = or_l - spot
-                if or_range > 0 and ext > 0.28 * or_range:
-                    return (
-                        "OTM1",
-                        "orb_extension",
-                        f"ORB PE break +{ext:.0f} pts past OR low — OTM1",
-                    )
-                return "ATM", "orb_breakout", "ORB PE breakout — ATM"
-        return "ATM", "orb_wait", "Inside/warming OR — ATM default"
-
-    if strategy_id == "pdh_pdl_breakout":
-        buf = 3.0
-        if kind == "CE" and pdh and spot > pdh + buf:
-            ext_pct = (spot - pdh) / spot * 100
-            if ext_pct > 0.12:
-                return "OTM1", "pdh_extended", f"Above PDH {pdh:.0f} by {ext_pct:.2f}% — OTM1"
-            return "ATM", "pdh_break", f"Fresh break above PDH {pdh:.0f} — ATM"
-        if kind == "PE" and pdl and spot < pdl - buf:
-            ext_pct = (pdl - spot) / spot * 100
-            if ext_pct > 0.12:
-                return "OTM1", "pdl_extended", f"Below PDL {pdl:.0f} by {ext_pct:.2f}% — OTM1"
-            return "ATM", "pdl_break", f"Fresh break below PDL {pdl:.0f} — ATM"
-        return "ATM", "pdh_pdl_range", "Between levels — ATM until break confirms"
-
-    if strategy_id == "ema_pullback_continuation":
-        if ema9 is not None:
-            dist = abs(spot - ema9)
-            if dist <= 22:
-                return "ATM", "ema_pullback", f"Pullback within {dist:.0f} pts of 9 EMA — ATM"
-            if dist <= 45:
-                return "OTM1", "ema_extended", f"Extended {dist:.0f} pts from 9 EMA — OTM1"
-            return "OTM2", "ema_chase", "Far from 9 EMA — cheaper OTM2 (higher risk)"
-        return "ATM", "ema_unknown", "9 EMA unavailable — ATM"
-
-    if strategy_id == "green_bar_sentinel_2nd_oi":
-        return "ANCHOR", "oi_sentinel_2nd", "Exact 2nd OI-anchor strike from chain ranking"
-
-    # Fallback: use R:R — wide target → slightly OTM
-    if reward_pts > 1.8 * risk_pts and risk_pts > 0:
-        return "OTM1", "rr_otm", "Reward > 1.8× risk — OTM1 for cost efficiency"
-    return "ATM", "default", "Default ATM"
+    """20rupees-strategy: smart OI strike in ₹17–₹23 near ATM."""
+    del spot, kind, spot_sl, spot_tgt, intra
+    return (
+        "SMART_OI",
+        "20rupees",
+        "Smart OI pick in ₹17–₹23 near ATM · size to risk % · scan window 14:00–14:45 IST",
+    )
 
 
 def refine_spot_levels_from_candles(
@@ -112,107 +52,9 @@ def refine_spot_levels_from_candles(
     spot_tgt: float,
     intra: Dict[str, Any],
 ) -> Tuple[float, float, float, str]:
-    """
-    Re-anchor entry/SL/target to latest candle structure (OR, PDH/PDL, EMA).
-    Returns (entry, sl, tgt, note).
-    """
-    entry = spot
-    sl, tgt = spot_sl, spot_tgt
-    notes: List[str] = []
-    or_h, or_l = intra.get("or_high"), intra.get("or_low")
-    pdh, pdl = intra.get("pdh"), intra.get("pdl")
-    ema9 = intra.get("ema9")
-    rr = 1.5
-    if abs(spot_tgt - spot) > 0 and abs(spot_sl - spot) > 0:
-        rr = abs(spot_tgt - spot) / abs(spot_sl - spot)
-
-    if strategy_id == "orb_15m_breakout" and or_h and or_l:
-        if kind == "CE" and spot > or_h:
-            sl = or_l - 2
-            risk = max(1.0, entry - sl)
-            tgt = entry + rr * risk
-            notes.append(f"ORB SL below OR low {or_l:.0f}")
-        elif kind == "PE" and spot < or_l:
-            sl = or_h + 2
-            risk = max(1.0, sl - entry)
-            tgt = entry - rr * risk
-            notes.append(f"ORB SL above OR high {or_h:.0f}")
-
-    elif strategy_id == "pdh_pdl_breakout" and pdh and pdl:
-        buf = 3.0
-        if kind == "CE" and spot > pdh:
-            sl = pdh - buf
-            risk = max(1.0, entry - sl)
-            tgt = entry + rr * risk
-            notes.append(f"PDH break SL {sl:.0f}")
-        elif kind == "PE" and spot < pdl:
-            sl = pdl + buf
-            risk = max(1.0, sl - entry)
-            tgt = entry - rr * risk
-            notes.append(f"PDL break SL {sl:.0f}")
-
-    elif strategy_id == "ema_pullback_continuation" and ema9 is not None:
-        risk_pts = max(12.0, entry * 0.0025)
-        if kind == "CE":
-            sl = min(ema9 - 5, entry - risk_pts)
-            risk = max(1.0, entry - sl)
-            tgt = entry + rr * risk
-            notes.append(f"EMA pullback SL near {ema9:.0f}")
-        else:
-            sl = max(ema9 + 5, entry + risk_pts)
-            risk = max(1.0, sl - entry)
-            tgt = entry - rr * risk
-            notes.append(f"EMA pullback SL near {ema9:.0f}")
-
-    elif strategy_id == "bb_5m_mean_reversion":
-        lower = intra.get("bb_lower")
-        upper = intra.get("bb_upper")
-        mid = intra.get("bb_middle")
-        if lower and upper and mid:
-            width = float(upper) - float(lower)
-            buf = max(0.5, width * 0.04) if entry < 5000 else max(6.0, width * 0.04)
-            if kind == "CE":
-                sl = float(lower) - buf
-                risk = max(1.0, entry - sl)
-                tgt = float(mid) + rr * risk * 0.85
-            else:
-                sl = float(upper) + buf
-                risk = max(1.0, sl - entry)
-                tgt = float(mid) - rr * risk * 0.85
-            notes.append("Option 5m BB: SL beyond band, target toward middle")
-
-    elif strategy_id == "long_atm_directional":
-        risk_pts = max(15.0, entry * 0.0035)
-        if kind == "CE":
-            sl, tgt = entry - risk_pts, entry + risk_pts * rr
-        else:
-            sl, tgt = entry + risk_pts, entry - risk_pts * rr
-        notes.append("Directional SL from live spot % risk")
-
-    elif strategy_id == "green_bar_sentinel_2nd_oi":
-        anchor = int(intra.get("anchor_strike") or 0)
-        buf = 20.0
-        if anchor > 0:
-            if kind == "CE":
-                sl = anchor - buf
-                risk = max(1.0, entry - sl)
-                tgt = entry + rr * risk
-                notes.append(f"Sentinel CE SL below 2nd OI anchor {anchor}")
-            else:
-                sl = anchor + buf
-                risk = max(1.0, sl - entry)
-                tgt = entry - rr * risk
-                notes.append(f"Sentinel PE SL above 2nd OI anchor {anchor}")
-        else:
-            risk_pts = max(18.0, entry * 0.003)
-            if kind == "CE":
-                sl, tgt = entry - risk_pts, entry + risk_pts * rr
-            else:
-                sl, tgt = entry + risk_pts, entry - risk_pts * rr
-            notes.append("Sentinel anchor pending — provisional SL from spot %")
-
-    note = "; ".join(notes) if notes else "Levels from strategy score"
-    return entry, sl, tgt, note
+    """20rupees uses premium-based SL/target from strategy analysis — spot levels are reference only."""
+    del strategy_id, kind, intra
+    return spot, spot_sl, spot_tgt, "20rupees-strategy: premium SL ₹9 · 1:1 target"
 
 
 def build_dynamic_option_leg(
@@ -245,7 +87,7 @@ def build_dynamic_option_leg(
     if live_spot > 0:
         spot_entry = live_spot
 
-    sid = strategy_id or "bb_5m_mean_reversion"
+    sid = strategy_id or "20rupees_strategy"
     entry, sl, tgt, level_note = refine_spot_levels_from_candles(
         sid, spot_entry, kind, spot_stop_loss, spot_target, intra
     )

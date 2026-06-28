@@ -83,6 +83,20 @@ def entry_mid_band_only() -> bool:
     return _env_bool("ENTRY_MID_BAND_ONLY", False)
 
 
+def entry_max_close_position_in_bar() -> float:
+    """
+    Reject entries when bar close sits in the top of the 5m range (chase-the-wick).
+    0 disables; 0.75 = close must be in bottom 75% of bar (low→high).
+    """
+    try:
+        raw = float(os.getenv("ENTRY_MAX_CLOSE_POSITION_IN_BAR", "0.75") or 0.75)
+    except (TypeError, ValueError):
+        raw = 0.75
+    if raw <= 0 or raw >= 1:
+        return 0.0
+    return raw
+
+
 def entry_mid_band_limits(band_low: float, band_high: float) -> tuple[float, float]:
     """Inner band for mid-band filter."""
     width = band_high - band_low
@@ -400,6 +414,12 @@ def entry_intraday_context_ok(
     return True, ""
 
 
+def bar_close_position(bar_low: float, bar_high: float, bar_close: float) -> float:
+    """Fraction of bar range where close sits (0 = at low, 1 = at high)."""
+    rng = max(float(bar_high) - float(bar_low), 0.01)
+    return (float(bar_close) - float(bar_low)) / rng
+
+
 def entry_bar_quality_ok(
     *,
     kind: str,
@@ -408,12 +428,19 @@ def entry_bar_quality_ok(
     spot: float,
     prev_close: float,
     spot_prev: float = 0.0,
+    bar_high: float = 0.0,
+    bar_low: float = 0.0,
 ) -> tuple[bool, str]:
     """Return (ok, reason) for a candidate entry bar."""
     k = (kind or "").upper()
     if entry_momentum_required() and bar_close > 0 and bar_open > 0:
         if bar_close <= bar_open:
             return False, "momentum"
+
+    max_pos = entry_max_close_position_in_bar()
+    if max_pos > 0 and bar_high > bar_low > 0 and bar_close > 0:
+        if bar_close_position(bar_low, bar_high, bar_close) > max_pos:
+            return False, "close_near_high"
 
     if entry_index_momentum_required() and spot > 0 and spot_prev > 0:
         if k == "CE" and spot <= spot_prev:

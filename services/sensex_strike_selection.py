@@ -234,11 +234,15 @@ def pick_smart_from_chain(
     band_low: float = PREMIUM_BAND_LOW,
     band_high: float = PREMIUM_BAND_HIGH,
     prev_close: float = 0.0,
+    segment: str = "sensex",
 ) -> Optional[StrikeCandidate]:
     """Live chain: score in-band strikes from ranked OI rows."""
-    atm = int(chain_oi.get("atm") or _true_atm(spot))
+    from services.index_atm import index_strike_step, true_atm_from_spot
+
+    atm = int(chain_oi.get("atm") or true_atm_from_spot(spot, segment=segment))
     bias = _direction_bias_kind(spot, prev_close)
     scan_pts = sensex_premium_band_scan_points()
+    strike_step = index_strike_step(segment)
 
     rows: List[Tuple] = []
     for kind in kinds:
@@ -263,7 +267,7 @@ def pick_smart_from_chain(
             strike = int(row.get("strike") or 0)
             if strike <= 0 or abs(strike - atm) > scan_pts:
                 continue
-            step = abs(strike - atm) // 100
+            step = abs(strike - atm) // max(1, strike_step)
             off = "ATM" if step == 0 else (f"ATM+{step}" if strike > atm else f"ATM-{step}")
             rows.append(
                 (

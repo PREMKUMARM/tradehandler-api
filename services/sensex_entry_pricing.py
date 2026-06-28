@@ -468,6 +468,8 @@ def _analyze_20rupees(
     quote: Dict[str, float],
     intra: Dict[str, Any],
     prev_close: float = 0.0,
+    *,
+    segment: str = "sensex",
 ) -> Tuple[bool, Optional[float], int, List[str], Optional[str], str]:
     """Entry when contract premium is in configured band (not after session entry cutoff)."""
     rp = _run_params_from_intra(intra)
@@ -479,11 +481,14 @@ def _analyze_20rupees(
     day_open = float(intra.get("day_open") or 0)
     notes: List[str] = []
     band = f"₹{band_low:.0f}–{band_high:.0f}"
+    index_label = (
+        "Nifty" if (segment or "").lower() in ("nifty50", "nifty", "nfo") else "Sensex"
+    )
 
     bar_minutes = int(intra.get("bar_minutes") or intra.get("ist_minutes") or 0)
     if bar_minutes > 0 and bar_minutes >= rp.scan_end_minutes():
         msg = (
-            f"No new Sensex entries after {rp.entry_cutoff_label()} IST "
+            f"No new {index_label} entries after {rp.entry_cutoff_label()} IST "
             f"(avoid last-minute gamma and settlement decay)"
         )
         notes.append(msg)
@@ -606,7 +611,7 @@ def _analyze_20rupees(
             scan_start_minutes=scan_start,
             session_low_so_far=session_low,
             session_high_so_far=session_high,
-            segment="sensex",
+            segment=segment,
         )
         if not ok_ctx:
             ctx_msgs = {
@@ -623,6 +628,7 @@ def _analyze_20rupees(
             notes.append(msg)
             return False, None, 0, notes, msg, f"20rupees_{why_ctx}"
 
+    bar_low = float(intra.get("confirm_bar_low") or intra.get("bar_low") or quote.get("low") or 0)
     ok, why = entry_bar_quality_ok(
         kind=kind,
         bar_open=bar_open,
@@ -630,6 +636,8 @@ def _analyze_20rupees(
         spot=spot,
         prev_close=prev_close,
         spot_prev=spot_prev,
+        bar_high=bar_high,
+        bar_low=bar_low,
     )
     if not ok:
         msg = (
@@ -638,7 +646,11 @@ def _analyze_20rupees(
             else (
                 "Index bar not rising for CE / falling for PE"
                 if why == "index_momentum"
-                else "Entry bar not bullish (close must be above open)"
+                else (
+                    "Close too near 5m bar high — wait for pullback inside band"
+                    if why == "close_near_high"
+                    else "Entry bar not bullish (close must be above open)"
+                )
             )
         )
         notes.append(msg)
@@ -737,21 +749,22 @@ def compute_strategy_entry(
     delta: float,
     intra: Dict[str, Any],
     prev_close: float = 0.0,
+    segment: str = "sensex",
 ) -> EntryAnalysis:
-    """
-    Decide if 5m BB entry is confirmed and compute LIMIT price (patient, not ask chase).
-    """
+    """20rupees-strategy entry (patient LIMIT). Legacy BB ids route to 20rupees."""
     kind = (option_kind or "CE").upper()
     sid = strategy_id or TWENTY_RUPEES_ID
     bid, ask, ltp, mid, spread_pct = _book(quote)
     ref_ltp = ltp or mid or ask or bid
 
-    if sid == TWENTY_RUPEES_ID:
-        ready, trigger, score, notes, block, tag = _analyze_20rupees(quote, intra, prev_close)
-    elif sid == "bb_5m_mean_reversion":
-        ready, trigger, score, notes, block, tag = _analyze_bb_5m(spot, kind, intra)
+    if sid in (TWENTY_RUPEES_ID, "bb_5m_mean_reversion"):
+        ready, trigger, score, notes, block, tag = _analyze_20rupees(
+            quote, intra, prev_close, segment=segment
+        )
     else:
-        ready, trigger, score, notes, block, tag = _analyze_bb_5m(spot, kind, intra)
+        ready, trigger, score, notes, block, tag = _analyze_20rupees(
+            quote, intra, prev_close, segment=segment
+        )
 
     fair = _structure_fair_premium(
         ref_ltp, spot, trigger if trigger is not None else spot, kind, delta

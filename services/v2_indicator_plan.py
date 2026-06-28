@@ -175,6 +175,7 @@ def build_indicator_trade_plan(
         anchor_strike = sel.get("anchor_strike")
     else:
         anchor_strike = None
+        sel: Dict[str, Any] = {}
         d = (direction or "AUTO").upper()
         if d in ("CE", "PE"):
             option_kind = d
@@ -192,29 +193,15 @@ def build_indicator_trade_plan(
         else:
             spot_sl, spot_tgt = spot + risk_pts, spot - risk_pts * rr_entry
 
-    sid = strategy_id or "bb_5m_mean_reversion"
-    # Index structure only — BB for order prices comes from the selected contract chart.
+    sid = strategy_id or "20rupees_strategy"
     nifty_spot = float(ind["nifty_spot"])
     intra = {
-        "pdh": ind.get("pdh"),
-        "pdl": ind.get("pdl"),
-        "or_high": ind.get("or_high"),
-        "or_low": ind.get("or_low"),
-        "ema9": ind.get("ema9"),
         "day_high": ind.get("day_high"),
         "day_low": ind.get("day_low"),
         "indicator_sources": ind.get("indicator_sources") or {},
-        "anchor_strike": anchor_strike,
         "nifty_spot": nifty_spot,
-        "index_bb_lower": ind.get("bb_lower"),
-        "index_bb_middle": ind.get("bb_middle"),
-        "index_bb_upper": ind.get("bb_upper"),
         "prev_close": float(ind.get("prev_close") or 0),
-        "oi_baseline_ready": bool(
-            sid == "green_bar_sentinel_2nd_oi"
-            and anchor_strike
-            and (not strategy_analysis or sel.get("oi_change") is not None)
-        ),
+        "day_open": float(ind.get("day_open") or 0),
     }
     spot_entry = nifty_spot
     if strategy_analysis:
@@ -231,9 +218,9 @@ def build_indicator_trade_plan(
     )
 
     contract: Optional[OptionContract] = None
-    if sid == "green_bar_sentinel_2nd_oi" and anchor_strike:
+    if strategy_analysis and sel.get("tradingsymbol") and sel.get("anchor_strike"):
         contract = resolve_nifty_contract_at_strike(
-            strike=int(anchor_strike), kind=option_kind
+            strike=int(sel["anchor_strike"]), kind=option_kind
         )
     if contract is None:
         contract = resolve_nifty_contract(
@@ -278,6 +265,10 @@ def build_indicator_trade_plan(
         vix=ind.get("vix"),
         reward_ratio=rr_ratio,
     )
+    if strategy_analysis and sel.get("entry_premium"):
+        entry_prem = float(sel.get("entry_premium") or entry_prem)
+        sl_prem = float(sel.get("stop_loss_premium") or sl_prem)
+        tgt_prem = float(sel.get("target_premium") or tgt_prem)
     if exit_note:
         level_note = (level_note + " · " + exit_note).strip(" ·")
 
@@ -396,7 +387,7 @@ def build_indicator_trade_plan(
         "strike_moneyness": moneyness,
         "pattern_tag": pattern_tag,
         "anchor_strike": anchor_strike,
-        "oi_change": sel.get("oi_change") if strategy_analysis and sid == "green_bar_sentinel_2nd_oi" else None,
+        "oi_change": sel.get("oi_change") if strategy_analysis else None,
         "delta_used": round(delta, 3),
         "atm_reference": int(round(nifty_spot / 50) * 50),
         "pricing_note": (
@@ -440,7 +431,7 @@ def refresh_plan_at_execution(plan: Dict[str, Any]) -> Dict[str, Any]:
         "ema9": live.get("ema9"),
         "nifty_spot": nifty_spot,
     }
-    sid = plan.get("strategy_id") or "bb_5m_mean_reversion"
+    sid = plan.get("strategy_id") or "20rupees_strategy"
     kind = plan.get("option_type", "CE")
     from services.kite_live_indicators import get_option_bollinger_snapshot
 

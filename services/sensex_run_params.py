@@ -39,7 +39,7 @@ class SensexRunParams:
     min_target_high: float = 10.0
     direction: str = "AUTO"
     entry_scan_start_ist: str = "14:00"
-    entry_scan_end_ist: str = "15:00"
+    entry_scan_end_ist: str = "14:45"
     num_lots: int = 50
 
     @classmethod

@@ -169,26 +169,54 @@ def _intraday_context(kite, token: int) -> Dict[str, Any]:
     return ctx
 
 
+def _rank_chain_oi(rows: List[Dict[str, Any]], quotes: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Rank CE/PE strikes by OI for smart 20rupees strike pick."""
+    ranked_ce: List[Dict[str, Any]] = []
+    ranked_pe: List[Dict[str, Any]] = []
+    for r in rows:
+        key = f"NFO:{r['tradingsymbol']}"
+        qd = quotes.get(key, {}) or {}
+        oi = float(qd.get("oi") or 0)
+        ltp = float(qd.get("last_price") or 0)
+        depth = qd.get("depth") or {}
+        bid = float((depth.get("buy") or [{}])[0].get("price") or 0) if depth.get("buy") else 0
+        ask = float((depth.get("sell") or [{}])[0].get("price") or 0) if depth.get("sell") else 0
+        spread_pct = ((ask - bid) / ltp * 100) if ltp > 0 and ask > bid else 0
+        strike = int(r.get("strike") or 0)
+        kind = r.get("instrument_type")
+        row = {
+            "strike": strike,
+            "oi": oi,
+            "oi_change": oi,
+            "ltp": ltp,
+            "symbol": r.get("tradingsymbol"),
+            "spread_pct": round(spread_pct, 2),
+        }
+        if kind == "CE":
+            ranked_ce.append(row)
+        elif kind == "PE":
+            ranked_pe.append(row)
+    ranked_ce.sort(key=lambda x: (x["oi"], x["strike"]), reverse=True)
+    ranked_pe.sort(key=lambda x: (x["oi"], x["strike"]), reverse=True)
+    return ranked_ce[:8], ranked_pe[:8]
+
+
 def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """ATM ±5 strikes, nearest expiry — live OI, LTP, spread + OI sentinel ranks."""
+    """ATM ±5 strikes, nearest expiry — live OI, LTP, spread."""
     if spot <= 0 or not universe:
         return {}
-    from services.v2_oi_sentinel import enrich_chain_with_oi_buildup
-
-    oi_block = enrich_chain_with_oi_buildup(kite, spot, universe)
-    atm = int(oi_block.get("atm") or round(spot / 50) * 50)
-    expiry = oi_block.get("expiry")
-    if not expiry:
-        expiries = sorted({u["expiry"] for u in universe if u.get("expiry")})
-        if not expiries:
-            return oi_block
-        expiry_key = expiries[0]
-        expiry = expiry_key.isoformat() if hasattr(expiry_key, "isoformat") else str(expiry_key)
+    atm = int(round(spot / 50) * 50)
+    expiries = sorted({u["expiry"] for u in universe if u.get("expiry")})
+    if not expiries:
+        return {}
+    expiry = expiries[0]
 
     rows = [
         u
         for u in universe
-        if (u.get("expiry").isoformat() if hasattr(u.get("expiry"), "isoformat") else str(u.get("expiry"))) == str(expiry)
+        if (u.get("expiry").isoformat() if hasattr(u.get("expiry"), "isoformat") else str(u.get("expiry"))) == (
+            expiry.isoformat() if hasattr(expiry, "isoformat") else str(expiry)
+        )
         and abs(int(u.get("strike") or 0) - atm) <= 250
     ]
     keys = [f"NFO:{r['tradingsymbol']}" for r in rows if r.get("tradingsymbol")]
@@ -227,14 +255,16 @@ def _chain_live(kite, spot: float, universe: List[Dict[str, Any]]) -> Dict[str, 
             max_oi_val = oi
             max_oi_strike = strike
 
+    ranked_ce, ranked_pe = _rank_chain_oi(rows, quotes)
     pcr = (pe_oi / ce_oi) if ce_oi > 0 else 0.0
     exp_str = expiry if isinstance(expiry, str) else (
         expiry.isoformat() if hasattr(expiry, "isoformat") else str(expiry)
     )
     return {
-        **oi_block,
         "expiry": exp_str,
         "atm": atm,
+        "ranked_ce_oi": ranked_ce,
+        "ranked_pe_oi": ranked_pe,
         "pcr": round(pcr, 2),
         "ce_oi_total": int(ce_oi),
         "pe_oi_total": int(pe_oi),
@@ -464,30 +494,24 @@ def _status_for_step(i: int, title: str, ctx: ChecklistContext) -> ChecklistStep
             if trade_plan
             else "—"
         )
-        msg = "Entry priced from 5m BB" if ready else (
-            trade_plan.get("entry_block_reason") or "BB entry not confirmed"
+        msg = "Entry priced from 20rupees band" if ready else (
+            trade_plan.get("entry_block_reason") or "20rupees entry not confirmed — wait for band close"
         )
-        paper_bb_ok = False
+        paper_ok = False
         try:
             from services.paper_trading import is_paper_mode_for_segment
 
             sid = strategy_analysis.get("selected_id") or (trade_plan or {}).get("strategy_id", "")
-            bb_zone = ind.get("bb_zone") or ""
-            extended = bb_zone in ("upper", "lower") and (
-                (opt == "CE" and bb_zone == "upper") or (opt == "PE" and bb_zone == "lower")
-            )
-            paper_bb_ok = (
+            paper_ok = (
                 is_paper_mode_for_segment("nifty50")
-                and sid == "bb_5m_mean_reversion"
+                and sid == "20rupees_strategy"
                 and bool(trade_plan)
-                and ind.get("bb_middle")
-                and not extended
             )
         except Exception:
             pass
-        if paper_bb_ok and not ready:
-            msg = "Paper BB debug: bands loaded — autonomous may place on checklist"
-        return _step(i, title, ok and (ready or paper_bb_ok), msg, out)
+        if paper_ok and not ready:
+            msg = "Paper 20rupees debug: plan built — autonomous may place on checklist"
+        return _step(i, title, ok and (ready or paper_ok), msg, out)
     if i == 8:
         ok = bool(trade_plan)
         out = (

@@ -563,6 +563,8 @@ def _pick_entry(
             spot=bar.spot,
             prev_close=prev_close,
             spot_prev=spot_prev,
+            bar_high=bar.high,
+            bar_low=bar.low,
         )
         if not ok:
             continue

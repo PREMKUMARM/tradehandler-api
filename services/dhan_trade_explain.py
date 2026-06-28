@@ -4,10 +4,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from services.entry_quality import (
+    bar_close_position,
     day_direction_kind,
     entry_bar_quality_ok,
     entry_day_aligned_ok,
     entry_intraday_context_ok,
+    entry_max_close_position_in_bar,
     entry_momentum_required,
     entry_scan_warmup_minutes,
     exit_model,
@@ -114,6 +116,8 @@ def _eval_entry_bar(
     if why_ctx == "":
         passed.append("Passed intraday filters (day move, chase, capitulation)")
 
+    bar_low = float(row.get("low") or 0)
+    bar_high = float(row.get("high") or 0)
     ok_bar, why_bar = entry_bar_quality_ok(
         kind=effective_kind,
         bar_open=float(row.get("open") or 0),
@@ -121,18 +125,29 @@ def _eval_entry_bar(
         spot=spot,
         prev_close=prev_close,
         spot_prev=spot_prev,
+        bar_high=bar_high,
+        bar_low=bar_low,
     )
     if not ok_bar:
         labels = {
             "momentum": "Option bar not bullish (close must be > open)" if effective_kind == "CE" else "Option bar not bearish",
             "index_momentum": "Index did not move with leg on this bar",
             "direction": "Index vs prior close misaligned",
+            "close_near_high": (
+                f"Close at {bar_close_position(bar_low, bar_high, close) * 100:.0f}% of bar range "
+                f"(max {entry_max_close_position_in_bar() * 100:.0f}%) — buying the spike top"
+            ),
         }
         return False, passed, labels.get(why_bar, why_bar or "Bar quality filter")
 
     if entry_momentum_required():
         o, c = float(row.get("open") or 0), close
         passed.append(f"Momentum bar: close {'>' if c > o else '≤'} open (₹{o:.2f} → ₹{c:.2f})")
+    if bar_high > bar_low > 0:
+        passed.append(
+            f"Close at {bar_close_position(bar_low, bar_high, close) * 100:.0f}% of bar range "
+            f"(≤ {entry_max_close_position_in_bar() * 100:.0f}% required)"
+        )
     if spot_prev > 0:
         passed.append(f"Index {spot:.0f} vs prior bar {spot_prev:.0f} ({spot - spot_prev:+.0f} pts)")
 
